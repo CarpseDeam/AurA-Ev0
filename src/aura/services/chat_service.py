@@ -61,8 +61,20 @@ class ChatService:
             raise ValueError("Message must be a non-empty string.")
         self._history.append(ChatMessage(role="user", content=message))
         LOGGER.debug("Sending chat message: %s", message)
-        model = genai.GenerativeModel(self.model)
-        chat_history = [{"role": msg.role, "parts": [msg.content]} for msg in self._history]
+
+        # Pass system prompt via system_instruction parameter
+        model = genai.GenerativeModel(
+            self.model,
+            system_instruction=AURA_SYSTEM_PROMPT
+        )
+
+        # Build chat history, excluding system messages (Gemini doesn't accept them)
+        chat_history = [
+            {"role": msg.role, "parts": [msg.content]}
+            for msg in self._history
+            if msg.role != "system"
+        ]
+
         response = model.generate_content(
             chat_history,
             stream=True,
