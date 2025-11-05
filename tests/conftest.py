@@ -1,12 +1,15 @@
 """Shared pytest fixtures for Aura test suite."""
 
+import copy
 import os
 from typing import Generator
+from unittest.mock import Mock
 
 import pytest
 
 from aura.services.chat_service import ChatService
 from aura.services.planning_service import PlanningService
+from tests.fixtures.mock_responses import get_mock_plan
 
 
 def pytest_configure(config):
@@ -18,6 +21,10 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    )
+    config.addinivalue_line(
+        "markers",
+        "fast: marks tests as fast (mocked, no API)",
     )
 
 
@@ -43,6 +50,48 @@ def planning_service(chat_service: ChatService) -> Generator[PlanningService, No
     yield service
     # Cleanup: clear chat history for next test
     chat_service.clear_history()
+
+
+@pytest.fixture(scope="function")
+def mock_chat_service() -> Mock:
+    """Provide a mocked chat service that never hits the real API."""
+    mock = Mock(spec=ChatService)
+    mock.clear_history = Mock()
+    mock.send_message.side_effect = RuntimeError("Mock chat service does not support send_message.")
+    return mock
+
+
+@pytest.fixture(scope="function")
+def mock_planning_service(mock_chat_service: Mock) -> PlanningService:
+    """Create a mocked PlanningService for fast tests."""
+    service = PlanningService(mock_chat_service)
+
+    simple_keywords = ("calculator", "hello", "simple", "organizer", "converter", "cli")
+    medium_keywords = ("todo", "url", "api", "csv", "queue", "processor", "shortener", "pipeline")
+
+    def mock_plan_sessions(goal: str, context: str):
+        goal_lower = goal.lower()
+        if any(word in goal_lower for word in simple_keywords):
+            complexity = "simple"
+        elif any(word in goal_lower for word in medium_keywords):
+            complexity = "medium"
+        else:
+            complexity = "complex"
+
+        payload = copy.deepcopy(get_mock_plan(complexity))
+
+        context_lower = context.lower()
+        if any(keyword in context_lower for keyword in ("existing", "main.py", "src/")):
+            for session in payload["sessions"]:
+                session["prompt"] += " Use existing project files when they are available."
+            payload["reasoning"] += " Leverages existing project structure when it is provided."
+        else:
+            payload["reasoning"] += " Starts from a blank slate when no existing code is supplied."
+
+        return service._build_plan(payload)
+
+    service.plan_sessions = mock_plan_sessions  # type: ignore[assignment]
+    return service
 
 
 @pytest.fixture(scope="session")

@@ -129,11 +129,9 @@ EDGE_CASE_PROMPTS: List[TestPrompt] = [
     ),
 ]
 
-# Quick test suite - 1 from each complexity level for fast iteration
+# Quick smoke test - single scenario for rapid feedback
 QUICK_TEST_PROMPTS: List[TestPrompt] = [
-    SIMPLE_PROMPTS[0],   # Calculator CLI (3-4 sessions expected)
-    MEDIUM_PROMPTS[0],   # Todo API (4-6 sessions expected)
-    COMPLEX_PROMPTS[0],  # Blog Platform (5-7 sessions expected)
+    SIMPLE_PROMPTS[0],  # Calculator CLI (3-4 sessions expected)
 ]
 
 # All prompts combined
