@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import html
 import os
+import subprocess
+from datetime import datetime
 
-from PySide6.QtGui import QFont, QTextCursor, QTextOption
-from PySide6.QtWidgets import QLineEdit, QMainWindow, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtGui import QAction, QFont, QTextCursor, QTextOption
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPushButton,
+    QStatusBar,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from aura import config
 from aura.services import AgentRunner
+from aura.utils import scan_directory
 
 
 class MainWindow(QMainWindow):
@@ -18,13 +32,23 @@ class MainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the main window."""
         super().__init__(parent)
+        self._working_directory = os.getcwd()
+        self._gemini_ready: bool | None = None
         self.output_view = QTextEdit(self)
         self.input_field = QLineEdit(self)
+        self.clear_button = QPushButton("Clear", self)
+        self.status_bar = QStatusBar(self)
+        self.status_label = QLabel(self)
+        self.directory_label = QLabel(self)
+        self.toolbar = self.addToolBar("Project")
         self.current_runner: AgentRunner | None = None
         self._configure_window()
         self._build_layout()
         self._apply_styles()
+        self._build_toolbar()
+        self._setup_status_bar()
         self._connect_signals()
+        self._set_ready_state()
 
     def _configure_window(self) -> None:
         """Configure top-level window properties."""
@@ -47,7 +71,11 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
         layout.addWidget(self.output_view)
-        layout.addWidget(self.input_field)
+        input_row = QHBoxLayout()
+        input_row.addWidget(self.input_field)
+        self.clear_button.setFixedWidth(72)
+        input_row.addWidget(self.clear_button)
+        layout.addLayout(input_row)
         layout.setStretch(0, 1)
         layout.setStretch(1, 0)
         self.setCentralWidget(container)
@@ -79,10 +107,41 @@ class MainWindow(QMainWindow):
             }}
             """
         )
+        self.clear_button.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: #2d2d2d;
+                color: {config.COLORS.text};
+                border: 1px solid #3a3a3a;
+                border-radius: 6px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{
+                border-color: {config.COLORS.accent};
+            }}
+            """
+        )
+
+    def _setup_status_bar(self) -> None:
+        """Initialize the status bar widgets."""
+        self.status_label.setText("Ready")
+        self.directory_label.setText(f"Dir: {self._working_directory}")
+        self.directory_label.setStyleSheet("color: #9e9e9e;")
+        self.status_bar.addWidget(self.status_label, 1)
+        self.status_bar.addPermanentWidget(self.directory_label, 0)
+        self.setStatusBar(self.status_bar)
+
+    def _build_toolbar(self) -> None:
+        """Create the application toolbar."""
+        self.toolbar.setMovable(False)
+        action = QAction("Set Working Directory", self)
+        action.triggered.connect(self._select_working_directory)
+        self.toolbar.addAction(action)
 
     def _connect_signals(self) -> None:
         """Connect widget signals."""
         self.input_field.returnPressed.connect(self._handle_submit)
+        self.clear_button.clicked.connect(self.clear_output)
 
     def _handle_submit(self) -> None:
         """Handle the submission of a prompt."""
@@ -103,11 +162,16 @@ class MainWindow(QMainWindow):
             self.input_field.setEnabled(True)
             self.input_field.setFocus()
             return
-        command = ["gemini", "-p", prompt, "--yolo"]
+        if not self._validate_environment():
+            self.input_field.setEnabled(True)
+            self.input_field.setFocus()
+            return
+        command_prompt = self._build_command_prompt(prompt)
+        command = ["gemini", "-p", command_prompt, "--yolo"]
         try:
             runner = AgentRunner(
                 command=command,
-                working_directory=os.getcwd(),
+                working_directory=self._working_directory,
                 parent=self,
             )
         except ValueError as exc:
@@ -119,13 +183,18 @@ class MainWindow(QMainWindow):
         runner.process_finished.connect(self.handle_process_finished)
         runner.process_error.connect(self.handle_process_error)
         self.current_runner = runner
+        self._set_running_state()
         runner.start()
 
     def display_output(self, text: str, color: str | None = None) -> None:
         """Render output text in the transcript."""
-        chosen_color = color or config.COLORS.agent_output
+        chosen_color = color or self._resolve_line_color(text)
         escaped_text = html.escape(text)
-        payload = f'<span style="color: {chosen_color};">{escaped_text}</span><br>'
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        payload = (
+            f'<span style="color: #888888;">[{timestamp}]</span> '
+            f'<span style="color: {chosen_color}; white-space: pre-wrap;">{escaped_text}</span><br>'
+        )
         cursor = self.output_view.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.output_view.setTextCursor(cursor)
@@ -136,8 +205,10 @@ class MainWindow(QMainWindow):
         """Handle completion of the agent process."""
         if exit_code == 0:
             self.display_output("Agent run completed successfully.", config.COLORS.success)
+            self._set_completed_state()
         else:
             self.display_output(f"Agent exited with code {exit_code}", "#FF6B6B")
+            self._set_error_state()
         self.input_field.setEnabled(True)
         self.input_field.setFocus()
         self.current_runner = None
@@ -145,5 +216,114 @@ class MainWindow(QMainWindow):
     def handle_process_error(self, error: str) -> None:
         """Present an error emitted by the agent process."""
         self.display_output(error, "#FF6B6B")
+        self._set_error_state()
         self.input_field.setEnabled(True)
         self.input_field.setFocus()
+
+    def clear_output(self) -> None:
+        """Clear the output transcript."""
+        self.output_view.clear()
+
+    def set_working_directory(self, path: str) -> None:
+        """Update the working directory for agent runs."""
+        if not path:
+            raise ValueError("Working directory must be provided.")
+        resolved = os.path.abspath(path)
+        if not os.path.isdir(resolved):
+            raise FileNotFoundError(f"Directory does not exist: {resolved}")
+        self._working_directory = resolved
+        self.directory_label.setText(f"Dir: {self._working_directory}")
+        self.display_output(f"Working directory set to {self._working_directory}", config.COLORS.accent)
+
+    def _resolve_line_color(self, text: str) -> str:
+        """Choose a color based on output content."""
+        stripped = text.strip()
+        lowered = text.lower()
+        if stripped.startswith(("✓", "✅")):
+            return config.COLORS.success
+        if "error" in lowered or "failed" in lowered:
+            return "#FF6B6B"
+        if stripped.startswith(("Creating", "Modifying")):
+            return config.COLORS.accent
+        return config.COLORS.agent_output
+
+    def _set_ready_state(self) -> None:
+        """Display the ready state."""
+        self._update_status("Ready", config.COLORS.text)
+
+    def _set_running_state(self) -> None:
+        """Display the running state."""
+        self._update_status("⚡ Running...", config.COLORS.accent)
+
+    def _set_completed_state(self) -> None:
+        """Display the completed state."""
+        self._update_status("Completed", config.COLORS.success)
+
+    def _set_error_state(self) -> None:
+        """Display the error state."""
+        self._update_status("Error", "#FF6B6B")
+
+    def _update_status(self, message: str, color: str) -> None:
+        """Apply text and color to the status indicator."""
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet(f"color: {color}; font-weight: 500;")
+
+    def _select_working_directory(self) -> None:
+        """Prompt the user to choose a working directory."""
+        path = QFileDialog.getExistingDirectory(self, "Select Working Directory", self._working_directory)
+        if not path:
+            return
+        try:
+            self.set_working_directory(path)
+        except (ValueError, FileNotFoundError) as exc:
+            self.display_output(str(exc), "#FF6B6B")
+
+    def _validate_environment(self) -> bool:
+        """Ensure prerequisites are met before starting the agent."""
+        if not os.path.isdir(self._working_directory):
+            self.display_output("Working directory does not exist.", "#FF6B6B")
+            self._set_error_state()
+            return False
+        if not self._check_gemini_cli():
+            self.display_output(
+                "Gemini CLI not found. Ensure it is installed and on PATH.", "#FF6B6B"
+            )
+            self._set_error_state()
+            return False
+        return True
+
+    def _check_gemini_cli(self) -> bool:
+        """Verify the Gemini CLI is accessible."""
+        try:
+            result = subprocess.run(
+                ["gemini", "--version"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                text=True,
+            )
+        except FileNotFoundError:
+            self._gemini_ready = False
+            return False
+        self._gemini_ready = result.returncode == 0
+        return self._gemini_ready
+
+    def _build_command_prompt(self, prompt: str) -> str:
+        """Compose the prompt with project context."""
+        context = self.get_project_context()
+        return f"{context}\n\nTask: {prompt}"
+
+    def get_project_context(self) -> str:
+        """Return a concise description of the workspace."""
+        try:
+            snapshot = scan_directory(self._working_directory, max_depth=2)
+        except (ValueError, FileNotFoundError) as exc:
+            return f"Working in: {self._working_directory}\nFiles: unavailable ({exc})"
+        python_files = [item for item in snapshot["files"] if item.endswith(".py")]
+        directory_lines = "\n".join(f"- {item}" for item in snapshot["directories"]) or "- None"
+        file_lines = "\n".join(f"- {item}" for item in python_files) or "- None"
+        return (
+            f"Working in: {self._working_directory}\n"
+            f"Directories:\n{directory_lines}\n"
+            f"Python files:\n{file_lines}"
+        )
