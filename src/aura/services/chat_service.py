@@ -158,7 +158,7 @@ class ChatService:
     """Streams conversational replies from Gemini with Aura's personality."""
 
     api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
-    model: str = "gemini-1.5-pro"
+    model: str = "gemini-2.5-pro"
     _history: List[ChatMessage] = field(default_factory=list, init=False)
     _client_configured: bool = field(default=False, init=False)
 
