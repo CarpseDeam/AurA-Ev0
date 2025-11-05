@@ -43,6 +43,7 @@ class Orchestrator(QObject):
     session_complete = Signal(int, object)
     all_sessions_complete = Signal()
     error_occurred = Signal(str)
+    progress_update = Signal(str)
 
     def __init__(
         self,
@@ -92,6 +93,10 @@ class Orchestrator(QObject):
             raise ValueError("Agent path must be provided.")
         self._agent_path = agent_path
 
+    def is_running(self) -> bool:
+        """Check if orchestration is currently running."""
+        return self._thread is not None and self._thread.isRunning()
+
     def _move_worker_to_thread(self) -> None:
         """Wire worker signals and move it to the execution thread."""
         assert self._worker is not None and self._thread is not None
@@ -107,6 +112,7 @@ class Orchestrator(QObject):
         self._worker.session_complete.connect(self.session_complete)
         self._worker.all_sessions_complete.connect(self.all_sessions_complete)
         self._worker.error_occurred.connect(self.error_occurred)
+        self._worker.progress_update.connect(self.progress_update)
 
     def _cleanup_worker(self) -> None:
         """Release worker resources after execution."""
@@ -127,6 +133,7 @@ class _ExecutionWorker(QObject):
     session_complete = Signal(int, object)
     all_sessions_complete = Signal()
     error_occurred = Signal(str)
+    progress_update = Signal(str)
 
     def __init__(
         self,
@@ -161,25 +168,38 @@ class _ExecutionWorker(QObject):
 
     def _execute(self) -> None:
         """Perform planning then execute all sessions sequentially."""
+        self.progress_update.emit("Generating session plan...")
         self.planning_started.emit()
         self._event_bus.publish(EventType.PLANNING_STARTED)
         self.session_output.emit("Analyzing request...")
+
+        LOGGER.info("Building project context for planning")
         project_context = self._build_project_context()
+
+        LOGGER.info("Requesting session plan from planning service")
         plan = self._planning_service.plan_sessions(self._goal, project_context)
+
         if not plan or not plan.sessions:
             raise ValueError("Planning produced no sessions.")
+
+        self.progress_update.emit("Session plan ready")
         self.plan_ready.emit(plan)
         self._event_bus.publish(EventType.PLAN_READY, plan=plan)
+
         session_count = len(plan.sessions)
         estimated_minutes = getattr(plan, "total_estimated_minutes", 0)
         self.session_output.emit(f"  ├─ Generated {session_count} sessions")
         self.session_output.emit(f"  └─ Estimated {estimated_minutes} minutes")
+
         all_results: List[SessionResult] = []
         for index, session in enumerate(plan.sessions):
+            self.progress_update.emit(f"Session {index + 1}/{session_count}: {session.name}")
             self.session_output.emit("")
             self.session_output.emit(f"Executing Session {index + 1}/{session_count}: {session.name}")
             self.session_started.emit(index, session)
             self._event_bus.publish(EventType.SESSION_STARTED, index=index, session=session)
+
+            LOGGER.info("Executing session %d/%d: %s", index + 1, session_count, session.name)
             result = self._run_session(index, session)
             self.session_complete.emit(index, result)
             self._event_bus.publish(EventType.SESSION_COMPLETE, index=index, result=result)
@@ -188,8 +208,10 @@ class _ExecutionWorker(QObject):
             if config.AUTO_COMMIT_SESSIONS:
                 if result.success and result.files_created:
                     commit_msg = f"Session {index + 1}: {session.name}"
+                    self.progress_update.emit("Committing changes...")
                     self.session_output.emit("Committing changes...")
                     self.session_output.emit(f"  └─ {commit_msg}")
+                    LOGGER.info("Committing changes: %s", commit_msg)
                     if self._git.commit(commit_msg, result.files_created):
                         self._event_bus.publish(
                             EventType.SESSION_OUTPUT,
@@ -209,23 +231,31 @@ class _ExecutionWorker(QObject):
                 self._event_bus.publish(EventType.ERROR, error=error_message)
                 self.error_occurred.emit(error_message)
                 return
+
+        self.progress_update.emit("All sessions complete")
         self.all_sessions_complete.emit()
         self._event_bus.publish(EventType.ALL_COMPLETE)
         self.session_output.emit("")
         self.session_output.emit("All sessions complete")
+
         total_files = sum(len(result.files_created) for result in all_results)
         total_duration = sum(result.duration_seconds for result in all_results)
         self.session_output.emit(f"  ├─ Created {total_files} files")
+
         if config.AUTO_PUSH_ON_COMPLETE:
+            self.progress_update.emit("Pushing to GitHub...")
             self.session_output.emit("Pushing to GitHub...")
             self._event_bus.publish(EventType.SESSION_OUTPUT, text="Pushing to GitHub...")
+            LOGGER.info("Pushing changes to GitHub")
             if self._git.push():
                 self.session_output.emit("  ├─ ✓ Pushed to GitHub")
                 self._event_bus.publish(EventType.SESSION_OUTPUT, text="  ├─ ✓ Pushed to GitHub")
             else:
                 self.session_output.emit("  ├─ ✗ Push failed")
                 self._event_bus.publish(EventType.ERROR, error="Failed to push to GitHub")
+
         self.session_output.emit(f"  └─ Total time: {total_duration:.1f}s")
+        LOGGER.info("Orchestration complete: %d sessions, %.1fs total", session_count, total_duration)
 
     def _build_project_context(self) -> str:
         """Summarize the working directory for planning."""

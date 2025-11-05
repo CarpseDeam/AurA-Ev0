@@ -283,8 +283,18 @@ class MainWindow(QMainWindow):
 
     def _on_current_plan_changed(self, plan: Optional[SessionPlan]) -> None:
         """Handle current plan change from app state."""
-        # This is a placeholder for future plan-related UI updates
         pass
+
+    def _on_progress_update(self, message: str) -> None:
+        """Handle progress updates from orchestration worker.
+
+        Args:
+            message: Human-readable progress message
+        """
+        if not message:
+            return
+        LOGGER.debug("Progress update: %s", message)
+        self.app_state.set_status(message, config.COLORS.accent)
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to background orchestration events."""
@@ -387,6 +397,27 @@ class MainWindow(QMainWindow):
             f'<span style="color: #888888;">[{timestamp}]</span> '
             f'<span style="color: {chosen_color}; white-space: pre-wrap;">{escaped_text}</span><br>'
         )
+        cursor = self.output_view.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.output_view.setTextCursor(cursor)
+        self.output_view.insertHtml(payload)
+        self.output_view.ensureCursorVisible()
+
+    def append_to_log(self, text: str, color: str | None = None) -> None:
+        """Append streaming text output without clearing existing content.
+
+        This method is optimized for real-time streaming updates and automatically
+        scrolls to show the newest content. Thread-safe via Qt's signal/slot mechanism.
+
+        Args:
+            text: Text to append to the log
+            color: Optional CSS color for the text
+        """
+        if not text:
+            return
+        chosen_color = color or config.COLORS.agent_output
+        escaped_text = html.escape(text)
+        payload = f'<span style="color: {chosen_color}; white-space: pre-wrap;">{escaped_text}</span><br>'
         cursor = self.output_view.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.output_view.setTextCursor(cursor)

@@ -76,15 +76,21 @@ class ApplicationController:
         if not self.main_window or not self.app_state:
             return
 
-        # Connect working directory changes to orchestrator
         if self.orchestrator:
             self.app_state.working_directory_changed.connect(
                 self._on_working_directory_changed
             )
 
-            # Connect execution requests from UI to orchestrator
             self.main_window.execution_requested.connect(
                 self.orchestrator.execute_goal
+            )
+
+            self.orchestrator.progress_update.connect(
+                self.main_window._on_progress_update
+            )
+
+            self.orchestrator.session_output.connect(
+                self.main_window.append_to_log
             )
 
     def _on_working_directory_changed(self, path: str) -> None:
@@ -93,40 +99,47 @@ class ApplicationController:
         Args:
             path: New working directory path
         """
-        if self.orchestrator:
-            # Recreate orchestrator with new working directory
-            self.orchestrator = Orchestrator(
-                self.planning_service,
-                path,
-                self.app_state.agent_path,
-                api_key=os.getenv("GEMINI_API_KEY", ""),
-            )
-            # Reconnect orchestrator signals to main window
-            self.orchestrator.planning_started.connect(
-                self.main_window._on_planning_started
-            )
-            self.orchestrator.plan_ready.connect(
-                self.main_window._on_plan_ready
-            )
-            self.orchestrator.session_started.connect(
-                self.main_window._on_session_started
-            )
-            self.orchestrator.session_output.connect(
-                self.main_window._on_session_output
-            )
-            self.orchestrator.session_complete.connect(
-                self.main_window._on_session_complete
-            )
-            self.orchestrator.all_sessions_complete.connect(
-                self.main_window._on_all_complete
-            )
-            self.orchestrator.error_occurred.connect(
-                self.main_window._on_error
-            )
-            # Reconnect execution request signal
-            self.main_window.execution_requested.connect(
-                self.orchestrator.execute_goal
-            )
+        if not self.orchestrator:
+            return
+
+        self.orchestrator = Orchestrator(
+            self.planning_service,
+            path,
+            self.app_state.agent_path,
+            api_key=os.getenv("GEMINI_API_KEY", ""),
+        )
+
+        self.orchestrator.planning_started.connect(
+            self.main_window._on_planning_started
+        )
+        self.orchestrator.plan_ready.connect(
+            self.main_window._on_plan_ready
+        )
+        self.orchestrator.session_started.connect(
+            self.main_window._on_session_started
+        )
+        self.orchestrator.session_output.connect(
+            self.main_window._on_session_output
+        )
+        self.orchestrator.session_output.connect(
+            self.main_window.append_to_log
+        )
+        self.orchestrator.session_complete.connect(
+            self.main_window._on_session_complete
+        )
+        self.orchestrator.all_sessions_complete.connect(
+            self.main_window._on_all_complete
+        )
+        self.orchestrator.error_occurred.connect(
+            self.main_window._on_error
+        )
+        self.orchestrator.progress_update.connect(
+            self.main_window._on_progress_update
+        )
+
+        self.main_window.execution_requested.connect(
+            self.orchestrator.execute_goal
+        )
 
 
 def _create_application() -> QApplication:
