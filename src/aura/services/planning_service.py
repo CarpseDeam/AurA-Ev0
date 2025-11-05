@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterator, List
 
-from aura.services.chat_service import ChatService
+from src.aura.services import ChatService
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,6 +22,14 @@ Rules:
 5. No file over 200 lines
 6. Clear, specific deliverables
 
+SESSION NAMING RULES (CRITICAL):
+- Names must be 2-5 words MAX
+- Be SPECIFIC, not generic
+- Use concrete nouns: "User Authentication Model" not "Main Setup"
+- Avoid vague words: implementation, setup, main, core, general, add features
+- Good examples: "User Login Routes", "Password Hashing Utility", "Database Schema"
+- Bad examples: "Core Implementation", "Main Setup", "Add Features"
+
 User goal: {goal}
 
 Project context:
@@ -31,16 +39,16 @@ Return JSON:
 {{
   "sessions": [
     {{
-      "name": "User Authentication Model",
+      "name": "User Model Class",
       "prompt": "Create User model class with fields: id, email, password_hash. Include bcrypt hashing utility. File: models/user.py",
       "estimated_minutes": 15,
       "dependencies": []
     }},
     {{
-      "name": "Auth Routes",
+      "name": "Login Logout Routes",
       "prompt": "Create login/logout endpoints using User model from models/user.py. Do NOT recreate User model. File: routes/auth.py",
       "estimated_minutes": 12,
-      "dependencies": ["User Authentication Model"]
+      "dependencies": ["User Model Class"]
     }}
   ],
   "total_estimated_minutes": 27,

@@ -1,2 +1,8 @@
+# GUI Framework
 PySide6>=6.7,<7
+
+# AI Integration
 google-generativeai>=0.8.0
+
+# Testing
+pytest>=8.0.0
