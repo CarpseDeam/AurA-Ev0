@@ -43,7 +43,12 @@ class MainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the main window."""
         super().__init__(parent)
-        self._working_directory = os.getcwd()
+        # --- New Default Directory Logic ---
+        app_source_path = Path(__file__).resolve().parent.parent.parent
+        workspace_path = app_source_path / "workspace"
+        workspace_path.mkdir(exist_ok=True)
+        self._working_directory = str(workspace_path)
+        # --- End New Logic ---
         self._selected_agent: str = config.DEFAULT_AGENT
         self._agent_path: str = ""
         self.output_view = QTextEdit(self)
@@ -70,8 +75,9 @@ class MainWindow(QMainWindow):
         self._subscribe_to_events()
         self._event_received.connect(self._handle_event)
 
-        app_source = str(Path(__file__).parent.parent.parent)
+        app_source = str(app_source_path)
         is_safe_start, _ = is_safe_working_directory(self._working_directory, app_source)
+        # This check should now always pass on startup, but we keep it for safety
         if not is_safe_start:
             self.display_output("⚠️ Starting in Aura's source directory is unsafe.", "#FFB74D")
             self.display_output("Please use 'Set Working Directory' to choose a project folder.", "#FFB74D")
