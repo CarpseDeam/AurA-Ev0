@@ -25,14 +25,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from aura import config
-from aura.events import Event, EventType, get_event_bus
-from aura.orchestrator import SessionResult
-from aura.services import AgentRunner
-from aura.services.planning_service import Session, SessionPlan
-from aura.ui.agent_settings_dialog import AgentSettingsDialog
-from aura.utils import scan_directory
-from aura.utils.agent_finder import find_cli_agents
+from src.aura import config
+from src.aura.events import get_event_bus, EventType, Event
+from src.aura.orchestrator import Orchestrator, SessionResult
+from src.aura.services import AgentRunner, ChatService
+from src.aura.services.chat_service import get_session_context_manager
+from src.aura.services.planning_service import SessionPlan, PlanningService, Session
+from src.aura.ui import AgentSettingsDialog
+from src.aura.utils import find_cli_agents, scan_directory
 
 LOGGER = logging.getLogger(__name__)
 
@@ -45,13 +45,10 @@ class MainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the main window."""
         super().__init__(parent)
-        # --- Default Workspace Logic ---
         app_source_path = Path(__file__).resolve().parent.parent.parent
-        # Create workspace as SIBLING to Aura source, not child
         workspace_path = app_source_path.parent / "aura-workspace"
         workspace_path.mkdir(parents=True, exist_ok=True)
         self._working_directory = str(workspace_path)
-        # --- End Workspace Logic ---
         self._selected_agent: str = config.DEFAULT_AGENT
         self._agent_path: str = ""
         self.output_view = QTextEdit(self)
@@ -78,11 +75,9 @@ class MainWindow(QMainWindow):
         self._subscribe_to_events()
         self._event_received.connect(self._handle_event)
 
-        # Initialize orchestration services
         api_key = os.getenv("GEMINI_API_KEY", "")
         if api_key:
-            from aura.services import ChatService, PlanningService
-            from aura.orchestrator import Orchestrator
+
 
             self.chat_service = ChatService(api_key=api_key)
             self.planning_service = PlanningService(self.chat_service)
@@ -95,10 +90,10 @@ class MainWindow(QMainWindow):
             )
             self._connect_orchestrator_signals()
             self._display_startup_header()
-            self.display_output("✨ Aura orchestration ready", config.COLORS.success)
+            self.display_output("Aura orchestration ready", config.COLORS.success)
         else:
             self.orchestrator = None
-            self.display_output("⚠️ Set GEMINI_API_KEY for orchestration features", "#FFB74D")
+            self.display_output("Set GEMINI_API_KEY for orchestration features", "#FFB74D")
 
         self._detect_default_agent()
 
@@ -236,20 +231,18 @@ class MainWindow(QMainWindow):
 
     def _setup_status_bar(self) -> None:
         """Initialize the status bar widgets with modern styling."""
-        self.status_label.setText("● Ready")
+        self.status_label.setText("Ready")
         self.status_label.setStyleSheet(
             f"color: {config.COLORS.text}; font-weight: 500; padding: 4px 8px;"
         )
 
-        # Create a visual separator
-        separator = QLabel("│")
+        separator = QLabel("|")
         separator.setStyleSheet("color: #3d3d3d; padding: 0 8px;")
 
-        # Style directory label with icon
         dir_short = self._working_directory
         if len(dir_short) > 50:
             dir_short = "..." + dir_short[-47:]
-        self.directory_label.setText(f"📁 {dir_short}")
+        self.directory_label.setText(f"{dir_short}")
         self.directory_label.setStyleSheet(
             "color: #9e9e9e; padding: 4px 8px; font-size: 12px;"
         )
@@ -319,7 +312,6 @@ class MainWindow(QMainWindow):
         approval_keywords = {"start", "yes", "go", "build it", "lets do it", "let's do it"}
         if self._current_plan and normalized in approval_keywords:
             self.input_field.setEnabled(False)
-            # Plan already generated, orchestrator will execute
             return
         if self._should_orchestrate(prompt):
             self.input_field.setEnabled(False)
@@ -382,18 +374,17 @@ class MainWindow(QMainWindow):
         self.output_view.ensureCursorVisible()
 
     def _display_startup_header(self) -> None:
-        """Display gorgeous ASCII art header with gradient colors on startup."""
-        # Use HTML with proper monospace font for clean rendering
+        """Display ASCII art header with gradient colors on startup."""
         header_html = """
-        <div style="font-family: 'Courier New', monospace; line-height: 1.2; margin: 16px 0;">
-            <div style="color: #5294E2;">    ╔═══════════════════════════════════════════╗</div>
-            <div style="color: #6B7FEE;">    ║   <span style="color: #7B68EE;">█████╗ ██╗   ██╗██████╗  █████╗</span>   ║</div>
-            <div style="color: #8875E8;">    ║  <span style="color: #9370DB;">██╔══██╗██║   ██║██╔══██╗██╔══██╗</span>  ║</div>
-            <div style="color: #A565DD;">    ║  <span style="color: #BA55D3;">███████║██║   ██║██████╔╝███████║</span>  ║</div>
-            <div style="color: #C25DD8;">    ║  <span style="color: #DA70D6;">██╔══██║╚██╗ ██╔╝██╔══██╗██╔══██║</span>  ║</div>
-            <div style="color: #DA6FD7;">    ║  <span style="color: #EE82EE;">██║  ██║ ╚████╔╝ ██║  ██║██║  ██║</span>  ║</div>
-            <div style="color: #EE7CC9;">    ║  <span style="color: #FF69B4;">╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═╝</span>  ║</div>
-            <div style="color: #FF4EA3;">    ╚═══════════════════════════════════════════╝</div>
+        <div style="font-family: 'Courier New', 'Consolas', monospace; font-size: 18px; line-height: 1.1; margin: 20px 0; white-space: pre;">
+<span style="color: #5294E2;">╔═══════════════════════════════════════════╗</span>
+<span style="color: #6B7FEE;">║   </span><span style="color: #7B68EE;">█████╗ ██╗   ██╗██████╗  █████╗</span><span style="color: #6B7FEE;">   ║</span>
+<span style="color: #8875E8;">║  </span><span style="color: #9370DB;">██╔══██╗██║   ██║██╔══██╗██╔══██╗</span><span style="color: #8875E8;">  ║</span>
+<span style="color: #A565DD;">║  </span><span style="color: #BA55D3;">███████║██║   ██║██████╔╝███████║</span><span style="color: #A565DD;">  ║</span>
+<span style="color: #C25DD8;">║  </span><span style="color: #DA70D6;">██╔══██║╚██╗ ██╔╝██╔══██╗██╔══██║</span><span style="color: #C25DD8;">  ║</span>
+<span style="color: #DA6FD7;">║  </span><span style="color: #EE82EE;">██║  ██║ ╚████╔╝ ██║  ██║██║  ██║</span><span style="color: #DA6FD7;">  ║</span>
+<span style="color: #EE7CC9;">║  </span><span style="color: #FF69B4;">╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═╝</span><span style="color: #EE7CC9;">  ║</span>
+<span style="color: #FF4EA3;">╚═══════════════════════════════════════════╝</span>
         </div>
         """
         cursor = self.output_view.textCursor()
@@ -418,24 +409,23 @@ class MainWindow(QMainWindow):
         self._current_plan = None
         self._set_running_state()
         self.input_field.setEnabled(False)
-        self.display_output("🧠 Aura is analyzing your request and planning sessions...", config.COLORS.accent)
+        self.display_output("Analyzing request and planning sessions...", config.COLORS.accent)
 
     def _on_plan_ready(self, plan: SessionPlan) -> None:
         """Handle plan ready signal with formatted display."""
         if isinstance(plan, SessionPlan):
             self._current_plan = plan
-            # Display formatted plan
-            self.display_output("", config.COLORS.agent_output)  # Blank line for spacing
-            self.display_output("📋 Session Plan", config.COLORS.accent)
+            self.display_output("", config.COLORS.agent_output)
+            self.display_output("Session Plan", config.COLORS.accent)
             self.display_output(f"   Total sessions: {len(plan.sessions)}", config.COLORS.agent_output)
             self.display_output(f"   Estimated time: {plan.total_estimated_minutes} minutes", config.COLORS.agent_output)
 
             if plan.reasoning:
                 self.display_output("", config.COLORS.agent_output)
-                self.display_output(f"💡 Reasoning: {plan.reasoning}", config.COLORS.agent_output)
+                self.display_output(f"Reasoning: {plan.reasoning}", config.COLORS.agent_output)
 
             self.display_output("", config.COLORS.agent_output)
-            self.display_output("📝 Sessions:", config.COLORS.accent)
+            self.display_output("Sessions:", config.COLORS.accent)
 
             for idx, session in enumerate(plan.sessions, start=1):
                 self.display_output(
@@ -447,10 +437,10 @@ class MainWindow(QMainWindow):
                     self.display_output(f"      Dependencies: {deps}", "#888888")
 
             self.display_output("", config.COLORS.agent_output)
-            self.display_output("✨ Type 'start' when ready to begin building.", config.COLORS.success)
+            self.display_output("Type 'start' when ready to begin building.", config.COLORS.success)
         else:
             self._current_plan = None
-            self.display_output("❌ Received invalid plan data.", "#FF6B6B")
+            self.display_output("Received invalid plan data.", "#FF6B6B")
 
         self.input_field.setEnabled(True)
         self.input_field.setFocus()
@@ -460,10 +450,10 @@ class MainWindow(QMainWindow):
         total = len(self._current_plan.sessions) if self._current_plan else "?"
         name = getattr(session, "name", "Unknown session")
         self._set_running_state()
-        self.display_output("", config.COLORS.agent_output)  # Blank line
-        self.display_output("╔" + "═" * 60 + "╗", "#7B68EE")
-        self.display_output(f"║ ▶️  Session {index + 1}/{total}: {name}", config.COLORS.accent)
-        self.display_output("╚" + "═" * 60 + "╝", "#7B68EE")
+        self.display_output("", config.COLORS.agent_output)
+        self.display_output("=" * 60, "#7B68EE")
+        self.display_output(f"Session {index + 1}/{total}: {name}", config.COLORS.accent)
+        self.display_output("=" * 60, "#7B68EE")
 
     def _on_session_output(self, text: str) -> None:
         """Handle session output signal."""
@@ -479,25 +469,25 @@ class MainWindow(QMainWindow):
         success = getattr(result, "success", False)
         name = getattr(result, "session_name", f"Session {index + 1}")
 
-        prefix = "✅" if success else "❌"
+        prefix = "Session complete" if success else "Session failed"
         color = config.COLORS.success if success else "#FF6B6B"
 
         self.display_output(
-            f"{prefix} {name} completed in {duration:.1f}s",
+            f"{prefix} in {duration:.1f}s",
             color,
         )
 
         if files:
             self.display_output(f"   Files created/modified:", config.COLORS.agent_output)
             for file_path in files:
-                self.display_output(f"      • {file_path}", config.COLORS.agent_output)
+                self.display_output(f"      {file_path}", config.COLORS.agent_output)
 
     def _on_all_complete(self) -> None:
         """Handle all sessions complete signal."""
         self._current_plan = None
         self._set_completed_state()
-        self.display_output("", config.COLORS.agent_output)  # Blank line
-        self.display_output("🎉 All sessions complete! Your code is ready.", config.COLORS.success)
+        self.display_output("", config.COLORS.agent_output)
+        self.display_output("All sessions complete", config.COLORS.success)
         self.input_field.setEnabled(True)
         self.input_field.setFocus()
 
@@ -505,7 +495,7 @@ class MainWindow(QMainWindow):
         """Handle error signal."""
         self._last_error_message = error
         self._set_error_state()
-        self.display_output(f"❌ Error: {error}", "#FF6B6B")
+        self.display_output(f"Error: {error}", "#FF6B6B")
         self.input_field.setEnabled(True)
         self.input_field.setFocus()
         self._current_plan = None
@@ -513,7 +503,7 @@ class MainWindow(QMainWindow):
     def _format_plan(self, plan: SessionPlan) -> List[str]:
         """Format the session plan for display."""
         lines: List[str] = [
-            "🧠 Session Plan",
+            "Session Plan",
             f"Total estimate: {plan.total_estimated_minutes} minutes",
         ]
         for idx, session in enumerate(plan.sessions, start=1):
@@ -558,7 +548,6 @@ class MainWindow(QMainWindow):
         if self.chat_service:
             self.chat_service.clear_session_context()
         else:
-            from aura.services.chat_service import get_session_context_manager
             get_session_context_manager().clear()
         LOGGER.info("Cleared session context due to working directory change: %s", self._working_directory)
         self.directory_label.setText(f"Dir: {self._working_directory}")
@@ -568,7 +557,7 @@ class MainWindow(QMainWindow):
         """Choose a color based on output content."""
         stripped = text.strip()
         lowered = text.lower()
-        if stripped.startswith(("✓", "✅")):
+        if stripped.startswith(("Session complete")):
             return config.COLORS.success
         if "error" in lowered or "failed" in lowered:
             return "#FF6B6B"
@@ -582,7 +571,7 @@ class MainWindow(QMainWindow):
 
     def _set_running_state(self) -> None:
         """Display the running state."""
-        self._update_status("⚡ Running...", config.COLORS.accent)
+        self._update_status("Running...", config.COLORS.accent)
 
     def _set_completed_state(self) -> None:
         """Display the completed state."""
@@ -673,4 +662,3 @@ class MainWindow(QMainWindow):
             f"Directories:\n{directory_lines}\n"
             f"Python files:\n{file_lines}"
         )
-

@@ -185,20 +185,21 @@ class _ExecutionWorker(QObject):
             self._event_bus.publish(EventType.SESSION_COMPLETE, index=index, result=result)
             self._update_context(index, session, result)
             all_results.append(result)
-            if result.success and result.files_created:
-                commit_msg = f"Session {index + 1}: {session.name}"
-                self.session_output.emit("Committing changes...")
-                self.session_output.emit(f"  └─ {commit_msg}")
-                if self._git.commit(commit_msg, result.files_created):
-                    self._event_bus.publish(
-                        EventType.SESSION_OUTPUT,
-                        text=f"  └─ {commit_msg}",
-                    )
-                else:
-                    self._event_bus.publish(
-                        EventType.ERROR,
-                        error=f"Failed to commit changes for {commit_msg}",
-                    )
+            if config.AUTO_COMMIT_SESSIONS:
+                if result.success and result.files_created:
+                    commit_msg = f"Session {index + 1}: {session.name}"
+                    self.session_output.emit("Committing changes...")
+                    self.session_output.emit(f"  └─ {commit_msg}")
+                    if self._git.commit(commit_msg, result.files_created):
+                        self._event_bus.publish(
+                            EventType.SESSION_OUTPUT,
+                            text=f"  └─ {commit_msg}",
+                        )
+                    else:
+                        self._event_bus.publish(
+                            EventType.ERROR,
+                            error=f"Failed to commit changes for {commit_msg}",
+                        )
             if result.success:
                 self.session_output.emit(f"  └─ ✓ Complete in {result.duration_seconds:.1f}s")
             else:
@@ -215,14 +216,15 @@ class _ExecutionWorker(QObject):
         total_files = sum(len(result.files_created) for result in all_results)
         total_duration = sum(result.duration_seconds for result in all_results)
         self.session_output.emit(f"  ├─ Created {total_files} files")
-        self.session_output.emit("Pushing to GitHub...")
-        self._event_bus.publish(EventType.SESSION_OUTPUT, text="Pushing to GitHub...")
-        if self._git.push():
-            self.session_output.emit("  ├─ ✓ Pushed to GitHub")
-            self._event_bus.publish(EventType.SESSION_OUTPUT, text="  ├─ ✓ Pushed to GitHub")
-        else:
-            self.session_output.emit("  ├─ ✗ Push failed")
-            self._event_bus.publish(EventType.ERROR, error="Failed to push to GitHub")
+        if config.AUTO_PUSH_ON_COMPLETE:
+            self.session_output.emit("Pushing to GitHub...")
+            self._event_bus.publish(EventType.SESSION_OUTPUT, text="Pushing to GitHub...")
+            if self._git.push():
+                self.session_output.emit("  ├─ ✓ Pushed to GitHub")
+                self._event_bus.publish(EventType.SESSION_OUTPUT, text="  ├─ ✓ Pushed to GitHub")
+            else:
+                self.session_output.emit("  ├─ ✗ Push failed")
+                self._event_bus.publish(EventType.ERROR, error="Failed to push to GitHub")
         self.session_output.emit(f"  └─ Total time: {total_duration:.1f}s")
 
     def _build_project_context(self) -> str:
