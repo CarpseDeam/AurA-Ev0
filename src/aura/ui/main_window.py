@@ -60,7 +60,6 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._setup_status_bar()
         self._connect_signals()
-        self._detect_default_agent()
         self._set_ready_state()
         self._current_plan: Optional[SessionPlan] = None
         self.chat_service = None
@@ -98,6 +97,8 @@ class MainWindow(QMainWindow):
         else:
             self.orchestrator = None
             self.display_output("⚠️ Set GEMINI_API_KEY for orchestration features", "#FFB74D")
+
+        self._detect_default_agent()
 
     def _configure_window(self) -> None:
         """Configure top-level window properties."""

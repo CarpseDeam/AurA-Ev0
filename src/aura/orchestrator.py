@@ -163,7 +163,7 @@ class _ExecutionWorker(QObject):
         self._event_bus.publish(EventType.PLANNING_STARTED)
         project_context = self._build_project_context()
         plan = self._planning_service.plan_sessions(self._goal, project_context)
-        if not plan.sessions:
+        if not plan or not plan.sessions:
             raise ValueError("Planning produced no sessions.")
         self.plan_ready.emit(plan)
         self._event_bus.publish(EventType.PLAN_READY, plan=plan)

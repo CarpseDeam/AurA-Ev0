@@ -158,7 +158,7 @@ class ChatService:
     """Streams conversational replies from Gemini with Aura's personality."""
 
     api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
-    model: str = "gemini-2.5-pro"
+    model: str = "gemini-1.5-pro"
     _history: List[ChatMessage] = field(default_factory=list, init=False)
     _client_configured: bool = field(default=False, init=False)
 
@@ -168,7 +168,6 @@ class ChatService:
             raise ValueError("GEMINI_API_KEY environment variable must be set.")
         genai.configure(api_key=self.api_key)
         self._client_configured = True
-        self._append_system_prompt()
 
     def send_message(self, message: str) -> Iterator[str]:
         """Send a message and yield the streaming response."""
@@ -217,11 +216,4 @@ class ChatService:
     def clear_history(self) -> None:
         """Reset the conversation history."""
         self._history.clear()
-        self._append_system_prompt()
 
-    def _append_system_prompt(self) -> None:
-        """Ensure the system prompt is first in the history."""
-        if self._history and self._history[0].role == "system":
-            self._history[0] = ChatMessage(role="system", content=AURA_SYSTEM_PROMPT)
-        else:
-            self._history.insert(0, ChatMessage(role="system", content=AURA_SYSTEM_PROMPT))
