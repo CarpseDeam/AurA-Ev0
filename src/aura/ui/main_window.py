@@ -43,12 +43,13 @@ class MainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the main window."""
         super().__init__(parent)
-        # --- New Default Directory Logic ---
+        # --- Default Workspace Logic ---
         app_source_path = Path(__file__).resolve().parent.parent.parent
-        workspace_path = app_source_path / "workspace"
-        workspace_path.mkdir(exist_ok=True)
+        # Create workspace as SIBLING to Aura source, not child
+        workspace_path = app_source_path.parent / "aura-workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
         self._working_directory = str(workspace_path)
-        # --- End New Logic ---
+        # --- End Workspace Logic ---
         self._selected_agent: str = config.DEFAULT_AGENT
         self._agent_path: str = ""
         self.output_view = QTextEdit(self)
