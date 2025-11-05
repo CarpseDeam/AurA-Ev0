@@ -2,38 +2,32 @@
 
 from __future__ import annotations
 
-import html
 import logging
-import os
-import subprocess
-from datetime import datetime
-from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QAction, QFont, QTextCursor, QTextOption
+from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMainWindow,
     QPushButton,
     QStatusBar,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from src.aura import config
-from src.aura.events import get_event_bus, EventType, Event
-from src.aura.orchestrator import Orchestrator, SessionResult
-from src.aura.services import AgentRunner, ChatService
-from src.aura.services.chat_service import get_session_context_manager
-from src.aura.services.planning_service import SessionPlan, PlanningService, Session
+from src.aura.events import Event, EventType, get_event_bus
+from src.aura.orchestrator import Orchestrator
+from src.aura.services import AgentRunner
 from src.aura.state import AppState
 from src.aura.ui import AgentSettingsDialog
-from src.aura.utils import find_cli_agents, scan_directory
+from src.aura.ui.agent_execution_manager import AgentExecutionManager
+from src.aura.ui.orchestration_handler import OrchestrationHandler
+from src.aura.ui.output_panel import OutputPanel
+from src.aura.ui.status_bar_manager import StatusBarManager
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,662 +41,207 @@ class MainWindow(QMainWindow):
     def __init__(
         self,
         app_state: AppState,
-        orchestrator: Orchestrator | None = None,
-        parent: QWidget | None = None,
+        orchestrator: Optional[Orchestrator] = None,
+        parent: Optional[QWidget] = None,
     ) -> None:
-        """Initialize the main window.
-
-        Args:
-            app_state: Application state manager
-            orchestrator: Optional orchestrator instance (for dependency injection)
-            parent: Optional parent widget
-        """
         super().__init__(parent)
         self.app_state = app_state
         self.orchestrator = orchestrator
-        self.output_view = QTextEdit(self)
-        self.input_field = QLineEdit(self)
-        self.clear_button = QPushButton("Clear", self)
-        self.status_bar = QStatusBar(self)
-        self.status_label = QLabel(self)
-        self.directory_label = QLabel(self)
+        self.output_panel = OutputPanel(self)
+        self.input_field = QLineEdit(self); self.clear_button = QPushButton("Clear", self)
         self.toolbar = self.addToolBar("Project")
-        self.current_runner: AgentRunner | None = None
-        self._event_bus = get_event_bus()
-        self._last_error_message: Optional[str] = None
+        self.current_runner: Optional[AgentRunner] = None; self._event_bus = get_event_bus()
 
-        # Setup UI
-        self._configure_window()
-        self._build_layout()
-        self._apply_styles()
-        self._build_toolbar()
-        self._setup_status_bar()
-        self._connect_signals()
-        self._connect_app_state_signals()
-        self._subscribe_to_events()
-        self._event_received.connect(self._handle_event)
+        status_bar = QStatusBar(self); self.status_bar_manager = StatusBarManager(status_bar, self.app_state, self)
+        self.setStatusBar(self.status_bar_manager.status_bar)
 
-        # Set initial state
-        self.app_state.set_status("Ready", config.COLORS.text)
+        self.orchestration_handler = OrchestrationHandler(
+            output_panel=self.output_panel,
+            status_manager=self.status_bar_manager,
+            app_state=self.app_state,
+            parent=self,
+        )
+        self.agent_manager = AgentExecutionManager(
+            app_state=self.app_state,
+            output_panel=self.output_panel,
+            status_manager=self.status_bar_manager,
+            orchestrator=self.orchestrator,
+        )
 
-        # Connect orchestrator signals if provided
+        self._configure_window(); self._build_layout(); self._apply_styles(); self._build_toolbar()
+        self._connect_signals(); self._connect_handler_signals(); self._subscribe_to_events()
+        self._event_received.connect(self.orchestration_handler.handle_background_event)
+
+        self.status_bar_manager.update_status("Ready", config.COLORS.text, persist=True)
+
         if self.orchestrator:
             self._connect_orchestrator_signals()
-            self._display_startup_header()
-            self.display_output("Aura orchestration ready", config.COLORS.success)
+            self.output_panel.display_startup_header()
+            self.output_panel.display_output("Aura orchestration ready", config.COLORS.success)
 
-        self._detect_default_agent()
+        self.agent_manager.detect_default_agent()
 
     def _configure_window(self) -> None:
-        """Configure top-level window properties."""
-        self.setWindowTitle("Aura")
-        self.resize(*config.WINDOW_DIMENSIONS)
-        self.output_view.setReadOnly(True)
-        self.output_view.setAcceptRichText(True)
-        self.output_view.setWordWrapMode(QTextOption.WrapMode.WordWrap)
-        self.input_field.setPlaceholderText("Enter a request")
-        self.input_field.setClearButtonEnabled(True)
+        self.setWindowTitle("Aura"); self.resize(*config.WINDOW_DIMENSIONS)
         font = QFont(config.FONT_FAMILY)
-        self.output_view.setFont(font)
-        self.input_field.setFont(font)
-        self.input_field.setFocus()
+        self.output_panel.text_edit.setFont(font)
+        self.input_field.setPlaceholderText("Enter a request"); self.input_field.setClearButtonEnabled(True)
+        self.input_field.setFont(font); self.input_field.setFocus()
 
     def _build_layout(self) -> None:
-        """Create and assign the central layout."""
         container = QWidget(self)
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-        layout.addWidget(self.output_view)
+        layout.setContentsMargins(16, 16, 16, 16); layout.setSpacing(12); layout.addWidget(self.output_panel)
         input_row = QHBoxLayout()
-        input_row.addWidget(self.input_field)
-        self.clear_button.setFixedWidth(72)
-        input_row.addWidget(self.clear_button)
-        layout.addLayout(input_row)
-        layout.setStretch(0, 1)
-        layout.setStretch(1, 0)
-        self.setCentralWidget(container)
+        input_row.addWidget(self.input_field); self.clear_button.setFixedWidth(72); input_row.addWidget(self.clear_button)
+        layout.addLayout(input_row); layout.setStretch(0, 1); layout.setStretch(1, 0); self.setCentralWidget(container)
 
     def _apply_styles(self) -> None:
-        """Apply the modern dark theme styling with gradients and polish."""
         self.setStyleSheet(
-            f"""
-            QMainWindow {{
-                background: qlineargradient(
-                    x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #1a1a1a,
-                    stop:1 {config.COLORS.background}
-                );
-                color: {config.COLORS.text};
-            }}
-            QTextEdit {{
-                background: qlineargradient(
-                    x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #1a1a1a,
-                    stop:1 #1e1e1e
-                );
-                color: {config.COLORS.text};
-                border: 2px solid #2d2d2d;
-                border-radius: 12px;
-                padding: 16px;
-                selection-background-color: {config.COLORS.accent};
-            }}
-            QTextEdit:focus {{
-                border-color: {config.COLORS.accent};
-            }}
-            QLineEdit {{
-                background: qlineargradient(
-                    x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #262626,
-                    stop:1 #1f1f1f
-                );
-                color: {config.COLORS.text};
-                border: 2px solid #3a3a3a;
-                border-radius: 10px;
-                padding: 10px 14px;
-                font-size: 13px;
-            }}
-            QLineEdit:focus {{
-                border-color: {config.COLORS.accent};
-                background: qlineargradient(
-                    x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #2a2a2a,
-                    stop:1 #222222
-                );
-            }}
-            QStatusBar {{
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #1a1a1a,
-                    stop:1 #222222
-                );
-                color: {config.COLORS.text};
-                border-top: 2px solid #2d2d2d;
-                padding: 6px;
-            }}
-            QToolBar {{
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #1a1a1a,
-                    stop:1 #222222
-                );
-                border-bottom: 2px solid #2d2d2d;
-                spacing: 8px;
-                padding: 4px;
-            }}
-            """
+            "QMainWindow {{background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a1a1a, stop:1 "
+            f"{config.COLORS.background}); color: {config.COLORS.text};}}"
+            "QTextEdit {{background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a1a1a, stop:1 #1e1e1e); "
+            f"color: {config.COLORS.text}; border: 2px solid #2d2d2d; border-radius: 12px; padding: 16px; "
+            f"selection-background-color: {config.COLORS.accent};}}"
+            f"QTextEdit:focus {{border-color: {config.COLORS.accent};}}"
+            "QLineEdit {{background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #262626, stop:1 #1f1f1f); "
+            f"color: {config.COLORS.text}; border: 2px solid #3a3a3a; border-radius: 10px; padding: 10px 14px; "
+            "font-size: 13px;}}"
+            "QLineEdit:focus {{border-color: "
+            f"{config.COLORS.accent}; background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2a2a2a, stop:1 #222222);}}"
+            "QStatusBar {{background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1a1a1a, stop:1 #222222); "
+            f"color: {config.COLORS.text}; border-top: 2px solid #2d2d2d; padding: 6px;}}"
+            "QToolBar {{background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1a1a1a, stop:1 #222222); "
+            "border-bottom: 2px solid #2d2d2d; spacing: 8px; padding: 4px;}}"
         )
         self.clear_button.setStyleSheet(
-            f"""
-            QPushButton {{
-                background: qlineargradient(
-                    x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #323232,
-                    stop:1 #282828
-                );
-                color: {config.COLORS.text};
-                border: 2px solid #3d3d3d;
-                border-radius: 10px;
-                padding: 8px 16px;
-                font-weight: 500;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{
-                border-color: {config.COLORS.accent};
-                background: qlineargradient(
-                    x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #3a3a3a,
-                    stop:1 #2d2d2d
-                );
-            }}
-            QPushButton:pressed {{
-                background: qlineargradient(
-                    x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #252525,
-                    stop:1 #1f1f1f
-                );
-            }}
-            """
+            "QPushButton {{background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #323232, stop:1 #282828); "
+            f"color: {config.COLORS.text}; border: 2px solid #3a3a3a; border-radius: 10px; padding: 8px 12px; "
+            "font-weight: 500;}}"
+            f"QPushButton:hover {{border-color: {config.COLORS.accent};}}"
+            "QPushButton:pressed {{background: #222222;}}"
         )
-
-    def _setup_status_bar(self) -> None:
-        """Initialize the status bar widgets with modern styling."""
-        self.status_label.setText("Ready")
-        self.status_label.setStyleSheet(
-            f"color: {config.COLORS.text}; font-weight: 500; padding: 4px 8px;"
-        )
-
-        separator = QLabel("|")
-        separator.setStyleSheet("color: #3d3d3d; padding: 0 8px;")
-
-        dir_short = self.app_state.working_directory
-        if len(dir_short) > 50:
-            dir_short = "..." + dir_short[-47:]
-        self.directory_label.setText(f"{dir_short}")
-        self.directory_label.setStyleSheet(
-            "color: #9e9e9e; padding: 4px 8px; font-size: 12px;"
-        )
-
-        self.status_bar.addWidget(self.status_label, 0)
-        self.status_bar.addWidget(separator, 0)
-        self.status_bar.addPermanentWidget(self.directory_label, 1)
-        self.setStatusBar(self.status_bar)
 
     def _build_toolbar(self) -> None:
-        """Create the application toolbar."""
         self.toolbar.setMovable(False)
-        dir_action = QAction("Set Working Directory", self)
-        dir_action.triggered.connect(self._select_working_directory)
-        self.toolbar.addAction(dir_action)
-        agent_action = QAction("Agent Settings...", self)
-        agent_action.triggered.connect(self._open_agent_settings)
-        self.toolbar.addAction(agent_action)
+        dir_action = QAction("Set Working Directory", self); dir_action.triggered.connect(self._select_working_directory); self.toolbar.addAction(dir_action)
+        agent_action = QAction("Agent Settings...", self); agent_action.triggered.connect(self._open_agent_settings); self.toolbar.addAction(agent_action)
 
     def _connect_signals(self) -> None:
-        """Connect widget signals."""
-        self.input_field.returnPressed.connect(self._handle_submit)
-        self.clear_button.clicked.connect(self.clear_output)
+        self.input_field.returnPressed.connect(self._handle_submit); self.clear_button.clicked.connect(self.clear_output)
 
-    def _connect_app_state_signals(self) -> None:
-        """Connect application state signals to UI update slots."""
-        self.app_state.status_changed.connect(self._on_status_changed)
-        self.app_state.working_directory_changed.connect(self._on_working_directory_changed)
-        self.app_state.current_plan_changed.connect(self._on_current_plan_changed)
-
-    def _on_status_changed(self, message: str, color: str) -> None:
-        """Handle status change from app state."""
-        self.status_label.setText(message)
-        self.status_label.setStyleSheet(f"color: {color}; font-weight: 500;")
-
-    def _on_working_directory_changed(self, path: str) -> None:
-        """Handle working directory change from app state."""
-        dir_short = path
-        if len(dir_short) > 50:
-            dir_short = "..." + dir_short[-47:]
-        self.directory_label.setText(f"{dir_short}")
-
-    def _on_current_plan_changed(self, plan: Optional[SessionPlan]) -> None:
-        """Handle current plan change from app state."""
-        pass
-
-    def _on_progress_update(self, message: str) -> None:
-        """Handle progress updates from orchestration worker.
-
-        Args:
-            message: Human-readable progress message
-        """
-        if not message:
-            return
-        LOGGER.debug("Progress update: %s", message)
-        self.app_state.set_status(message, config.COLORS.accent)
+    def _connect_handler_signals(self) -> None:
+        self.orchestration_handler.request_input_enabled.connect(self._set_input_enabled); self.orchestration_handler.request_input_focus.connect(self.input_field.setFocus)
 
     def _subscribe_to_events(self) -> None:
-        """Subscribe to background orchestration events."""
-        self._event_bus.subscribe(EventType.SESSION_OUTPUT, self._emit_event_signal)
-        self._event_bus.subscribe(EventType.ERROR, self._emit_event_signal)
+        self._event_bus.subscribe(EventType.SESSION_OUTPUT, self._emit_event_signal); self._event_bus.subscribe(EventType.ERROR, self._emit_event_signal)
 
     def _emit_event_signal(self, event: Event) -> None:
-        """Forward event bus payloads onto the UI thread."""
         self._event_received.emit(event)
 
-    def _handle_event(self, event: Event) -> None:
-        """Process events delivered from the background event bus."""
-        if not isinstance(event, Event):
-            return
-        if event.type is EventType.SESSION_OUTPUT:
-            text = str(event.data.get("text", "")).strip()
-            if text:
-                self.display_output(text)
-        elif event.type is EventType.ERROR:
-            error = str(event.data.get("error", "")).strip()
-            if not error:
-                return
-            if error == self._last_error_message:
-                self._last_error_message = None
-                return
-            self.display_output(f"Error: {error}", "#FF6B6B")
-            self._last_error_message = None
+    def _connect_orchestrator_signals(self) -> None:
+        assert self.orchestrator is not None
+        self.orchestrator.planning_started.connect(
+            self.orchestration_handler.handle_planning_started
+        )
+        self.orchestrator.plan_ready.connect(self.orchestration_handler.handle_plan_ready)
+        self.orchestrator.session_started.connect(
+            self.orchestration_handler.handle_session_started
+        )
+        self.orchestrator.session_output.connect(
+            self.orchestration_handler.handle_session_output
+        )
+        self.orchestrator.session_complete.connect(
+            self.orchestration_handler.handle_session_complete
+        )
+        self.orchestrator.all_sessions_complete.connect(
+            self.orchestration_handler.handle_all_complete
+        )
+        self.orchestrator.error_occurred.connect(self.orchestration_handler.handle_error)
 
     def _handle_submit(self) -> None:
-        """Handle the submission of a prompt."""
         prompt = self.input_field.text().strip()
         if not prompt:
             return
-        if self.current_runner is not None and self.current_runner.isRunning():
-            self.display_output("An agent run is already in progress.", "#FF6B6B")
+        if self.current_runner and self.current_runner.isRunning():
+            self.output_panel.display_output("An agent run is already in progress.", "#FF6B6B")
             return
-        self.input_field.clear()
-        self.display_output(f"> {prompt}", config.COLORS.accent)
+        self.input_field.clear(); self.output_panel.display_output(f"> {prompt}", config.COLORS.accent)
+        self._set_input_enabled(False)
         if not self.orchestrator:
-            self.input_field.setEnabled(False)
-            self.execute_command(prompt)
-            return
+            self.execute_command(prompt); return
         normalized = prompt.lower()
         approval_keywords = {"start", "yes", "go", "build it", "lets do it", "let's do it"}
         if self.app_state.current_plan and normalized in approval_keywords:
-            self.input_field.setEnabled(False)
             return
         if self._should_orchestrate(prompt):
-            self.input_field.setEnabled(False)
-            # Emit signal instead of directly calling orchestrator
             self.execution_requested.emit(prompt)
         else:
-            self.input_field.setEnabled(False)
             self.execute_command(prompt)
 
     def execute_command(self, prompt: str) -> None:
-        """Execute an agent command for the given prompt."""
-        if not prompt:
-            self.input_field.setEnabled(True)
-            self.input_field.setFocus()
-            return
-        if not self._validate_environment():
-            self.input_field.setEnabled(True)
-            self.input_field.setFocus()
-            return
-        command_prompt = self._build_command_prompt(prompt)
+        if not prompt or not self.agent_manager.validate_environment():
+            self._set_input_enabled(True); self.input_field.setFocus(); return
+        command_prompt = self.agent_manager.compose_prompt(prompt)
         agent_executable = self.app_state.agent_path or self.app_state.selected_agent
         command = [agent_executable, "-p", command_prompt, "--yolo"]
         try:
-            runner = AgentRunner(
-                command=command,
-                working_directory=self.app_state.working_directory,
-                parent=self,
-            )
+            runner = AgentRunner(command=command, working_directory=self.app_state.working_directory, parent=self)
         except ValueError as exc:
-            self.display_output(f"Unable to start agent: {exc}", "#FF6B6B")
-            self.input_field.setEnabled(True)
-            self.input_field.setFocus()
-            return
-        runner.output_line.connect(self.display_output)
-        runner.process_finished.connect(self.handle_process_finished)
-        runner.process_error.connect(self.handle_process_error)
+            self.output_panel.display_output(f"Unable to start agent: {exc}", "#FF6B6B")
+            self._set_input_enabled(True); self.input_field.setFocus(); return
+        runner.output_line.connect(self.output_panel.display_output)
+        runner.process_finished.connect(self.handle_process_finished); runner.process_error.connect(self.handle_process_error)
         self.current_runner = runner
-        self.app_state.set_status("Running...", config.COLORS.accent)
+        self.status_bar_manager.update_status("Running...", config.COLORS.accent, persist=True)
         runner.start()
 
     def _should_orchestrate(self, prompt: str) -> bool:
-        """Decide if prompt needs full orchestration."""
         lower = prompt.lower()
         if any(word in lower for word in ["build", "create app", "add feature", "implement"]):
             return len(prompt) > 30
         return len(prompt) > 50
 
-    def display_output(self, text: str, color: str | None = None) -> None:
-        """Render output text in the transcript."""
-        chosen_color = color or self._resolve_line_color(text)
-        escaped_text = html.escape(text)
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        payload = (
-            f'<span style="color: #888888;">[{timestamp}]</span> '
-            f'<span style="color: {chosen_color}; white-space: pre-wrap;">{escaped_text}</span><br>'
-        )
-        cursor = self.output_view.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.output_view.setTextCursor(cursor)
-        self.output_view.insertHtml(payload)
-        self.output_view.ensureCursorVisible()
+    def _set_input_enabled(self, enabled: bool) -> None:
+        self.input_field.setEnabled(enabled)
 
-    def append_to_log(self, text: str, color: str | None = None) -> None:
-        """Append streaming text output without clearing existing content.
-
-        This method is optimized for real-time streaming updates and automatically
-        scrolls to show the newest content. Thread-safe via Qt's signal/slot mechanism.
-
-        Args:
-            text: Text to append to the log
-            color: Optional CSS color for the text
-        """
-        if not text:
-            return
-        chosen_color = color or config.COLORS.agent_output
-        escaped_text = html.escape(text)
-        payload = f'<span style="color: {chosen_color}; white-space: pre-wrap;">{escaped_text}</span><br>'
-        cursor = self.output_view.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.output_view.setTextCursor(cursor)
-        self.output_view.insertHtml(payload)
-        self.output_view.ensureCursorVisible()
-
-    def _display_startup_header(self) -> None:
-        """Display ASCII art header with gradient colors on startup."""
-        header_html = """
-        <div style="font-family: 'Courier New', 'Consolas', monospace; font-size: 18px; line-height: 1.1; margin: 20px 0; white-space: pre;">
-<span style="color: #5294E2;">╔═══════════════════════════════════════════╗</span>
-<span style="color: #6B7FEE;">║   </span><span style="color: #7B68EE;">█████╗ ██╗   ██╗██████╗  █████╗</span><span style="color: #6B7FEE;">   ║</span>
-<span style="color: #8875E8;">║  </span><span style="color: #9370DB;">██╔══██╗██║   ██║██╔══██╗██╔══██╗</span><span style="color: #8875E8;">  ║</span>
-<span style="color: #A565DD;">║  </span><span style="color: #BA55D3;">███████║██║   ██║██████╔╝███████║</span><span style="color: #A565DD;">  ║</span>
-<span style="color: #C25DD8;">║  </span><span style="color: #DA70D6;">██╔══██║╚██╗ ██╔╝██╔══██╗██╔══██║</span><span style="color: #C25DD8;">  ║</span>
-<span style="color: #DA6FD7;">║  </span><span style="color: #EE82EE;">██║  ██║ ╚████╔╝ ██║  ██║██║  ██║</span><span style="color: #DA6FD7;">  ║</span>
-<span style="color: #EE7CC9;">║  </span><span style="color: #FF69B4;">╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═╝</span><span style="color: #EE7CC9;">  ║</span>
-<span style="color: #FF4EA3;">╚═══════════════════════════════════════════╝</span>
-        </div>
-        """
-        cursor = self.output_view.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.output_view.setTextCursor(cursor)
-        self.output_view.insertHtml(header_html)
-
-    def _connect_orchestrator_signals(self) -> None:
-        """Connect orchestrator Qt signals to handlers."""
-        if not self.orchestrator:
-            return
-        self.orchestrator.planning_started.connect(self._on_planning_started)
-        self.orchestrator.plan_ready.connect(self._on_plan_ready)
-        self.orchestrator.session_started.connect(self._on_session_started)
-        self.orchestrator.session_output.connect(self._on_session_output)
-        self.orchestrator.session_complete.connect(self._on_session_complete)
-        self.orchestrator.all_sessions_complete.connect(self._on_all_complete)
-        self.orchestrator.error_occurred.connect(self._on_error)
-
-    def _on_planning_started(self) -> None:
-        """Handle planning started signal."""
-        self.app_state.set_current_plan(None)
-        self._set_running_state()
-        self.input_field.setEnabled(False)
-        self.display_output("Analyzing request and planning sessions...", config.COLORS.accent)
-
-    def _on_plan_ready(self, plan: SessionPlan) -> None:
-        """Handle plan ready signal with formatted display."""
-        if isinstance(plan, SessionPlan):
-            self.app_state.set_current_plan(plan)
-            self.display_output("", config.COLORS.agent_output)
-            self.display_output("Session Plan", config.COLORS.accent)
-            self.display_output(f"   Total sessions: {len(plan.sessions)}", config.COLORS.agent_output)
-            self.display_output(f"   Estimated time: {plan.total_estimated_minutes} minutes", config.COLORS.agent_output)
-
-            if plan.reasoning:
-                self.display_output("", config.COLORS.agent_output)
-                self.display_output(f"Reasoning: {plan.reasoning}", config.COLORS.agent_output)
-
-            self.display_output("", config.COLORS.agent_output)
-            self.display_output("Sessions:", config.COLORS.accent)
-
-            for idx, session in enumerate(plan.sessions, start=1):
-                self.display_output(
-                    f"   {idx}. {session.name} (~{session.estimated_minutes} min)",
-                    config.COLORS.agent_output
-                )
-                if session.dependencies:
-                    deps = ", ".join(session.dependencies)
-                    self.display_output(f"      Dependencies: {deps}", "#888888")
-
-            self.display_output("", config.COLORS.agent_output)
-            self.display_output("Type 'start' when ready to begin building.", config.COLORS.success)
-        else:
-            self.app_state.set_current_plan(None)
-            self.display_output("Received invalid plan data.", "#FF6B6B")
-
-        self.input_field.setEnabled(True)
-        self.input_field.setFocus()
-
-    def _on_session_started(self, index: int, session: Session) -> None:
-        """Handle session started signal."""
-        total = len(self.app_state.current_plan.sessions) if self.app_state.current_plan else "?"
-        name = getattr(session, "name", "Unknown session")
-        self._set_running_state()
-        self.display_output("", config.COLORS.agent_output)
-        self.display_output("=" * 60, "#7B68EE")
-        self.display_output(f"Session {index + 1}/{total}: {name}", config.COLORS.accent)
-        self.display_output("=" * 60, "#7B68EE")
-
-    def _on_session_output(self, text: str) -> None:
-        """Handle session output signal."""
-        if text:
-            self.display_output(text)
-
-    def _on_session_complete(self, index: int, result: SessionResult) -> None:
-        """Handle session complete signal."""
-        if result is None:
-            return
-        duration = getattr(result, "duration_seconds", 0.0)
-        files = getattr(result, "files_created", [])
-        success = getattr(result, "success", False)
-        name = getattr(result, "session_name", f"Session {index + 1}")
-
-        prefix = "Session complete" if success else "Session failed"
-        color = config.COLORS.success if success else "#FF6B6B"
-
-        self.display_output(
-            f"{prefix} in {duration:.1f}s",
-            color,
-        )
-
-        if files:
-            self.display_output(f"   Files created/modified:", config.COLORS.agent_output)
-            for file_path in files:
-                self.display_output(f"      {file_path}", config.COLORS.agent_output)
-
-    def _on_all_complete(self) -> None:
-        """Handle all sessions complete signal."""
-        self.app_state.set_current_plan(None)
-        self._set_completed_state()
-        self.display_output("", config.COLORS.agent_output)
-        self.display_output("All sessions complete", config.COLORS.success)
-        self.input_field.setEnabled(True)
-        self.input_field.setFocus()
-
-    def _on_error(self, error: str) -> None:
-        """Handle error signal."""
-        self._last_error_message = error
-        self._set_error_state()
-        self.display_output(f"Error: {error}", "#FF6B6B")
-        self.input_field.setEnabled(True)
-        self.input_field.setFocus()
-        self.app_state.set_current_plan(None)
-
-    def _format_plan(self, plan: SessionPlan) -> List[str]:
-        """Format the session plan for display."""
-        lines: List[str] = [
-            "Session Plan",
-            f"Total estimate: {plan.total_estimated_minutes} minutes",
-        ]
-        for idx, session in enumerate(plan.sessions, start=1):
-            deps = ", ".join(session.dependencies) if session.dependencies else "None"
-            lines.append(f"{idx}. {session.name} ({session.estimated_minutes} min)")
-            lines.append(f"   Dependencies: {deps}")
-        if plan.reasoning:
-            lines.append(f"Reasoning: {plan.reasoning}")
-        return lines
+    def append_to_log(self, text: str, color: Optional[str] = None) -> None:
+        self.output_panel.append_to_log(text, color)
 
     def handle_process_finished(self, exit_code: int) -> None:
-        """Handle completion of the agent process."""
         if exit_code == 0:
-            self.display_output("Agent run completed successfully.", config.COLORS.success)
-            self._set_completed_state()
+            self.output_panel.display_output("Agent run completed successfully.", config.COLORS.success)
+            self.status_bar_manager.update_status("Completed", config.COLORS.success, persist=True)
         else:
-            self.display_output(f"Agent exited with code {exit_code}", "#FF6B6B")
-            self._set_error_state()
-        self.input_field.setEnabled(True)
-        self.input_field.setFocus()
+            self.output_panel.display_output(f"Agent exited with code {exit_code}", "#FF6B6B")
+            self.status_bar_manager.update_status("Error", "#FF6B6B", persist=True)
+
+        self._set_input_enabled(True); self.input_field.setFocus()
         self.current_runner = None
 
     def handle_process_error(self, error: str) -> None:
-        """Present an error emitted by the agent process."""
-        self.display_output(error, "#FF6B6B")
-        self._set_error_state()
-        self.input_field.setEnabled(True)
-        self.input_field.setFocus()
+        self.output_panel.display_output(error, "#FF6B6B")
+        self.status_bar_manager.update_status("Error", "#FF6B6B", persist=True)
+        self._set_input_enabled(True); self.input_field.setFocus()
 
     def clear_output(self) -> None:
-        """Clear the output transcript."""
-        self.output_view.clear()
-
-    def set_working_directory(self, path: str) -> None:
-        """Update the working directory."""
-        try:
-            self.app_state.set_working_directory(path)
-            get_session_context_manager().clear()
-            LOGGER.info("Cleared session context due to working directory change: %s", path)
-            self.display_output(f"Working directory set to {path}", config.COLORS.accent)
-        except (ValueError, FileNotFoundError) as exc:
-            raise exc
-
-    def _resolve_line_color(self, text: str) -> str:
-        """Choose a color based on output content."""
-        stripped = text.strip()
-        lowered = text.lower()
-        if stripped.startswith(("Session complete")):
-            return config.COLORS.success
-        if "error" in lowered or "failed" in lowered:
-            return "#FF6B6B"
-        if stripped.startswith(("Creating", "Modifying")):
-            return config.COLORS.accent
-        return config.COLORS.agent_output
-
-    def _set_ready_state(self) -> None:
-        """Display the ready state."""
-        self.app_state.set_status("Ready", config.COLORS.text)
-
-    def _set_running_state(self) -> None:
-        """Display the running state."""
-        self.app_state.set_status("Running...", config.COLORS.accent)
-
-    def _set_completed_state(self) -> None:
-        """Display the completed state."""
-        self.app_state.set_status("Completed", config.COLORS.success)
-
-    def _set_error_state(self) -> None:
-        """Display the error state."""
-        self.app_state.set_status("Error", "#FF6B6B")
+        self.output_panel.clear()
 
     def _select_working_directory(self) -> None:
-        """Prompt the user to choose a working directory."""
-        path = QFileDialog.getExistingDirectory(
-            self, "Select Working Directory", self.app_state.working_directory
-        )
+        path = QFileDialog.getExistingDirectory(self, "Select Working Directory", self.app_state.working_directory)
         if not path:
             return
         try:
-            self.set_working_directory(path)
+            self.agent_manager.set_working_directory(path)
         except (ValueError, FileNotFoundError) as exc:
-            self.display_output(str(exc), "#FF6B6B")
-
-    def _validate_environment(self) -> bool:
-        """Ensure prerequisites are met before starting the agent."""
-        if not os.path.isdir(self.app_state.working_directory):
-            self.display_output("Working directory does not exist.", "#FF6B6B")
-            self._set_error_state()
-            return False
-        if not self.app_state.agent_path:
-            agent_display = config.AGENT_DISPLAY_NAMES.get(
-                self.app_state.selected_agent, self.app_state.selected_agent
-            )
-            self.display_output(
-                f"{agent_display} not found. Use 'Agent Settings...' to configure.", "#FF6B6B"
-            )
-            self._set_error_state()
-            return False
-        return True
-
-    def _detect_default_agent(self) -> None:
-        """Detect and set the default available agent."""
-        agents = find_cli_agents()
-        for agent in agents:
-            if agent.is_available and agent.name == self.app_state.selected_agent:
-                self.app_state.set_agent_path(agent.executable_path)
-                self.display_output(
-                    f"Using {agent.display_name} at {agent.executable_path}", config.COLORS.success
-                )
-                if self.orchestrator:
-                    self.orchestrator.update_agent_path(agent.executable_path)
-                return
-        for agent in agents:
-            if agent.is_available:
-                self.app_state.set_selected_agent(agent.name)
-                self.app_state.set_agent_path(agent.executable_path)
-                self.display_output(
-                    f"Using {agent.display_name} at {agent.executable_path}", config.COLORS.success
-                )
-                if self.orchestrator:
-                    self.orchestrator.update_agent_path(agent.executable_path)
-                return
-        self.display_output(
-            "No CLI agents found. Use 'Agent Settings...' to configure.", "#FFB74D"
-        )
+            self.output_panel.display_output(str(exc), "#FF6B6B")
 
     def _open_agent_settings(self) -> None:
-        """Open the agent settings dialog."""
         dialog = AgentSettingsDialog(self)
         if dialog.exec():
-            self._detect_default_agent()
+            self.agent_manager.detect_default_agent()
 
-    def _build_command_prompt(self, prompt: str) -> str:
-        """Compose the prompt with project context."""
-        context = self.get_project_context()
-        return f"{context}\n\nTask: {prompt}"
-
-    def get_project_context(self) -> str:
-        """Return a concise description of the workspace."""
-        try:
-            snapshot = scan_directory(self.app_state.working_directory, max_depth=2)
-        except (ValueError, FileNotFoundError) as exc:
-            return f"Working in: {self.app_state.working_directory}\nFiles: unavailable ({exc})"
-        python_files = [item for item in snapshot["files"] if item.endswith(".py")]
-        directory_lines = "\n".join(f"- {item}" for item in snapshot["directories"]) or "- None"
-        file_lines = "\n".join(f"- {item}" for item in python_files) or "- None"
-        return (
-            f"Working in: {self.app_state.working_directory}\n"
-            f"Directories:\n{directory_lines}\n"
-            f"Python files:\n{file_lines}"
-        )
+    def _on_progress_update(self, message: str) -> None:
+        if not message:
+            return
+        LOGGER.debug("Progress update: %s", message); self.status_bar_manager.update_status(message, config.COLORS.accent, persist=True)
