@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from PySide6.QtGui import QFont, QTextOption
+import html
+import os
+
+from PySide6.QtGui import QFont, QTextCursor, QTextOption
 from PySide6.QtWidgets import QLineEdit, QMainWindow, QTextEdit, QVBoxLayout, QWidget
 
 from aura import config
+from aura.services import AgentRunner
 
 
 class MainWindow(QMainWindow):
@@ -16,9 +20,11 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.output_view = QTextEdit(self)
         self.input_field = QLineEdit(self)
+        self.current_runner: AgentRunner | None = None
         self._configure_window()
         self._build_layout()
         self._apply_styles()
+        self._connect_signals()
 
     def _configure_window(self) -> None:
         """Configure top-level window properties."""
@@ -73,3 +79,71 @@ class MainWindow(QMainWindow):
             }}
             """
         )
+
+    def _connect_signals(self) -> None:
+        """Connect widget signals."""
+        self.input_field.returnPressed.connect(self._handle_submit)
+
+    def _handle_submit(self) -> None:
+        """Handle the submission of a prompt."""
+        prompt = self.input_field.text().strip()
+        if not prompt:
+            return
+        if self.current_runner is not None and self.current_runner.isRunning():
+            self.display_output("An agent run is already in progress.", "#FF6B6B")
+            return
+        self.input_field.clear()
+        self.input_field.setEnabled(False)
+        self.display_output(f"> {prompt}", config.COLORS.accent)
+        self.execute_command(prompt)
+
+    def execute_command(self, prompt: str) -> None:
+        """Execute a Gemini command for the given prompt."""
+        if not prompt:
+            self.input_field.setEnabled(True)
+            self.input_field.setFocus()
+            return
+        command = ["gemini", "-p", prompt, "--yolo"]
+        try:
+            runner = AgentRunner(
+                command=command,
+                working_directory=os.getcwd(),
+                parent=self,
+            )
+        except ValueError as exc:
+            self.display_output(f"Unable to start agent: {exc}", "#FF6B6B")
+            self.input_field.setEnabled(True)
+            self.input_field.setFocus()
+            return
+        runner.output_line.connect(self.display_output)
+        runner.process_finished.connect(self.handle_process_finished)
+        runner.process_error.connect(self.handle_process_error)
+        self.current_runner = runner
+        runner.start()
+
+    def display_output(self, text: str, color: str | None = None) -> None:
+        """Render output text in the transcript."""
+        chosen_color = color or config.COLORS.agent_output
+        escaped_text = html.escape(text)
+        payload = f'<span style="color: {chosen_color};">{escaped_text}</span><br>'
+        cursor = self.output_view.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.output_view.setTextCursor(cursor)
+        self.output_view.insertHtml(payload)
+        self.output_view.ensureCursorVisible()
+
+    def handle_process_finished(self, exit_code: int) -> None:
+        """Handle completion of the agent process."""
+        if exit_code == 0:
+            self.display_output("Agent run completed successfully.", config.COLORS.success)
+        else:
+            self.display_output(f"Agent exited with code {exit_code}", "#FF6B6B")
+        self.input_field.setEnabled(True)
+        self.input_field.setFocus()
+        self.current_runner = None
+
+    def handle_process_error(self, error: str) -> None:
+        """Present an error emitted by the agent process."""
+        self.display_output(error, "#FF6B6B")
+        self.input_field.setEnabled(True)
+        self.input_field.setFocus()
