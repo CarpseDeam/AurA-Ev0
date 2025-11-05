@@ -9,48 +9,6 @@ Implementation Snapshot (2025-11-05)
 - Configuration, project scanning, and entry-point plumbing live under `src/aura/` with `requirements.txt` pinning PySide6 (>=6.7,<7)
 - Prompt wrapper now injects working-directory context and validates Gemini CLI availability before each run
 
-🎯 The Vision (One Sentence)
-Aura is an AI orchestrator that breaks large coding requests into small, focused sessions so AI agents produce clean, maintainable code instead of 700-line god files.
-
-🔥 The Problem
-What's Broken with AI Coding Tools Today
-Every AI coding tool has the same fatal flaw:
-When you ask an AI to "build a blog with authentication," it tries to do everything in one shot:
-
-Creates massive 700+ line files
-Mixes concerns (models + routes + services in one file)
-Produces god objects that violate SOLID principles
-Generates code that works but is unmaintainable
-
-Why this happens:
-
-AI agents are given tasks that are too large
-They lack architectural discipline
-They try to solve everything at once
-No one is constraining the INPUT - everyone tries to fix the OUTPUT
-
-Existing solutions don't work:
-
-❌ Adding linting rules → ignored by AI
-❌ Post-processing fixes → too late, architecture is already broken
-❌ Yelling in prompts → doesn't scale, gets ignored
-❌ Human review every step → defeats the purpose of automation
-
-
-💡 The Core Insight
-Don't constrain outputs. Control inputs.
-The breakthrough:
-If you give an AI a small enough task, it naturally produces small, clean files.
-Example:
-❌ Bad (one big task):
-
-"Build a blog system with auth"
-→ AI creates auth_system.py (734 lines)
-→ Mixes models, routes, middleware, validation
-→ Unmaintainable mess
-
-✅ Good (decomposed into focused tasks):
-
 Session 1: "Create User model ONLY"
 → models/user.py (87 lines, clean)
 Session 2: "Create login/logout routes ONLY, using existing User model"
@@ -134,40 +92,9 @@ Using: 1 GEMINI.md file
 > Running: pytest tests/test_user.py
 ✓ All 8 tests passed
 
-✅ Session 1 complete (14m 23s)
-   Created: models/user.py, utils/password.py
-   Tests: ✓ 8 passed
 
 ───────────────────────────────────────
 
-✨ Session 2/4: Auth Routes & Middleware
-[Real-time Gemini CLI output streams here...]
-The Magic Moment:
-User watches AI build their project module by module, with each piece staying clean and focused. It's like watching a senior engineer implement a well-planned architecture.
-
-🏗️ Technical Architecture (Simplified v2)
-What We're NOT Building
-Based on painful lessons learned:
-❌ Embedded terminal widget (xterm.js + WebSocket)
-
-Too complex (500+ lines)
-Fighting shell echo
-PTY management hell
-Doesn't add real value
-
-❌ Complex event bus
-
-Over-engineered for simple needs
-Qt signals work fine
-
-❌ Conversation persistence (for now)
-
-Adds complexity
-Not core to value prop
-Can add later if needed
-
-What We ARE Building
-Aura Core Architecture (v2 - Simplified)
 
 ┌─────────────────────────────────────┐
 │         Main Window (Qt)            │
@@ -294,13 +221,6 @@ GUI Framework: PySide6 (Qt)
 ✅ Built-in threading (QThread)
 ✅ Mature, stable
 
-Alternative considered: Electron
-
-❌ Massive bundle size
-❌ Memory hog
-❌ Feels sluggish
-❌ Overkill for our needs
-
 Orchestration Brain: Gemini 2.5 Pro (API)
 
 ✅ Best at planning/reasoning
@@ -316,12 +236,6 @@ Coding Agent: Gemini CLI (subprocess)
 ✅ Built by Google, maintained
 ✅ --yolo mode for automation
 
-Alternative considered: Custom agent implementation
-
-❌ Reinventing wheel
-❌ More maintenance
-❌ Harder to keep updated
-❌ Gemini CLI already solves this
 
 Key Technical Choices
 1. Subprocess, Not Embedded Terminal
@@ -546,63 +460,7 @@ Average file size: 104 lines
 
 [Open Project] [Run Tests] [New Task]
 
-🎯 Success Metrics
-What Does "Success" Look Like?
-Code Quality Metrics:
 
-✅ Average file size: 80-150 lines
-✅ No files over 250 lines
-✅ Single Responsibility: Each file does one thing
-✅ Proper separation: models/, routes/, utils/, tests/
-✅ Tests included automatically
-
-User Experience:
-
-✅ Real-time progress visible
-✅ Estimated time accurate (±20%)
-✅ Clear what's happening at each step
-✅ Can watch it work (satisfying)
-✅ Produces actually maintainable code
-
-Technical:
-
-✅ 90%+ success rate on sessions
-✅ Context passing works (no duplicate code)
-✅ Each session completes in estimated time
-✅ Errors are recoverable
-
-
-🚫 Anti-Goals (What We're NOT Building)
-Scope Boundaries
-❌ Not a code editor
-
-Users use their own IDE
-We just orchestrate the AI
-Output: project directory with files
-
-❌ Not a deployment tool
-
-No CI/CD integration (for now)
-No hosting/servers
-Just generates code locally
-
-❌ Not a collaboration platform
-
-Single-user for v1
-No teams, sharing, permissions
-Solo dev workflow only
-
-❌ Not a low-code builder
-
-No drag-and-drop
-No visual builders
-Text prompts only (like talking to senior dev)
-
-❌ Not trying to replace developers
-
-Tool for developers
-Speeds up boilerplate
-Human still reviews, refines, extends
 
 
 🛣️ Development Roadmap
@@ -670,119 +528,6 @@ Potential features:
  Model selection per session (fast model for simple, smart for complex)
  MCP integration (project-aware AI)
  Plugin system for custom agents
-
-
-💰 Business Model (If This Gets Big)
-Current: Free, open-source, personal tool
-If it takes off:
-Option 1: Freemium Desktop App
-
-Free: Basic orchestration, limited sessions/day
-Pro ($20/mo): Unlimited, advanced features, priority support
-Enterprise: Team features, on-prem
-
-Option 2: API/SDK
-
-Let developers integrate Aura orchestration into their tools
-Usage-based pricing
-
-Option 3: Hosted Service
-
-Web version, no install needed
-Subscription-based
-
-Not deciding now. Build the tool first, see if people want it.
-
-🧪 Key Assumptions to Validate
-What Might Be Wrong
-Assumption 1: Multi-session actually produces better code
-
-Risk: Maybe one big session with good prompt is just as good
-Test: Build same project both ways, compare quality
-Fallback: If wrong, pivot to "better prompts" tool
-
-Assumption 2: Users want to watch it work
-
-Risk: Maybe they just want results fast, don't care about process
-Test: Usage metrics, feedback
-Fallback: Add "fast mode" that hides details
-
-Assumption 3: Context passing works
-
-Risk: Maybe AI still creates duplicate code or ignores previous work
-Test: Monitor for duplicates, test with complex projects
-Fallback: More explicit constraints in prompts
-
-Assumption 4: Gemini CLI is reliable enough
-
-Risk: Maybe it fails too often, needs babysitting
-Test: Run 100 sessions, measure success rate
-Fallback: Add fallback to direct API calls
-
-Assumption 5: Planning with LLM is consistent
-
-Risk: Maybe it plans differently each time, unpredictable
-Test: Same request 10 times, compare plans
-Fallback: Use few-shot examples, stricter output format
-
-
-📚 Learning & Iteration
-Lessons from V1 (Failed Attempt)
-What Went Wrong:
-
-Over-engineered GUI - Embedded terminal was unnecessary complexity
-Fighting tools - Tried to hide PowerShell, when we should've just used subprocess
-Premature features - Built conversation history before core worked
-Lost focus - Got distracted by UI polish instead of orchestration
-
-What We Learned:
-
-Simple is better - Subprocess + QThread beats WebSocket + PTY
-Focus on value - Orchestration is the innovation, not the terminal
-Build incrementally - Prove core works before adding features
-Use existing tools - Gemini CLI already does file operations
-
-Applying to V2:
-
-✅ Start with minimal GUI (200 lines)
-✅ Prove orchestration works FIRST
-✅ Add features only when needed
-✅ Embrace simplicity
-
-
-🎤 Pitch (How to Explain Aura)
-To a Developer
-
-"You know how AI coding tools give you giant 700-line files that are impossible to maintain? Aura fixes that. It breaks your request into focused sessions - like 'build user model', then 'build auth routes', then 'build tests'. Each session produces small, clean files because the task is small enough. It's like having a senior architect plan your project, then junior devs implement each piece."
-
-To a Non-Technical Person
-
-"AI coding tools are like asking a junior developer to build your entire app at once - they make a mess. Aura is like having a senior developer break the work into small, manageable pieces, then supervising multiple AI coders as they each build one piece. The result is clean, organized code instead of spaghetti."
-
-To an Investor (If This Becomes a Thing)
-
-"We're solving the #1 problem with AI-generated code: it's unmaintainable. Every AI tool produces monolithic files because they give the AI tasks that are too large. We're the only tool that decomposes requests into micro-tasks before execution. This isn't a prompt engineering trick - it's architectural discipline baked into the workflow. Early users report 90% reduction in refactoring time. TAM: 20M+ developers worldwide using AI coding tools. GTM: Freemium desktop app, virality through demo videos showing before/after code quality."
-
-
-✅ Definition of Done (When is Aura "Real"?)
-V1.0 Success Criteria
-It works when:
-
-✅ I can type "build todo API with auth"
-✅ Aura plans 3-5 sessions automatically
-✅ Each session runs, creates files, passes context forward
-✅ Resulting code has files <200 lines each
-✅ Code actually runs (tests pass)
-✅ I can use this for my own projects
-✅ Process takes <1 hour for medium project
-✅ Success rate >80% (doesn't break often)
-
-Personal validation:
-
-Would I use this every day?
-Does it save me real time?
-Is the code it produces actually good?
-Do I trust it enough to use on real projects?
 
 
 Last reviewed: 2025-01-05

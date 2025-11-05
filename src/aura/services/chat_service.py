@@ -90,6 +90,61 @@ def get_git_status() -> str:
     return result.stdout.strip() or "clean"
 
 
+def git_commit(message: str) -> str:
+    """Commit all changes with the given message."""
+    if not message or not message.strip():
+        return "Error: commit message cannot be empty"
+
+    # Stage all changes
+    add_result = subprocess.run(
+        ["git", "add", "."],
+        cwd=os.getcwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if add_result.returncode != 0:
+        error = add_result.stderr.strip() or "git add failed"
+        LOGGER.error("git add failed: %s", error)
+        return f"Error staging files: {error}"
+
+    # Commit with message
+    commit_result = subprocess.run(
+        ["git", "commit", "-m", message.strip()],
+        cwd=os.getcwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if commit_result.returncode != 0:
+        error = commit_result.stderr.strip() or commit_result.stdout.strip() or "git commit failed"
+        LOGGER.error("git commit failed: %s", error)
+        return f"Error committing: {error}"
+
+    output = commit_result.stdout.strip()
+    LOGGER.info("Committed successfully: %s", message)
+    return f"✅ Committed successfully: {message}\n{output}"
+
+
+def git_push(remote: str = "origin", branch: str = "main") -> str:
+    """Push commits to the remote repository."""
+    result = subprocess.run(
+        ["git", "push", remote, branch],
+        cwd=os.getcwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        error = result.stderr.strip() or result.stdout.strip() or "git push failed"
+        LOGGER.error("git push failed: %s", error)
+        return f"Error pushing to {remote}/{branch}: {error}"
+
+    output = result.stdout.strip()
+    LOGGER.info("Pushed successfully to %s/%s", remote, branch)
+    return f"✅ Pushed successfully to {remote}/{branch}\n{output}"
+
+
 @dataclass
 class ChatMessage:
     """Represents a single chat message in the conversation history."""
@@ -126,7 +181,7 @@ class ChatService:
         model = genai.GenerativeModel(
             self.model,
             system_instruction=AURA_SYSTEM_PROMPT,
-            tools=[read_project_file, list_project_files, get_git_status],
+            tools=[read_project_file, list_project_files, get_git_status, git_commit, git_push],
         )
 
         # Build chat history, excluding system messages (Gemini doesn't accept them)
