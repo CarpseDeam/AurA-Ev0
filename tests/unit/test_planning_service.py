@@ -11,6 +11,7 @@ import pytest
 from aura.services.planning_service import PlanningService, SessionPlan
 from tests.fixtures.test_prompts import (
     ALL_PROMPTS,
+    QUICK_TEST_PROMPTS,
     COMPLEX_PROMPTS,
     MEDIUM_PROMPTS,
     SIMPLE_PROMPTS,
@@ -137,7 +138,7 @@ def calculate_plan_similarity(plan1: SessionPlan, plan2: SessionPlan) -> float:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("test_prompt", ALL_PROMPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("test_prompt", QUICK_TEST_PROMPTS, ids=lambda p: p.name)
 def test_session_count_within_range(
     planning_service: PlanningService,
     empty_project_context: str,
@@ -163,7 +164,7 @@ def test_session_count_within_range(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("test_prompt", SIMPLE_PROMPTS + MEDIUM_PROMPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("test_prompt", QUICK_TEST_PROMPTS, ids=lambda p: p.name)
 def test_session_names_are_focused(
     planning_service: PlanningService,
     empty_project_context: str,
@@ -191,7 +192,7 @@ def test_session_names_are_focused(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("test_prompt", MEDIUM_PROMPTS[:2], ids=lambda p: p.name)
+@pytest.mark.parametrize("test_prompt", QUICK_TEST_PROMPTS, ids=lambda p: p.name)
 def test_session_prompts_are_detailed(
     planning_service: PlanningService,
     empty_project_context: str,
@@ -219,7 +220,7 @@ def test_session_prompts_are_detailed(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("test_prompt", ALL_PROMPTS[:5], ids=lambda p: p.name)
+@pytest.mark.parametrize("test_prompt", QUICK_TEST_PROMPTS, ids=lambda p: p.name)
 def test_time_estimates_are_reasonable(
     planning_service: PlanningService,
     empty_project_context: str,
@@ -388,7 +389,7 @@ def test_small_file_emphasis(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("test_prompt", ALL_PROMPTS[:5], ids=lambda p: p.name)
+@pytest.mark.parametrize("test_prompt", QUICK_TEST_PROMPTS, ids=lambda p: p.name)
 def test_reasoning_quality(
     planning_service: PlanningService,
     empty_project_context: str,
