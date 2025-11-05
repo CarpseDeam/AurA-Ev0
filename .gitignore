@@ -153,3 +153,7 @@ desktop.ini
 *.tmp
 .temp/
 /.claude/
+
+# Agent protection - files agents should not modify
+# (These patterns are also checked by file_filter.py)
+# Note: .venv, venv, __pycache__ already covered above

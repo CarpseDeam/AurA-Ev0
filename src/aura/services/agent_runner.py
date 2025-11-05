@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
+from pathlib import Path
 from typing import Mapping
 
 from PySide6.QtCore import QObject, QThread, Signal
+
+from aura.utils.file_filter import is_file_protected
 
 LOGGER = logging.getLogger(__name__)
 
@@ -87,7 +91,9 @@ class AgentRunner(QThread):
             for line in iter(process.stdout.readline, ""):
                 if not line:
                     break
-                self.output_line.emit(line.rstrip("\r\n"))
+                stripped_line = line.rstrip("\r\n")
+                self._check_file_protection(stripped_line)
+                self.output_line.emit(stripped_line)
         except Exception as exc:  # noqa: BLE001
             message = f"Error while reading process output: {exc}"
             LOGGER.exception(message)
@@ -100,3 +106,24 @@ class AgentRunner(QThread):
             LOGGER.error(error_message)
             self.process_error.emit(error_message)
         return exit_code
+
+    def _check_file_protection(self, line: str) -> None:
+        """Check if line indicates modification of protected files."""
+        # Common patterns from AI coding tools
+        patterns = [
+            r"(?:Creating|Modifying|Writing|Editing|Deleting|Updated?)\s+(?:file\s+)?['\"]?([^'\":\n]+)['\"]?",
+            r"(?:Write|Edit|Delete):\s+([^\n]+)",
+            r"File:\s+([^\n]+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                file_path = match.group(1).strip()
+                # Convert to absolute path if relative
+                abs_path = Path(self._cwd) / file_path
+                if is_file_protected(str(abs_path), self._cwd):
+                    warning = f"⚠️  Agent attempting to modify protected file: {file_path}"
+                    LOGGER.warning(warning)
+                    self.output_line.emit(warning)
+                break
