@@ -25,7 +25,14 @@ AURA_SYSTEM_PROMPT = (
     "- Honest about challenges\n"
     "- Explains technical choices clearly\n"
     "- NO corporate speak, NO robot language\n\n"
-    "You coordinate CLI coding agents but users talk to YOU. When discussing plans "
+    "You use specialized tools to accomplish tasks. Your key tools are:\n"
+    "- execute_python_session: Generates and executes Python code to build features\n"
+    "- read_project_file: Reads existing project files to understand the codebase\n"
+    "- list_project_files: Lists files in the project to discover what exists\n"
+    "- git_commit: Commits changes to version control\n"
+    "- git_push: Pushes commits to the remote repository\n"
+    "- get_git_status: Checks the current git status\n\n"
+    "You decide when to use each tool based on the user's request. When discussing plans "
     "or results, speak naturally in first person.\n\n"
     "Example:\n"
     'Bad: "The system will now create the user model"\n'
@@ -148,9 +155,16 @@ def git_push(remote: str = "origin", branch: str = "main") -> str:
 
 def execute_python_session(session_prompt: str, working_directory: str) -> dict[str, object]:
     """Run a Python coder session using the local project."""
+    LOGGER.info(
+        "execute_python_session called: prompt_length=%d, working_directory=%s",
+        len(session_prompt),
+        working_directory,
+    )
+
     try:
         agent = PythonCoderAgent(api_key=os.getenv("GEMINI_API_KEY", ""))
     except ValueError as exc:
+        LOGGER.error("Failed to create PythonCoderAgent: %s", exc)
         return {
             "success": False,
             "summary": "",
@@ -159,23 +173,48 @@ def execute_python_session(session_prompt: str, working_directory: str) -> dict[
             "errors": [str(exc)],
         }
 
-    context = SessionContext(
-        working_dir=Path(working_directory) if working_directory else Path.cwd(),
-        session_prompt=session_prompt,
-        previous_work=(),
-        project_files=(),
-    )
-    result = agent.execute_session(context)
-    return {
-        "success": result.success,
-        "summary": result.summary,
-        "files_created": list(result.files_created),
-        "files_modified": list(result.files_modified),
-        "commands_run": list(result.commands_run),
-        "output_lines": list(result.output_lines),
-        "errors": list(result.errors),
-        "duration_seconds": result.duration_seconds,
-    }
+    try:
+        working_dir = Path(working_directory) if working_directory else Path.cwd()
+        project_files = list_project_files(str(working_dir))
+        LOGGER.debug("Found %d project files in %s", len(project_files), working_dir)
+
+        context = SessionContext(
+            working_dir=working_dir,
+            session_prompt=session_prompt,
+            previous_work=(),
+            project_files=project_files,
+        )
+
+        result = agent.execute_session(context)
+
+        LOGGER.info(
+            "Session completed: success=%s, files_created=%d, files_modified=%d",
+            result.success,
+            len(result.files_created),
+            len(result.files_modified),
+        )
+
+        return {
+            "success": result.success,
+            "summary": result.summary,
+            "files_created": list(result.files_created),
+            "files_modified": list(result.files_modified),
+            "commands_run": list(result.commands_run),
+            "output_lines": list(result.output_lines),
+            "errors": list(result.errors),
+            "duration_seconds": result.duration_seconds,
+        }
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Python coding session failed: %s", exc)
+        return {
+            "success": False,
+            "summary": "",
+            "files_created": [],
+            "files_modified": [],
+            "commands_run": [],
+            "output_lines": [],
+            "errors": [f"Session execution failed: {exc}"],
+        }
 
 
 @dataclass

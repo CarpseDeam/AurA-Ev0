@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
                 self.planning_service,
                 self._working_directory,
                 self._agent_path,
+                api_key=api_key,
                 parent=self,
             )
             self._connect_orchestrator_signals()

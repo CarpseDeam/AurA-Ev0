@@ -11,6 +11,8 @@ from typing import Dict, List
 
 from PySide6.QtCore import QObject, QEventLoop, QThread, Signal
 
+from aura import config
+from aura.agents import PythonCoderAgent, SessionContext
 from aura.events import EventType, get_event_bus
 from aura.services import AgentRunner, PlanningService
 from aura.services.planning_service import Session
@@ -47,6 +49,7 @@ class Orchestrator(QObject):
         planning_service: PlanningService,
         working_dir: str,
         agent_path: str,
+        api_key: str | None = None,
         parent: QObject | None = None,
     ) -> None:
         """Store dependencies and validate the working directory."""
@@ -59,6 +62,7 @@ class Orchestrator(QObject):
         self._planning_service = planning_service
         self._working_dir = resolved
         self._agent_path = agent_path
+        self._api_key = api_key
         self._thread: QThread | None = None
         self._worker: _ExecutionWorker | None = None
         self._event_bus = get_event_bus()
@@ -77,6 +81,7 @@ class Orchestrator(QObject):
             self._working_dir,
             self._agent_path,
             goal.strip(),
+            self._api_key,
         )
         self._move_worker_to_thread()
         self._thread.start()
@@ -129,6 +134,7 @@ class _ExecutionWorker(QObject):
         working_dir: Path,
         agent_path: str,
         goal: str,
+        api_key: str | None = None,
     ) -> None:
         """Initialize execution state."""
         super().__init__()
@@ -136,6 +142,7 @@ class _ExecutionWorker(QObject):
         self._working_dir = working_dir
         self._agent_path = agent_path
         self._goal = goal
+        self._api_key = api_key
         self._context_notes: List[str] = []
         self._event_bus = get_event_bus()
         self._git = GitHelper(str(working_dir))
@@ -209,7 +216,57 @@ class _ExecutionWorker(QObject):
         )
 
     def _run_session(self, index: int, session: Session) -> SessionResult:
-        """Execute a single session using the agent runner."""
+        """Execute a single session using PythonCoderAgent or fallback to CLI."""
+        # Try using native PythonCoderAgent if enabled and API key available
+        if config.USE_NATIVE_PYTHON_AGENT and self._api_key:
+            try:
+                result = self._run_native_agent(session)
+                LOGGER.info("Session '%s' executed using native PythonCoderAgent", session.name)
+                return result
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Native agent failed, falling back to CLI: %s", exc)
+                self.session_output.emit(f"⚠️ Native agent failed, using CLI fallback: {exc}")
+
+        # Fallback to AgentRunner subprocess approach
+        if not config.USE_NATIVE_PYTHON_AGENT:
+            LOGGER.info("Native agent disabled via config, using CLI agent")
+        return self._run_cli_agent(session)
+
+    def _run_native_agent(self, session: Session) -> SessionResult:
+        """Execute session using PythonCoderAgent."""
+        # Get project files from scan
+        snapshot = scan_directory(str(self._working_dir), max_depth=2)
+        python_files = [f for f in snapshot["files"] if f.endswith(".py")]
+
+        # Build session context
+        context = SessionContext(
+            working_dir=self._working_dir,
+            session_prompt=session.prompt,
+            previous_work=self._context_notes,
+            project_files=python_files,
+        )
+
+        # Create and execute agent
+        agent = PythonCoderAgent(api_key=self._api_key)
+        agent.progress_update.connect(self.session_output)
+        agent_result = agent.execute_session(context)
+
+        # Emit output lines
+        for line in agent_result.output_lines:
+            self.session_output.emit(line)
+
+        # Convert AgentResult to SessionResult
+        all_files = list(agent_result.files_created) + list(agent_result.files_modified)
+        return SessionResult(
+            session_name=session.name,
+            exit_code=0 if agent_result.success else 1,
+            duration_seconds=agent_result.duration_seconds,
+            files_created=all_files,
+            success=agent_result.success,
+        )
+
+    def _run_cli_agent(self, session: Session) -> SessionResult:
+        """Execute session using CLI agent subprocess (fallback)."""
         before = self._snapshot_directory()
         prompt = self._prepare_prompt(session.prompt)
         runner = AgentRunner(

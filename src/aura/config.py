@@ -43,6 +43,11 @@ AGENT_DISPLAY_NAMES: dict[str, str] = {
     "codex": "Codex",
 }
 
+# PythonCoderAgent Configuration
+# Set to True to use the native PythonCoderAgent (recommended for better performance)
+# Set to False to use the CLI wrapper (fallback for compatibility)
+USE_NATIVE_PYTHON_AGENT: bool = True
+
 __all__ = [
     "COLORS",
     "FONT_FAMILY",
@@ -51,4 +56,5 @@ __all__ = [
     "DEFAULT_AGENT",
     "AGENT_SEARCH_PATHS",
     "AGENT_DISPLAY_NAMES",
+    "USE_NATIVE_PYTHON_AGENT",
 ]
