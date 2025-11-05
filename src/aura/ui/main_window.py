@@ -32,7 +32,6 @@ from aura.services.planning_service import Session, SessionPlan
 from aura.ui.agent_settings_dialog import AgentSettingsDialog
 from aura.utils import scan_directory
 from aura.utils.agent_finder import find_cli_agents
-from aura.utils.safety import is_safe_working_directory
 
 
 class MainWindow(QMainWindow):
@@ -76,16 +75,9 @@ class MainWindow(QMainWindow):
         self._subscribe_to_events()
         self._event_received.connect(self._handle_event)
 
-        app_source = str(app_source_path)
-        is_safe_start, _ = is_safe_working_directory(self._working_directory, app_source)
-        # This check should now always pass on startup, but we keep it for safety
-        if not is_safe_start:
-            self.display_output("⚠️ Starting in Aura's source directory is unsafe.", "#FFB74D")
-            self.display_output("Please use 'Set Working Directory' to choose a project folder.", "#FFB74D")
-
         # Initialize orchestration services
         api_key = os.getenv("GEMINI_API_KEY", "")
-        if api_key and is_safe_start:
+        if api_key:
             from aura.services import ChatService, PlanningService
             from aura.orchestrator import Orchestrator
 
@@ -99,8 +91,6 @@ class MainWindow(QMainWindow):
             )
             self._connect_orchestrator_signals()
             self.display_output("✨ Aura orchestration ready", config.COLORS.success)
-        elif api_key:
-            self.display_output("⚠️ Orchestration disabled in unsafe working directory.", "#FFB74D")
         else:
             self.orchestrator = None
             self.display_output("⚠️ Set GEMINI_API_KEY for orchestration features", "#FFB74D")
@@ -457,18 +447,12 @@ class MainWindow(QMainWindow):
         self.output_view.clear()
 
     def set_working_directory(self, path: str) -> None:
-        """Update the working directory with safety check."""
+        """Update the working directory."""
         if not path:
             raise ValueError("Working directory must be provided.")
         resolved = os.path.abspath(path)
         if not os.path.isdir(resolved):
             raise FileNotFoundError(f"Directory does not exist: {resolved}")
-        app_source = str(Path(__file__).parent.parent.parent)
-        is_safe, error_msg = is_safe_working_directory(resolved, app_source)
-        if not is_safe:
-            self.display_output(f"⚠️ Safety Error: {error_msg}", "#FF6B6B")
-            self.display_output("Please choose a different directory for your projects.", "#FFB74D")
-            return
         self._working_directory = resolved
         self.directory_label.setText(f"Dir: {self._working_directory}")
         self.display_output(f"Working directory set to {self._working_directory}", config.COLORS.accent)

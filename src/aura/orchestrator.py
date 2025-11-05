@@ -16,7 +16,6 @@ from aura.services import AgentRunner, PlanningService
 from aura.services.planning_service import Session
 from aura.tools import GitHelper
 from aura.utils import scan_directory
-from aura.utils.safety import is_safe_working_directory
 
 LOGGER = logging.getLogger(__name__)
 
@@ -57,10 +56,6 @@ class Orchestrator(QObject):
         resolved = Path(working_dir).resolve()
         if not resolved.is_dir():
             raise FileNotFoundError(f"Working directory does not exist: {resolved}")
-        app_source = str(Path(__file__).parent.parent.parent)
-        is_safe, error_message = is_safe_working_directory(str(resolved), app_source)
-        if not is_safe:
-            raise ValueError(error_message)
         self._planning_service = planning_service
         self._working_dir = resolved
         self._agent_path = agent_path
