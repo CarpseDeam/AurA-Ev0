@@ -1,8 +1,13 @@
 Aura - Living Design Document
 Version: 2.0 (Simplified Architecture)
 Last Updated: 2025-01-05
-Status: 🟡 Rebuilding from lessons learned
-Author: Solo developer, building for themselves first
+
+
+Implementation Snapshot (2025-11-05)
+- PySide6 desktop shell in `src/aura/ui/main_window.py` with dark theme, status bar, toolbar, and live output stream
+- Background `AgentRunner` QThread executes Gemini CLI with real-time stdout capture and status signaling (`src/aura/services/agent_runner.py`)
+- Configuration, project scanning, and entry-point plumbing live under `src/aura/` with `requirements.txt` pinning PySide6 (>=6.7,<7)
+- Prompt wrapper now injects working-directory context and validates Gemini CLI availability before each run
 
 🎯 The Vision (One Sentence)
 Aura is an AI orchestrator that breaks large coding requests into small, focused sessions so AI agents produce clean, maintainable code instead of 700-line god files.
@@ -779,44 +784,8 @@ Does it save me real time?
 Is the code it produces actually good?
 Do I trust it enough to use on real projects?
 
-If yes to all → Ship it. Show others.
-
-🤝 Contributing (Future - If Open Source)
-Not open source yet. Building in private until it actually works.
-If/when we open source:
-
-Clear contribution guidelines
-Focus on quality over quantity
-No feature creep - stick to core vision
-Prioritize simplicity and maintainability
-
-
-📖 Appendix: Why This Matters
-The Bigger Picture
-AI coding tools are at an inflection point.
-Everyone's adding "AI coding assistants" to their editors. But they all have the same problem: they generate code that works but isn't maintainable.
-This is limiting AI adoption. Developers try these tools, see the spaghetti code, and go back to writing manually.
-Aura is a bet that orchestration matters more than the underlying model.
-It's not about having the best AI. It's about:
-
-Giving the AI the right-sized tasks
-Passing context intelligently
-Architectural discipline baked into the workflow
-
-If this works, it changes what's possible with AI coding.
-Instead of "AI writes first draft, human refactors" → "AI produces maintainable code from the start"
-That's worth building.
-
-🔄 Living Document Status
-This document should evolve.
-As we build and learn:
-
-Update assumptions that prove wrong
-Add new insights
-Remove what doesn't matter
-Keep it true to the vision
 
 Last reviewed: 2025-01-05
-Next review: After MVP ships
+
 
 End of Design Doc
