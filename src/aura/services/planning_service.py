@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Iterator, List
 
@@ -90,7 +91,24 @@ class PlanningService:
         chunks = []
         for chunk in stream:
             chunks.append(chunk)
-        return "".join(chunks)
+        response = "".join(chunks)
+
+        # Try to extract JSON from response (handles natural language + JSON)
+        json_match = re.search(r'\{[\s\S]*\}', response)
+        if json_match:
+            response = json_match.group(0)
+        else:
+            # Strip markdown code blocks if present
+            response = response.strip()
+            if response.startswith("```json"):
+                response = response[7:]  # Remove ```json
+            elif response.startswith("```"):
+                response = response[3:]  # Remove ```
+
+            if response.endswith("```"):
+                response = response[:-3]  # Remove trailing ```
+
+        return response.strip()
 
     def _build_plan(self, payload: dict) -> SessionPlan:
         """Validate and construct the session plan."""
