@@ -64,6 +64,9 @@ class MainWindow(QMainWindow):
         self.chat_service = None
         self.planning_service = None
         self.orchestrator = None
+        self._event_bus = get_event_bus()
+        self._last_error_message: Optional[str] = None
+        self._subscribe_to_events()
         self._event_received.connect(self._handle_event)
 
         # Initialize orchestration services
@@ -180,6 +183,33 @@ class MainWindow(QMainWindow):
         """Connect widget signals."""
         self.input_field.returnPressed.connect(self._handle_submit)
         self.clear_button.clicked.connect(self.clear_output)
+
+    def _subscribe_to_events(self) -> None:
+        """Subscribe to background orchestration events."""
+        self._event_bus.subscribe(EventType.SESSION_OUTPUT, self._emit_event_signal)
+        self._event_bus.subscribe(EventType.ERROR, self._emit_event_signal)
+
+    def _emit_event_signal(self, event: Event) -> None:
+        """Forward event bus payloads onto the UI thread."""
+        self._event_received.emit(event)
+
+    def _handle_event(self, event: Event) -> None:
+        """Process events delivered from the background event bus."""
+        if not isinstance(event, Event):
+            return
+        if event.type is EventType.SESSION_OUTPUT:
+            text = str(event.data.get("text", "")).strip()
+            if text:
+                self.display_output(text)
+        elif event.type is EventType.ERROR:
+            error = str(event.data.get("error", "")).strip()
+            if not error:
+                return
+            if error == self._last_error_message:
+                self._last_error_message = None
+                return
+            self.display_output(f"Error: {error}", "#FF6B6B")
+            self._last_error_message = None
 
     def _handle_submit(self) -> None:
         """Handle the submission of a prompt."""
@@ -363,6 +393,7 @@ class MainWindow(QMainWindow):
 
     def _on_error(self, error: str) -> None:
         """Handle error signal."""
+        self._last_error_message = error
         self._set_error_state()
         self.display_output(f"❌ Error: {error}", "#FF6B6B")
         self.input_field.setEnabled(True)
