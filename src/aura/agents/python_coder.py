@@ -101,7 +101,7 @@ class PythonCoderAgent(QObject):
         outputs: List[str] = []
         errors: List[str] = []
         summary = ""
-        self.progress_update.emit("Generating code...")
+        self.progress_update.emit("⋯ Generating code...")
         try:
             prompt = self._build_prompt(context)
             LOGGER.debug("Built prompt with %d characters", len(prompt))
@@ -110,19 +110,17 @@ class PythonCoderAgent(QObject):
             summary = plan.get("summary", "")
             LOGGER.info("Received plan: %s", summary)
             plan_summary = summary.strip() or "No summary provided"
-            self.progress_update.emit(f"  ├─ Planning: {plan_summary}")
+            self.progress_update.emit(f"⋯ {plan_summary}")
 
             file_ops = self._parse_file_operations(plan.get("files", []), context.working_dir)
             LOGGER.debug("Parsed %d file operations", len(file_ops))
-            if file_ops:
-                self.progress_update.emit("  ├─ Writing files...")
 
             created, modified = self._apply_files(file_ops, context.working_dir)
             LOGGER.info("Applied files: %d created, %d modified", len(created), len(modified))
 
             plan_commands = plan.get("commands", [])
             if plan_commands:
-                self.progress_update.emit("  ├─ Running validation...")
+                self.progress_update.emit("▶ Running validation...")
 
             commands, cmd_outputs, cmd_errors = self._execute_commands(
                 plan_commands,
@@ -139,9 +137,10 @@ class PythonCoderAgent(QObject):
         duration = perf_counter() - start
         success = (len(created) + len(modified) > 0) or not errors
         files_count = len(created) + len(modified)
-        self.progress_update.emit(
-            f"  └─ Created {len(created)} files, modified {len(modified)} files"
-        )
+        if success:
+            self.progress_update.emit(
+                f"✓ Created {len(created)} files, modified {len(modified)} files"
+            )
 
         LOGGER.info(
             "Session completed: success=%s, duration=%.2fs, files=%d, commands=%d",
@@ -238,10 +237,12 @@ class PythonCoderAgent(QObject):
             existed = op.path.exists()
             op.path.write_text(op.content, encoding="utf-8")
             rel_path = self._to_relative(working_dir, op.path)
-            self.progress_update.emit(f"wrote {rel_path}")
+
             if existed:
+                self.progress_update.emit(f"~ Modifying {rel_path}")
                 modified.append(rel_path)
             else:
+                self.progress_update.emit(f"+ Creating {rel_path}")
                 created.append(rel_path)
         return created, modified
 

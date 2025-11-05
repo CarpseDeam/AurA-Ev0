@@ -39,9 +39,7 @@ class OrchestrationHandler(QObject):
         self._app_state.set_current_plan(None)
         self._set_running_state()
         self.request_input_enabled.emit(False)
-        self._output_panel.display_output(
-            "Analyzing request and planning sessions...", config.COLORS.accent
-        )
+        self._output_panel.display_thinking("Analyzing request and planning sessions...")
 
     def handle_plan_ready(self, plan: SessionPlan) -> None:
         """Render the plan details and re-enable input."""
@@ -50,7 +48,7 @@ class OrchestrationHandler(QObject):
             self._display_plan(plan)
         else:
             self._app_state.set_current_plan(None)
-            self._output_panel.display_output("Received invalid plan data.", "#FF6B6B")
+            self._output_panel.display_error("Received invalid plan data.")
 
         self.request_input_enabled.emit(True)
         self.request_input_focus.emit()
@@ -61,16 +59,37 @@ class OrchestrationHandler(QObject):
         total = len(self._app_state.current_plan.sessions) if self._app_state.current_plan else "?"
         name = getattr(session, "name", "Unknown session")
 
-        self._output_panel.display_output("", config.COLORS.agent_output)
-        self._output_panel.display_output("=" * 60, "#7B68EE")
+        self._output_panel.display_output("")  # Spacer
         self._output_panel.display_output(
-            f"Session {index + 1}/{total}: {name}", config.COLORS.accent
+            f"▶ Session {index + 1}/{total}: {name}", config.COLORS.accent
         )
-        self._output_panel.display_output("=" * 60, "#7B68EE")
 
     def handle_session_output(self, text: str) -> None:
         """Relay streaming session output to the transcript."""
-        if text:
+        if not text:
+            return
+
+        stripped_text = text.strip()
+
+        if stripped_text.startswith("TOOL_CALL::"):
+            try:
+                _, tool_name, args_summary = stripped_text.split("::", 2)
+                self._output_panel.display_tool_call(tool_name, args_summary)
+            except ValueError:
+                self._output_panel.display_output(text)  # Fallback
+        elif stripped_text.startswith("⋯"):
+            self._output_panel.display_thinking(stripped_text[1:].strip())
+        elif stripped_text.startswith("▶"):
+            self._output_panel.display_output(stripped_text, config.COLORS.accent)
+        elif stripped_text.startswith("✓"):
+            self._output_panel.display_success(stripped_text[1:].strip())
+        elif stripped_text.startswith("+"):
+            action, path = stripped_text[1:].strip().split(maxsplit=1)
+            self._output_panel.display_file_operation(action, path)
+        elif stripped_text.startswith("~"):
+            action, path = stripped_text[1:].strip().split(maxsplit=1)
+            self._output_panel.display_file_operation(action, path)
+        else:
             self._output_panel.display_output(text)
 
     def handle_session_complete(self, index: int, result: SessionResult) -> None:
@@ -79,29 +98,19 @@ class OrchestrationHandler(QObject):
             return
 
         duration = getattr(result, "duration_seconds", 0.0)
-        files = getattr(result, "files_created", [])
         success = getattr(result, "success", False)
 
-        prefix = "Session complete" if success else "Session failed"
-        color = config.COLORS.success if success else "#FF6B6B"
-
-        self._output_panel.display_output(f"{prefix} in {duration:.1f}s", color)
-
-        if files:
-            self._output_panel.display_output(
-                "   Files created/modified:", config.COLORS.agent_output
-            )
-            for file_path in files:
-                self._output_panel.display_output(
-                    f"      {file_path}", config.COLORS.agent_output
-                )
+        if success:
+            self._output_panel.display_success(f"Session complete in {duration:.1f}s")
+        else:
+            self._output_panel.display_error(f"Session failed in {duration:.1f}s")
 
     def handle_all_complete(self) -> None:
         """Mark orchestration as complete."""
         self._app_state.set_current_plan(None)
         self._set_completed_state()
-        self._output_panel.display_output("", config.COLORS.agent_output)
-        self._output_panel.display_output("All sessions complete", config.COLORS.success)
+        self._output_panel.display_output("")  # Spacer
+        self._output_panel.display_success("All sessions complete")
         self.request_input_enabled.emit(True)
         self.request_input_focus.emit()
 
@@ -109,7 +118,7 @@ class OrchestrationHandler(QObject):
         """Surface orchestration errors."""
         self._last_error_message = error
         self._set_error_state()
-        self._output_panel.display_output(f"Error: {error}", "#FF6B6B")
+        self._output_panel.display_error(error)
         self.request_input_enabled.emit(True)
         self.request_input_focus.emit()
         self._app_state.set_current_plan(None)
@@ -121,8 +130,18 @@ class OrchestrationHandler(QObject):
 
         if event.type is EventType.SESSION_OUTPUT:
             text = str(event.data.get("text", "")).strip()
-            if text:
+            if not text:
+                return
+
+            if text.startswith("TOOL_CALL::"):
+                try:
+                    _, tool_name, args_summary = text.split("::", 2)
+                    self._output_panel.display_tool_call(tool_name, args_summary)
+                except ValueError:
+                    self._output_panel.display_output(text)  # Fallback
+            else:
                 self._output_panel.display_output(text)
+
         elif event.type is EventType.ERROR:
             error = str(event.data.get("error", "")).strip()
             if not error:
@@ -130,7 +149,7 @@ class OrchestrationHandler(QObject):
             if error == self._last_error_message:
                 self._last_error_message = None
                 return
-            self._output_panel.display_output(f"Error: {error}", "#FF6B6B")
+            self._output_panel.display_error(error)
             self._last_error_message = None
 
     def format_plan(self, plan: SessionPlan) -> List[str]:
@@ -149,40 +168,24 @@ class OrchestrationHandler(QObject):
 
     def _display_plan(self, plan: SessionPlan) -> None:
         """Display the structured plan in the output panel."""
-        self._output_panel.display_output("", config.COLORS.agent_output)
-        self._output_panel.display_output("Session Plan", config.COLORS.accent)
+        self._output_panel.display_output("")  # Spacer
+        self._output_panel.display_output("┌ Session Plan", config.COLORS.accent)
+
+        if plan.reasoning:
+            self._output_panel.display_output(
+                f"├─ Reasoning: {plan.reasoning}", config.COLORS.agent_output
+            )
+
         self._output_panel.display_output(
-            f"   Total sessions: {len(plan.sessions)}", config.COLORS.agent_output
+            f"├─ Sessions: {len(plan.sessions)}", config.COLORS.agent_output
         )
         self._output_panel.display_output(
-            f"   Estimated time: {plan.total_estimated_minutes} minutes",
+            f"└─ Estimated time: ~{plan.total_estimated_minutes} minutes",
             config.COLORS.agent_output,
         )
 
-        if plan.reasoning:
-            self._output_panel.display_output("", config.COLORS.agent_output)
-            self._output_panel.display_output(
-                f"Reasoning: {plan.reasoning}", config.COLORS.agent_output
-            )
-
-        self._output_panel.display_output("", config.COLORS.agent_output)
-        self._output_panel.display_output("Sessions:", config.COLORS.accent)
-
-        for idx, session in enumerate(plan.sessions, start=1):
-            self._output_panel.display_output(
-                f"   {idx}. {session.name} (~{session.estimated_minutes} min)",
-                config.COLORS.agent_output,
-            )
-            if session.dependencies:
-                deps = ", ".join(session.dependencies)
-                self._output_panel.display_output(
-                    f"      Dependencies: {deps}", "#888888"
-                )
-
-        self._output_panel.display_output("", config.COLORS.agent_output)
-        self._output_panel.display_output(
-            "Type 'start' when ready to begin building.", config.COLORS.success
-        )
+        self._output_panel.display_output("")  # Spacer
+        self._output_panel.display_success("Type 'start' when ready to begin building.")
 
     def _set_ready_state(self) -> None:
         """Set the ready state through the status manager."""
@@ -198,4 +201,4 @@ class OrchestrationHandler(QObject):
 
     def _set_error_state(self) -> None:
         """Set the error state through the status manager."""
-        self._status_manager.update_status("Error", "#FF6B6B", persist=True)
+        self._status_manager.update_status("Error", config.COLORS.error, persist=True)

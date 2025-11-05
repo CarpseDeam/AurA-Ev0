@@ -267,6 +267,11 @@ class ChatService:
         collected = []
         try:
             for chunk in response:
+                if chunk.function_calls:
+                    for fc in chunk.function_calls:
+                        args_summary = ", ".join([f"{k}={v}" for k, v in fc.args.items()])
+                        yield f"TOOL_CALL::{fc.name}::{args_summary}"
+
                 text = chunk.text or ""
                 if text:
                     collected.append(text)

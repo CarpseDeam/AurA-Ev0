@@ -42,10 +42,31 @@ class OutputPanel(QWidget):
         escaped_text = html.escape(text)
         timestamp = datetime.now().strftime("%H:%M:%S")
         payload = (
-            f'<span style="color: #888888;">[{timestamp}]</span> '
+            f'<span style="color: {config.COLORS.secondary};">[{timestamp}]</span> '
             f'<span style="color: {chosen_color}; white-space: pre-wrap;">{escaped_text}</span><br>'
         )
         self._append_html(payload)
+
+    def display_thinking(self, text: str) -> None:
+        """Render thinking/reasoning steps with a purple ellipsis."""
+        self.display_output(f"⋯ {text}", config.COLORS.thinking)
+
+    def display_tool_call(self, tool_name: str, args_summary: str) -> None:
+        """Render tool calls with a gold gear symbol."""
+        self.display_output(f"⚙ {tool_name}({args_summary})", config.COLORS.tool_call)
+
+    def display_file_operation(self, action: str, path: str) -> None:
+        """Render file operations with appropriate symbols and colors."""
+        symbol = "+" if action.lower() == "creating" else "~"
+        self.display_output(f"{symbol} {action} {path}", config.COLORS.accent)
+
+    def display_success(self, text: str) -> None:
+        """Render success messages with a green checkmark."""
+        self.display_output(f"✓ {text}", config.COLORS.success)
+
+    def display_error(self, text: str) -> None:
+        """Render error messages with a red X mark."""
+        self.display_output(f"✗ {text}", config.COLORS.error)
 
     def append_to_log(self, text: str, color: Optional[str] = None) -> None:
         """Append streaming output without timestamp metadata."""
@@ -59,14 +80,14 @@ class OutputPanel(QWidget):
     def display_startup_header(self) -> None:
         """Render the startup ASCII art header."""
         header_html = """
-        <div style="font-family: 'Courier New', 'Consolas', monospace; font-size: 14px; line-height: 1.2; margin: 20px 0; white-space: pre;">
-<span style="color: #5294E2;">    ___    ____  ____  ___    </span>
-<span style="color: #7B68EE;">   /   |  / __ \/ __ \/   |   </span>
-<span style="color: #9370DB;">  / /| | / /_/ / /_/ / /| |   </span>
-<span style="color: #BA55D3;"> / ___ |/ _, _/ _, _/ ___ |   </span>
-<span style="color: #DA70D6;">/_/  |_/_/ |_/_/ |_/_/  |_|   </span>
-<span style="color: #EE82EE;">                               </span>
-        </div>
+<div style="font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 12px; line-height: 1.0; text-align: center; white-space: pre; margin: 10px 0;">
+<span style="color: #9370DB;">    █████╗ ██╗   ██╗██████╗  █████╗    </span>
+<span style="color: #7E85E8;">    ██╔══██╗██║   ██║██╔══██╗██╔══██╗    </span>
+<span style="color: #6A90F5;">    ███████║██║   ██║██████╔╝███████║    </span>
+<span style="color: #569AFB;">    ██╔══██║██║   ██║██╔══██╗██╔══██║    </span>
+<span style="color: #42A5F5;">    ██║  ██║╚██████╔╝██║  ██║██║  ██║    </span>
+<span style="color: #40E0D0;">    ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝    </span>
+</div>
         """
         self._append_html(header_html)
 
@@ -89,7 +110,7 @@ class OutputPanel(QWidget):
         if stripped.startswith("Session complete"):
             return config.COLORS.success
         if "error" in lowered or "failed" in lowered:
-            return "#FF6B6B"
+            return config.COLORS.error
         if stripped.startswith(("Creating", "Modifying")):
             return config.COLORS.accent
         return config.COLORS.agent_output

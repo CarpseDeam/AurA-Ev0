@@ -14,7 +14,11 @@ class ColorPalette:
     text: str
     accent: str
     success: str
+    error: str
     agent_output: str
+    thinking: str
+    tool_call: str
+    secondary: str
 
 
 COLORS = ColorPalette(
@@ -22,7 +26,11 @@ COLORS = ColorPalette(
     text="#e0e0e0",
     accent="#64B5F6",
     success="#66BB6A",
+    error="#FF6B6B",
     agent_output="#FFD27F",
+    thinking="#9370DB",
+    tool_call="#FFD27F",
+    secondary="#888888",
 )
 
 FONT_FAMILY: str = "JetBrains Mono"
