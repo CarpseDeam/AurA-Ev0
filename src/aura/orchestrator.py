@@ -163,31 +163,46 @@ class _ExecutionWorker(QObject):
         """Perform planning then execute all sessions sequentially."""
         self.planning_started.emit()
         self._event_bus.publish(EventType.PLANNING_STARTED)
+        self.session_output.emit("Analyzing request...")
         project_context = self._build_project_context()
         plan = self._planning_service.plan_sessions(self._goal, project_context)
         if not plan or not plan.sessions:
             raise ValueError("Planning produced no sessions.")
         self.plan_ready.emit(plan)
         self._event_bus.publish(EventType.PLAN_READY, plan=plan)
+        session_count = len(plan.sessions)
+        estimated_minutes = getattr(plan, "total_estimated_minutes", 0)
+        self.session_output.emit(f"  ├─ Generated {session_count} sessions")
+        self.session_output.emit(f"  └─ Estimated {estimated_minutes} minutes")
+        all_results: List[SessionResult] = []
         for index, session in enumerate(plan.sessions):
+            self.session_output.emit("")
+            self.session_output.emit(f"Executing Session {index + 1}/{session_count}: {session.name}")
             self.session_started.emit(index, session)
             self._event_bus.publish(EventType.SESSION_STARTED, index=index, session=session)
             result = self._run_session(index, session)
             self.session_complete.emit(index, result)
             self._event_bus.publish(EventType.SESSION_COMPLETE, index=index, result=result)
             self._update_context(index, session, result)
+            all_results.append(result)
             if result.success and result.files_created:
                 commit_msg = f"Session {index + 1}: {session.name}"
+                self.session_output.emit("Committing changes...")
+                self.session_output.emit(f"  └─ {commit_msg}")
                 if self._git.commit(commit_msg, result.files_created):
                     self._event_bus.publish(
                         EventType.SESSION_OUTPUT,
-                        text=f" Committed: {commit_msg}",
+                        text=f"  └─ {commit_msg}",
                     )
                 else:
                     self._event_bus.publish(
                         EventType.ERROR,
                         error=f"Failed to commit changes for {commit_msg}",
                     )
+            if result.success:
+                self.session_output.emit(f"  └─ ✓ Complete in {result.duration_seconds:.1f}s")
+            else:
+                self.session_output.emit("  └─ ✗ Failed")
             if not result.success:
                 error_message = f"Session '{session.name}' failed with exit code {result.exit_code}."
                 self._event_bus.publish(EventType.ERROR, error=error_message)
@@ -195,11 +210,20 @@ class _ExecutionWorker(QObject):
                 return
         self.all_sessions_complete.emit()
         self._event_bus.publish(EventType.ALL_COMPLETE)
-        self._event_bus.publish(EventType.SESSION_OUTPUT, text=" Pushing to GitHub...")
+        self.session_output.emit("")
+        self.session_output.emit("All sessions complete")
+        total_files = sum(len(result.files_created) for result in all_results)
+        total_duration = sum(result.duration_seconds for result in all_results)
+        self.session_output.emit(f"  ├─ Created {total_files} files")
+        self.session_output.emit("Pushing to GitHub...")
+        self._event_bus.publish(EventType.SESSION_OUTPUT, text="Pushing to GitHub...")
         if self._git.push():
-            self._event_bus.publish(EventType.SESSION_OUTPUT, text="✅ Pushed to GitHub")
+            self.session_output.emit("  ├─ ✓ Pushed to GitHub")
+            self._event_bus.publish(EventType.SESSION_OUTPUT, text="  ├─ ✓ Pushed to GitHub")
         else:
+            self.session_output.emit("  ├─ ✗ Push failed")
             self._event_bus.publish(EventType.ERROR, error="Failed to push to GitHub")
+        self.session_output.emit(f"  └─ Total time: {total_duration:.1f}s")
 
     def _build_project_context(self) -> str:
         """Summarize the working directory for planning."""

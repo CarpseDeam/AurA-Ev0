@@ -107,7 +107,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Aura")
         self.resize(*config.WINDOW_DIMENSIONS)
         self.output_view.setReadOnly(True)
-        self.output_view.setAcceptRichText(False)
+        self.output_view.setAcceptRichText(True)
         self.output_view.setWordWrapMode(QTextOption.WrapMode.WordWrap)
         self.input_field.setPlaceholderText("Enter a request")
         self.input_field.setClearButtonEnabled(True)
@@ -133,54 +133,130 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container)
 
     def _apply_styles(self) -> None:
-        """Apply the dark theme styling."""
+        """Apply the modern dark theme styling with gradients and polish."""
         self.setStyleSheet(
             f"""
             QMainWindow {{
-                background-color: {config.COLORS.background};
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #1a1a1a,
+                    stop:1 {config.COLORS.background}
+                );
                 color: {config.COLORS.text};
             }}
             QTextEdit {{
-                background-color: #1b1b1b;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #1a1a1a,
+                    stop:1 #1e1e1e
+                );
                 color: {config.COLORS.text};
-                border: 1px solid {config.COLORS.agent_output};
-                border-radius: 6px;
-                padding: 10px;
+                border: 2px solid #2d2d2d;
+                border-radius: 12px;
+                padding: 16px;
+                selection-background-color: {config.COLORS.accent};
+            }}
+            QTextEdit:focus {{
+                border-color: {config.COLORS.accent};
             }}
             QLineEdit {{
-                background-color: #232323;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #262626,
+                    stop:1 #1f1f1f
+                );
                 color: {config.COLORS.text};
-                border: 1px solid {config.COLORS.accent};
-                border-radius: 6px;
-                padding: 8px;
+                border: 2px solid #3a3a3a;
+                border-radius: 10px;
+                padding: 10px 14px;
+                font-size: 13px;
             }}
             QLineEdit:focus {{
-                border-color: {config.COLORS.success};
+                border-color: {config.COLORS.accent};
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #2a2a2a,
+                    stop:1 #222222
+                );
+            }}
+            QStatusBar {{
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #1a1a1a,
+                    stop:1 #222222
+                );
+                color: {config.COLORS.text};
+                border-top: 2px solid #2d2d2d;
+                padding: 6px;
+            }}
+            QToolBar {{
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #1a1a1a,
+                    stop:1 #222222
+                );
+                border-bottom: 2px solid #2d2d2d;
+                spacing: 8px;
+                padding: 4px;
             }}
             """
         )
         self.clear_button.setStyleSheet(
             f"""
             QPushButton {{
-                background-color: #2d2d2d;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #323232,
+                    stop:1 #282828
+                );
                 color: {config.COLORS.text};
-                border: 1px solid #3a3a3a;
-                border-radius: 6px;
-                padding: 6px 12px;
+                border: 2px solid #3d3d3d;
+                border-radius: 10px;
+                padding: 8px 16px;
+                font-weight: 500;
+                font-size: 13px;
             }}
             QPushButton:hover {{
                 border-color: {config.COLORS.accent};
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #3a3a3a,
+                    stop:1 #2d2d2d
+                );
+            }}
+            QPushButton:pressed {{
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #252525,
+                    stop:1 #1f1f1f
+                );
             }}
             """
         )
 
     def _setup_status_bar(self) -> None:
-        """Initialize the status bar widgets."""
-        self.status_label.setText("Ready")
-        self.directory_label.setText(f"Dir: {self._working_directory}")
-        self.directory_label.setStyleSheet("color: #9e9e9e;")
-        self.status_bar.addWidget(self.status_label, 1)
-        self.status_bar.addPermanentWidget(self.directory_label, 0)
+        """Initialize the status bar widgets with modern styling."""
+        self.status_label.setText("● Ready")
+        self.status_label.setStyleSheet(
+            f"color: {config.COLORS.text}; font-weight: 500; padding: 4px 8px;"
+        )
+
+        # Create a visual separator
+        separator = QLabel("│")
+        separator.setStyleSheet("color: #3d3d3d; padding: 0 8px;")
+
+        # Style directory label with icon
+        dir_short = self._working_directory
+        if len(dir_short) > 50:
+            dir_short = "..." + dir_short[-47:]
+        self.directory_label.setText(f"📁 {dir_short}")
+        self.directory_label.setStyleSheet(
+            "color: #9e9e9e; padding: 4px 8px; font-size: 12px;"
+        )
+
+        self.status_bar.addWidget(self.status_label, 0)
+        self.status_bar.addWidget(separator, 0)
+        self.status_bar.addPermanentWidget(self.directory_label, 1)
         self.setStatusBar(self.status_bar)
 
     def _build_toolbar(self) -> None:
@@ -306,18 +382,24 @@ class MainWindow(QMainWindow):
         self.output_view.ensureCursorVisible()
 
     def _display_startup_header(self) -> None:
-        """Display ASCII art header with gradient colors on startup."""
-        self.display_output("", config.COLORS.agent_output)  # Blank line
-        # Gradient from blue → purple → pink
-        self.display_output("    ╔═══════════════════════════════════╗", "#5294E2")
-        self.display_output("    ║   █████╗ ██╗   ██╗██████╗  █████╗    ║", "#7B68EE")
-        self.display_output("    ║  ██╔══██╗██║   ██║██╔══██╗██╔══██╗   ║", "#9370DB")
-        self.display_output("    ║  ███████║██║   ██║██████╔╝███████║   ║", "#BA55D3")
-        self.display_output("    ║  ██╔══██║╚██╗ ██╔╝██╔══██╗██╔══██║   ║", "#DA70D6")
-        self.display_output("    ║  ██║  ██║ ╚████╔╝ ██║  ██║██║  ██║   ║", "#EE82EE")
-        self.display_output("    ║  ╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═╝   ║", "#FF69B4")
-        self.display_output("    ╚═══════════════════════════════════╝", "#FF1493")
-        self.display_output("", config.COLORS.agent_output)  # Blank line
+        """Display gorgeous ASCII art header with gradient colors on startup."""
+        # Use HTML with proper monospace font for clean rendering
+        header_html = """
+        <div style="font-family: 'Courier New', monospace; line-height: 1.2; margin: 16px 0;">
+            <div style="color: #5294E2;">    ╔═══════════════════════════════════════════╗</div>
+            <div style="color: #6B7FEE;">    ║   <span style="color: #7B68EE;">█████╗ ██╗   ██╗██████╗  █████╗</span>   ║</div>
+            <div style="color: #8875E8;">    ║  <span style="color: #9370DB;">██╔══██╗██║   ██║██╔══██╗██╔══██╗</span>  ║</div>
+            <div style="color: #A565DD;">    ║  <span style="color: #BA55D3;">███████║██║   ██║██████╔╝███████║</span>  ║</div>
+            <div style="color: #C25DD8;">    ║  <span style="color: #DA70D6;">██╔══██║╚██╗ ██╔╝██╔══██╗██╔══██║</span>  ║</div>
+            <div style="color: #DA6FD7;">    ║  <span style="color: #EE82EE;">██║  ██║ ╚████╔╝ ██║  ██║██║  ██║</span>  ║</div>
+            <div style="color: #EE7CC9;">    ║  <span style="color: #FF69B4;">╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═╝</span>  ║</div>
+            <div style="color: #FF4EA3;">    ╚═══════════════════════════════════════════╝</div>
+        </div>
+        """
+        cursor = self.output_view.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.output_view.setTextCursor(cursor)
+        self.output_view.insertHtml(header_html)
 
     def _connect_orchestrator_signals(self) -> None:
         """Connect orchestrator Qt signals to handlers."""
@@ -563,7 +645,7 @@ class MainWindow(QMainWindow):
                     self.orchestrator.update_agent_path(self._agent_path)
                 return
         self.display_output(
-            "No CLI agents found. Use 'Agent Settings...' to configure.", "#FF6B6B"
+            "No CLI agents found. Use 'Agent Settings...' to configure.", "#FFB74D"
         )
 
     def _open_agent_settings(self) -> None:
@@ -591,3 +673,4 @@ class MainWindow(QMainWindow):
             f"Directories:\n{directory_lines}\n"
             f"Python files:\n{file_lines}"
         )
+
