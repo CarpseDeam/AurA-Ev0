@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterator, List, Mapping
 
 import google.generativeai as genai
+from aura.agents import PythonCoderAgent, SessionContext
 
 LOGGER = logging.getLogger(__name__)
 
@@ -145,6 +146,38 @@ def git_push(remote: str = "origin", branch: str = "main") -> str:
     return f"✅ Pushed successfully to {remote}/{branch}\n{output}"
 
 
+def execute_python_session(session_prompt: str, working_directory: str) -> dict[str, object]:
+    """Run a Python coder session using the local project."""
+    try:
+        agent = PythonCoderAgent(api_key=os.getenv("GEMINI_API_KEY", ""))
+    except ValueError as exc:
+        return {
+            "success": False,
+            "summary": "",
+            "files_created": [],
+            "files_modified": [],
+            "errors": [str(exc)],
+        }
+
+    context = SessionContext(
+        working_dir=Path(working_directory) if working_directory else Path.cwd(),
+        session_prompt=session_prompt,
+        previous_work=(),
+        project_files=(),
+    )
+    result = agent.execute_session(context)
+    return {
+        "success": result.success,
+        "summary": result.summary,
+        "files_created": list(result.files_created),
+        "files_modified": list(result.files_modified),
+        "commands_run": list(result.commands_run),
+        "output_lines": list(result.output_lines),
+        "errors": list(result.errors),
+        "duration_seconds": result.duration_seconds,
+    }
+
+
 @dataclass
 class ChatMessage:
     """Represents a single chat message in the conversation history."""
@@ -180,7 +213,7 @@ class ChatService:
         model = genai.GenerativeModel(
             self.model,
             system_instruction=AURA_SYSTEM_PROMPT,
-            tools=[read_project_file, list_project_files, get_git_status, git_commit, git_push],
+            tools=[read_project_file, list_project_files, get_git_status, git_commit, git_push, execute_python_session],
         )
 
         # Build chat history, excluding system messages (Gemini doesn't accept them)
@@ -216,4 +249,3 @@ class ChatService:
     def clear_history(self) -> None:
         """Reset the conversation history."""
         self._history.clear()
-
