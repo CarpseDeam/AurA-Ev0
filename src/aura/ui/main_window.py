@@ -94,6 +94,7 @@ class MainWindow(QMainWindow):
                 parent=self,
             )
             self._connect_orchestrator_signals()
+            self._display_startup_header()
             self.display_output("✨ Aura orchestration ready", config.COLORS.success)
         else:
             self.orchestrator = None
@@ -304,6 +305,20 @@ class MainWindow(QMainWindow):
         self.output_view.insertHtml(payload)
         self.output_view.ensureCursorVisible()
 
+    def _display_startup_header(self) -> None:
+        """Display ASCII art header with gradient colors on startup."""
+        self.display_output("", config.COLORS.agent_output)  # Blank line
+        # Gradient from blue → purple → pink
+        self.display_output("    ╔═══════════════════════════════════╗", "#5294E2")
+        self.display_output("    ║   █████╗ ██╗   ██╗██████╗  █████╗    ║", "#7B68EE")
+        self.display_output("    ║  ██╔══██╗██║   ██║██╔══██╗██╔══██╗   ║", "#9370DB")
+        self.display_output("    ║  ███████║██║   ██║██████╔╝███████║   ║", "#BA55D3")
+        self.display_output("    ║  ██╔══██║╚██╗ ██╔╝██╔══██╗██╔══██║   ║", "#DA70D6")
+        self.display_output("    ║  ██║  ██║ ╚████╔╝ ██║  ██║██║  ██║   ║", "#EE82EE")
+        self.display_output("    ║  ╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═╝   ║", "#FF69B4")
+        self.display_output("    ╚═══════════════════════════════════╝", "#FF1493")
+        self.display_output("", config.COLORS.agent_output)  # Blank line
+
     def _connect_orchestrator_signals(self) -> None:
         """Connect orchestrator Qt signals to handlers."""
         if not self.orchestrator:
@@ -364,9 +379,9 @@ class MainWindow(QMainWindow):
         name = getattr(session, "name", "Unknown session")
         self._set_running_state()
         self.display_output("", config.COLORS.agent_output)  # Blank line
-        self.display_output("=" * 60, config.COLORS.accent)
-        self.display_output(f"▶️  Session {index + 1}/{total}: {name}", config.COLORS.accent)
-        self.display_output("=" * 60, config.COLORS.accent)
+        self.display_output("╔" + "═" * 60 + "╗", "#7B68EE")
+        self.display_output(f"║ ▶️  Session {index + 1}/{total}: {name}", config.COLORS.accent)
+        self.display_output("╚" + "═" * 60 + "╝", "#7B68EE")
 
     def _on_session_output(self, text: str) -> None:
         """Handle session output signal."""

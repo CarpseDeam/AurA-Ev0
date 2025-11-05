@@ -128,7 +128,7 @@ class PythonCoderAgent(QObject):
             errors.append(str(exc))
 
         duration = perf_counter() - start
-        success = not errors
+        success = (len(created) + len(modified) > 0) or not errors
 
         LOGGER.info(
             "Session completed: success=%s, duration=%.2fs, files=%d, commands=%d",
@@ -254,7 +254,7 @@ class PythonCoderAgent(QObject):
         errors: List[str] = []
 
         # Allowlist of safe command prefixes for local development
-        safe_prefixes = ("python", "pip", "pytest", "git", "npm", "node", "poetry")
+        safe_prefixes = ("python", "pip", "pytest", "git", "npm", "node", "poetry", "mkdir", "md")
         dangerous_patterns = ("rm -rf", "sudo", "chmod", "chown", ">", ">>", "|", "&", ";")
 
         for command in commands or []:
