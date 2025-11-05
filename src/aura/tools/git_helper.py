@@ -1,4 +1,4 @@
-"""Utilities used by Aura orchestration."""
+"""Git helper utilities used by Aura orchestration."""
 
 from __future__ import annotations
 

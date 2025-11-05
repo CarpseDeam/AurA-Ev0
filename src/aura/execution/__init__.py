@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.aura.execution.executors import (
+from aura.execution.executors import (
     SessionExecutor,
     NativeAgentExecutor,
     CliAgentExecutor,

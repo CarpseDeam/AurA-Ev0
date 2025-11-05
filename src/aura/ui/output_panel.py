@@ -59,15 +59,13 @@ class OutputPanel(QWidget):
     def display_startup_header(self) -> None:
         """Render the startup ASCII art header."""
         header_html = """
-        <div style="font-family: 'Courier New', 'Consolas', monospace; font-size: 18px; line-height: 1.1; margin: 20px 0; white-space: pre;">
-<span style="color: #5294E2;">�������������������������������������������ͻ</span>
-<span style="color: #6B7FEE;">�   </span><span style="color: #7B68EE;">����ۻ �ۻ   �ۻ�����ۻ  ����ۻ</span><span style="color: #6B7FEE;">   �</span>
-<span style="color: #8875E8;">�  </span><span style="color: #9370DB;">������ۻ�ۺ   �ۺ������ۻ������ۻ</span><span style="color: #8875E8;">  �</span>
-<span style="color: #A565DD;">�  </span><span style="color: #BA55D3;">������ۺ�ۺ   �ۺ������ɼ������ۺ</span><span style="color: #A565DD;">  �</span>
-<span style="color: #C25DD8;">�  </span><span style="color: #DA70D6;">������ۺ��ۻ ��ɼ������ۻ������ۺ</span><span style="color: #C25DD8;">  �</span>
-<span style="color: #DA6FD7;">�  </span><span style="color: #EE82EE;">�ۺ  �ۺ �����ɼ �ۺ  �ۺ�ۺ  �ۺ</span><span style="color: #DA6FD7;">  �</span>
-<span style="color: #EE7CC9;">�  </span><span style="color: #FF69B4;">�ͼ  �ͼ  ���ͼ  �ͼ  �ͼ�ͼ  �ͼ</span><span style="color: #EE7CC9;">  �</span>
-<span style="color: #FF4EA3;">�������������������������������������������ͼ</span>
+        <div style="font-family: 'Courier New', 'Consolas', monospace; font-size: 14px; line-height: 1.2; margin: 20px 0; white-space: pre;">
+<span style="color: #5294E2;">    ___    ____  ____  ___    </span>
+<span style="color: #7B68EE;">   /   |  / __ \/ __ \/   |   </span>
+<span style="color: #9370DB;">  / /| | / /_/ / /_/ / /| |   </span>
+<span style="color: #BA55D3;"> / ___ |/ _, _/ _, _/ ___ |   </span>
+<span style="color: #DA70D6;">/_/  |_/_/ |_/_/ |_/_/  |_|   </span>
+<span style="color: #EE82EE;">                               </span>
         </div>
         """
         self._append_html(header_html)

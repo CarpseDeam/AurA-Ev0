@@ -15,11 +15,11 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QEventLoop, QObject, Signal
 
 from src.aura.agents import PythonCoderAgent, SessionContext
-from src.aura.orchestrator import SessionResult
 from src.aura.services import AgentRunner
 from src.aura.utils import scan_directory
 
 if TYPE_CHECKING:
+    from aura.orchestrator import SessionResult
     from src.aura.services.planning_service import Session
 
 LOGGER = logging.getLogger(__name__)
@@ -116,7 +116,7 @@ class NativeAgentExecutor(SessionExecutor):
 
         # Convert AgentResult to SessionResult
         all_files = list(agent_result.files_created) + list(agent_result.files_modified)
-        return SessionResult(
+        return _create_session_result(
             session_name=session.name,
             exit_code=0 if agent_result.success else 1,
             duration_seconds=agent_result.duration_seconds,
@@ -198,7 +198,7 @@ class CliAgentExecutor(SessionExecutor):
         files_created = self._detect_file_changes(before, after)
 
         success = exit_code == 0
-        return SessionResult(
+        return _create_session_result(
             session_name=session.name,
             exit_code=exit_code,
             duration_seconds=duration,
@@ -281,3 +281,23 @@ class CliAgentExecutor(SessionExecutor):
         ]
         annotated = created + [f"{path} (updated)" for path in updated]
         return sorted(annotated)
+
+
+def _create_session_result(
+    *,
+    session_name: str,
+    exit_code: int,
+    duration_seconds: float,
+    files_created: list[str],
+    success: bool,
+) -> "SessionResult":
+    """Instantiate SessionResult lazily to avoid circular imports."""
+    from aura.orchestrator import SessionResult
+
+    return SessionResult(
+        session_name=session_name,
+        exit_code=exit_code,
+        duration_seconds=duration_seconds,
+        files_created=files_created,
+        success=success,
+    )
