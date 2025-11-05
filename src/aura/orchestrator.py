@@ -16,6 +16,7 @@ from aura.services import AgentRunner, PlanningService
 from aura.services.planning_service import Session
 from aura.tools import GitHelper
 from aura.utils import scan_directory
+from aura.utils.safety import is_safe_working_directory
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +43,13 @@ class Orchestrator(QObject):
     all_sessions_complete = Signal()
     error_occurred = Signal(str)
 
-    def __init__(self, planning_service: PlanningService, working_dir: str, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        planning_service: PlanningService,
+        working_dir: str,
+        agent_path: str,
+        parent: QObject | None = None,
+    ) -> None:
         """Store dependencies and validate the working directory."""
         super().__init__(parent)
         if not planning_service:
@@ -50,8 +57,13 @@ class Orchestrator(QObject):
         resolved = Path(working_dir).resolve()
         if not resolved.is_dir():
             raise FileNotFoundError(f"Working directory does not exist: {resolved}")
+        app_source = str(Path(__file__).parent.parent.parent)
+        is_safe, error_message = is_safe_working_directory(str(resolved), app_source)
+        if not is_safe:
+            raise ValueError(error_message)
         self._planning_service = planning_service
         self._working_dir = resolved
+        self._agent_path = agent_path
         self._thread: QThread | None = None
         self._worker: _ExecutionWorker | None = None
         self._event_bus = get_event_bus()
@@ -65,9 +77,20 @@ class Orchestrator(QObject):
             self.error_occurred.emit("An orchestration run is already in progress.")
             return
         self._thread = QThread(self)
-        self._worker = _ExecutionWorker(self._planning_service, self._working_dir, goal.strip())
+        self._worker = _ExecutionWorker(
+            self._planning_service,
+            self._working_dir,
+            self._agent_path,
+            goal.strip(),
+        )
         self._move_worker_to_thread()
         self._thread.start()
+
+    def update_agent_path(self, agent_path: str) -> None:
+        """Update the agent executable path for subsequent runs."""
+        if not agent_path:
+            raise ValueError("Agent path must be provided.")
+        self._agent_path = agent_path
 
     def _move_worker_to_thread(self) -> None:
         """Wire worker signals and move it to the execution thread."""
@@ -105,11 +128,18 @@ class _ExecutionWorker(QObject):
     all_sessions_complete = Signal()
     error_occurred = Signal(str)
 
-    def __init__(self, planning_service: PlanningService, working_dir: Path, goal: str) -> None:
+    def __init__(
+        self,
+        planning_service: PlanningService,
+        working_dir: Path,
+        agent_path: str,
+        goal: str,
+    ) -> None:
         """Initialize execution state."""
         super().__init__()
         self._planning_service = planning_service
         self._working_dir = working_dir
+        self._agent_path = agent_path
         self._goal = goal
         self._context_notes: List[str] = []
         self._event_bus = get_event_bus()
@@ -188,7 +218,7 @@ class _ExecutionWorker(QObject):
         before = self._snapshot_directory()
         prompt = self._prepare_prompt(session.prompt)
         runner = AgentRunner(
-            command=["gemini", "-p", prompt, "--yolo"],
+            command=[self._agent_path, "-p", prompt, "--yolo"],
             working_directory=str(self._working_dir),
             parent=self,
         )
