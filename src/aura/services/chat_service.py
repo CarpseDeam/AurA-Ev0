@@ -9,7 +9,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Iterator, List, Mapping
+from typing import Iterator, Mapping
 
 import google.generativeai as genai
 from aura.agents import PythonCoderAgent, SessionContext
@@ -105,7 +105,7 @@ def read_project_file(path: str) -> str:
         return f"Error reading '{path}': {exc}"
 
 
-def list_project_files(directory: str = ".", extension: str = ".py") -> List[str]:
+def list_project_files(directory: str = ".", extension: str = ".py") -> list[str]:
     """List project files matching the given extension."""
     try:
         base = Path(directory)
@@ -154,7 +154,6 @@ def git_commit(message: str) -> str:
     if not message or not message.strip():
         return "Error: commit message cannot be empty"
 
-    # Stage all changes
     add_result = subprocess.run(
         ["git", "add", "."],
         cwd=os.getcwd(),
@@ -167,7 +166,6 @@ def git_commit(message: str) -> str:
         LOGGER.error("git add failed: %s", error)
         return f"Error staging files: {error}"
 
-    # Commit with message
     commit_result = subprocess.run(
         ["git", "commit", "-m", message.strip()],
         cwd=os.getcwd(),
@@ -310,14 +308,12 @@ def run_tests(test_path: str = "tests/", verbose: bool = False) -> dict[str, obj
 
         output = result.stdout + result.stderr
 
-        # Parse pytest output for pass/fail counts
         passed = 0
         failed = 0
         duration = 0.0
 
         for line in output.split("\n"):
             if "passed" in line or "failed" in line:
-                # Try to extract numbers from summary line
                 parts = line.split()
                 for i, part in enumerate(parts):
                     if "passed" in part and i > 0:
@@ -331,7 +327,6 @@ def run_tests(test_path: str = "tests/", verbose: bool = False) -> dict[str, obj
                         except (ValueError, IndexError):
                             pass
             if "seconds" in line or "s" in line:
-                # Try to extract duration
                 import re
                 match = re.search(r"(\d+\.?\d*)\s*s", line)
                 if match:
@@ -505,7 +500,7 @@ def install_package(package: str, version: str = "") -> str:
         return f"Error installing package: {exc}"
 
 
-def format_code(file_paths: List[str] | None = None, directory: str = ".") -> dict[str, object]:
+def format_code(file_paths: list[str] | None = None, directory: str = ".") -> dict[str, object]:
     """Format Python code using Black formatter.
 
     Args:
@@ -533,10 +528,8 @@ def format_code(file_paths: List[str] | None = None, directory: str = ".") -> di
 
         output = result.stdout + result.stderr
 
-        # Count formatted files
         formatted_count = output.count("reformatted")
         if "reformatted" not in output and result.returncode == 0:
-            # Black outputs "All done!" if nothing changed
             formatted_count = 0
 
         errors = []
@@ -571,7 +564,7 @@ def format_code(file_paths: List[str] | None = None, directory: str = ".") -> di
         }
 
 
-def get_function_definitions(file_path: str) -> List[dict[str, object]]:
+def get_function_definitions(file_path: str) -> list[dict[str, object]]:
     """Extract function signatures from a Python file.
 
     Args:
@@ -600,12 +593,10 @@ def get_function_definitions(file_path: str) -> List[dict[str, object]]:
         functions = []
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef):
-                # Extract parameter names
                 params = []
                 for arg in node.args.args:
                     params.append(arg.arg)
 
-                # Extract docstring if present
                 docstring = ast.get_docstring(node)
 
                 functions.append({
@@ -626,7 +617,7 @@ def get_function_definitions(file_path: str) -> List[dict[str, object]]:
         return []
 
 
-def read_multiple_files(file_paths: List[str]) -> dict[str, str]:
+def read_multiple_files(file_paths: list[str]) -> dict[str, str]:
     """Read multiple project files at once.
 
     Args:
@@ -665,7 +656,7 @@ def read_multiple_files(file_paths: List[str]) -> dict[str, str]:
     return results
 
 
-def lint_code(file_paths: List[str] | None = None, directory: str = ".") -> dict[str, object]:
+def lint_code(file_paths: list[str] | None = None, directory: str = ".") -> dict[str, object]:
     """Run pylint to catch errors and code quality issues.
 
     Args:
@@ -681,7 +672,6 @@ def lint_code(file_paths: List[str] | None = None, directory: str = ".") -> dict
         if file_paths:
             cmd.extend(file_paths)
         else:
-            # Find all Python files in directory
             base = Path(directory)
             if not base.is_absolute():
                 base = Path.cwd() / base
@@ -695,7 +685,7 @@ def lint_code(file_paths: List[str] | None = None, directory: str = ".") -> dict
                         "score": 10.0,
                         "output": "No Python files found to lint.",
                     }
-                cmd.extend(py_files[:20])  # Limit to 20 files to avoid overwhelming output
+                cmd.extend(py_files[:20])
             else:
                 return {
                     "errors": [],
@@ -714,7 +704,6 @@ def lint_code(file_paths: List[str] | None = None, directory: str = ".") -> dict
 
         output = result.stdout + result.stderr
 
-        # Parse pylint output
         errors = []
         warnings = []
         score = 0.0
@@ -726,13 +715,11 @@ def lint_code(file_paths: List[str] | None = None, directory: str = ".") -> dict
             elif ": warning:" in line_lower or ": w" in line_lower:
                 warnings.append(line.strip())
             elif "your code has been rated at" in line_lower:
-                # Extract score: "Your code has been rated at 8.50/10"
                 import re
                 match = re.search(r"rated at ([\d.]+)/", line)
                 if match:
                     score = float(match.group(1))
 
-        # Check if pylint is not installed
         if "No module named" in output or "not found" in output.lower():
             LOGGER.error("pylint is not installed or not found in PATH")
             return {
@@ -744,7 +731,7 @@ def lint_code(file_paths: List[str] | None = None, directory: str = ".") -> dict
 
         LOGGER.info("Linting completed: errors=%d, warnings=%d, score=%.2f", len(errors), len(warnings), score)
         return {
-            "errors": errors[:20],  # Limit to 20 most important
+            "errors": errors[:20],
             "warnings": warnings[:20],
             "score": score,
             "output": output.strip(),
@@ -782,7 +769,7 @@ class ChatService:
 
     api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     model: str = "gemini-2.5-pro"
-    _history: List[ChatMessage] = field(default_factory=list, init=False)
+    _history: list[ChatMessage] = field(default_factory=list, init=False)
     _client_configured: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -804,7 +791,6 @@ class ChatService:
         self._history.append(ChatMessage(role="user", content=message))
         LOGGER.debug("Sending chat message: %s", message)
 
-        # Pass system prompt via system_instruction parameter
         model = genai.GenerativeModel(
             self.model,
             system_instruction=AURA_SYSTEM_PROMPT,
@@ -827,7 +813,6 @@ class ChatService:
             ],
         )
 
-        # Build chat history, excluding system messages (Gemini doesn't accept them)
         chat_history = [
             {"role": msg.role, "parts": [msg.content]}
             for msg in self._history
@@ -853,7 +838,7 @@ class ChatService:
         if combined:
             self._history.append(ChatMessage(role="model", content=combined))
 
-    def get_history(self) -> List[Mapping[str, str]]:
+    def get_history(self) -> list[Mapping[str, str]]:
         """Return the chat history including system prompt."""
         return [{"role": entry.role, "content": entry.content} for entry in self._history]
 
