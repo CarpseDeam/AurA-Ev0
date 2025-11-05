@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import os
 import subprocess
 from datetime import datetime
@@ -32,6 +33,8 @@ from aura.services.planning_service import Session, SessionPlan
 from aura.ui.agent_settings_dialog import AgentSettingsDialog
 from aura.utils import scan_directory
 from aura.utils.agent_finder import find_cli_agents
+
+LOGGER = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -455,6 +458,12 @@ class MainWindow(QMainWindow):
         if not os.path.isdir(resolved):
             raise FileNotFoundError(f"Directory does not exist: {resolved}")
         self._working_directory = resolved
+        if self.chat_service:
+            self.chat_service.clear_session_context()
+        else:
+            from aura.services.chat_service import get_session_context_manager
+            get_session_context_manager().clear()
+        LOGGER.info("Cleared session context due to working directory change: %s", self._working_directory)
         self.directory_label.setText(f"Dir: {self._working_directory}")
         self.display_output(f"Working directory set to {self._working_directory}", config.COLORS.accent)
 

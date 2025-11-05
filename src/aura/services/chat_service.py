@@ -7,12 +7,51 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Iterator, List, Mapping
 
 import google.generativeai as genai
 from aura.agents import PythonCoderAgent, SessionContext
 
 LOGGER = logging.getLogger(__name__)
+
+
+class SessionContextManager:
+    """Manage shared session context between tool calls."""
+
+    def __init__(self) -> None:
+        self._context: list[str] = []
+        self._lock = Lock()
+
+    def get_context(self) -> tuple[str, ...]:
+        """Return stored context entries."""
+        with self._lock:
+            return tuple(self._context)
+
+    def add_entry(self, entry: str) -> None:
+        """Append a context entry if it is non-empty."""
+        sanitized = entry.strip()
+        if not sanitized:
+            return
+        with self._lock:
+            self._context.append(sanitized)
+
+    def clear(self) -> None:
+        """Remove all stored context entries."""
+        with self._lock:
+            self._context.clear()
+
+
+_SESSION_CONTEXT_MANAGER: SessionContextManager | None = None
+
+
+def get_session_context_manager() -> SessionContextManager:
+    """Return the singleton session context manager."""
+    global _SESSION_CONTEXT_MANAGER
+    if _SESSION_CONTEXT_MANAGER is None:
+        _SESSION_CONTEXT_MANAGER = SessionContextManager()
+    return _SESSION_CONTEXT_MANAGER
+
 
 AURA_SYSTEM_PROMPT = (
     "You are Aura, an AI orchestrator with personality. You help developers build "
@@ -27,6 +66,7 @@ AURA_SYSTEM_PROMPT = (
     "- NO corporate speak, NO robot language\n\n"
     "You use specialized tools to accomplish tasks. Your key tools are:\n"
     "- execute_python_session: Generates and executes Python code to build features\n"
+    "- clear_session_context: Clears session history when starting fresh work\n"
     "- read_project_file: Reads existing project files to understand the codebase\n"
     "- list_project_files: Lists files in the project to discover what exists\n"
     "- git_commit: Commits changes to version control\n"
@@ -160,6 +200,7 @@ def execute_python_session(session_prompt: str, working_directory: str) -> dict[
         len(session_prompt),
         working_directory,
     )
+    context_manager = get_session_context_manager()
 
     try:
         agent = PythonCoderAgent(api_key=os.getenv("GEMINI_API_KEY", ""))
@@ -181,11 +222,18 @@ def execute_python_session(session_prompt: str, working_directory: str) -> dict[
         context = SessionContext(
             working_dir=working_dir,
             session_prompt=session_prompt,
-            previous_work=(),
+            previous_work=context_manager.get_context(),
             project_files=project_files,
         )
 
         result = agent.execute_session(context)
+
+        if result.success:
+            files = list(result.files_created) + list(result.files_modified)
+            ordered_files = list(dict.fromkeys(files))
+            files_section = ", ".join(ordered_files) if ordered_files else "none"
+            summary_text = (result.summary or "").strip() or "No summary provided"
+            context_manager.add_entry(f"Session: {summary_text} | Files: {files_section}")
 
         LOGGER.info(
             "Session completed: success=%s, files_created=%d, files_modified=%d",
@@ -217,6 +265,14 @@ def execute_python_session(session_prompt: str, working_directory: str) -> dict[
         }
 
 
+def clear_session_context() -> str:
+    """Clear accumulated session context for a fresh start."""
+    manager = get_session_context_manager()
+    manager.clear()
+    LOGGER.info("Session context cleared.")
+    return "✅ Session context cleared. Ready for a new project!"
+
+
 @dataclass
 class ChatMessage:
     """Represents a single chat message in the conversation history."""
@@ -241,6 +297,11 @@ class ChatService:
         genai.configure(api_key=self.api_key)
         self._client_configured = True
 
+    def clear_session_context(self) -> None:
+        """Reset stored tool session context."""
+        get_session_context_manager().clear()
+        LOGGER.info("ChatService cleared session context.")
+
     def send_message(self, message: str) -> Iterator[str]:
         """Send a message and yield the streaming response."""
         if not message:
@@ -252,7 +313,15 @@ class ChatService:
         model = genai.GenerativeModel(
             self.model,
             system_instruction=AURA_SYSTEM_PROMPT,
-            tools=[read_project_file, list_project_files, get_git_status, git_commit, git_push, execute_python_session],
+            tools=[
+                read_project_file,
+                list_project_files,
+                get_git_status,
+                git_commit,
+                git_push,
+                execute_python_session,
+                clear_session_context,
+            ],
         )
 
         # Build chat history, excluding system messages (Gemini doesn't accept them)

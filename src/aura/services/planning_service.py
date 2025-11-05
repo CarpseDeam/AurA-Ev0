@@ -22,18 +22,38 @@ Rules:
 5. No file over 200 lines
 6. Clear, specific deliverables
 
-SESSION NAMING RULES (CRITICAL):
-- Names must be 2-5 words MAX
-- Be SPECIFIC, not generic
-- Use concrete nouns: "User Authentication Model" not "Main Setup"
-- Avoid vague words: implementation, setup, main, core, general, add features
-- Good examples: "User Login Routes", "Password Hashing Utility", "Database Schema"
-- Bad examples: "Core Implementation", "Main Setup", "Add Features"
+SESSION NAMING RULES - THIS IS CRITICAL:
+⚠️  Names MUST be 2-5 words MAX
+⚠️  MUST be SPECIFIC, NEVER generic
+⚠️  Use CONCRETE nouns, not abstract concepts
+
+FORBIDDEN WORDS (will cause rejection):
+❌ implementation, setup, main, core, general, base, initial, add features, improvements
+
+GOOD NAMES (use these patterns):
+✅ "User Login Routes" - specific feature + component type
+✅ "Password Hashing Utility" - specific purpose + component type
+✅ "Database Schema Migrations" - specific task + component type
+✅ "Comment Model Class" - specific entity + component type
+
+BAD NAMES (DO NOT USE):
+❌ "Core Implementation" - too vague, forbidden word
+❌ "Main Setup" - too vague, forbidden word
+❌ "Add Features" - too vague, forbidden word
+❌ "Basic Structure" - too vague
+❌ "Initial Configuration" - too vague
+
+VALIDATION: Before finalizing, check each session name:
+- Does it contain forbidden words? → REWRITE
+- Could this apply to any project? → TOO VAGUE, BE MORE SPECIFIC
+- Does it name a specific feature/component? → GOOD
 
 User goal: {goal}
 
 Project context:
 {project_context}
+
+CRITICAL: Review all session names. If any name could apply to multiple different projects, it's too vague. Make it MORE specific.
 
 Return JSON:
 {{
