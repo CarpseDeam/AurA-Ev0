@@ -31,6 +31,7 @@ from src.aura.orchestrator import Orchestrator, SessionResult
 from src.aura.services import AgentRunner, ChatService
 from src.aura.services.chat_service import get_session_context_manager
 from src.aura.services.planning_service import SessionPlan, PlanningService, Session
+from src.aura.state import AppState
 from src.aura.ui import AgentSettingsDialog
 from src.aura.utils import find_cli_agents, scan_directory
 
@@ -41,16 +42,24 @@ class MainWindow(QMainWindow):
     """Displays the primary Aura workspace."""
 
     _event_received = Signal(object)
+    execution_requested = Signal(str)  # Emitted when user requests execution
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        """Initialize the main window."""
+    def __init__(
+        self,
+        app_state: AppState,
+        orchestrator: Orchestrator | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        """Initialize the main window.
+
+        Args:
+            app_state: Application state manager
+            orchestrator: Optional orchestrator instance (for dependency injection)
+            parent: Optional parent widget
+        """
         super().__init__(parent)
-        app_source_path = Path(__file__).resolve().parent.parent.parent
-        workspace_path = app_source_path.parent / "aura-workspace"
-        workspace_path.mkdir(parents=True, exist_ok=True)
-        self._working_directory = str(workspace_path)
-        self._selected_agent: str = config.DEFAULT_AGENT
-        self._agent_path: str = ""
+        self.app_state = app_state
+        self.orchestrator = orchestrator
         self.output_view = QTextEdit(self)
         self.input_field = QLineEdit(self)
         self.clear_button = QPushButton("Clear", self)
@@ -59,41 +68,28 @@ class MainWindow(QMainWindow):
         self.directory_label = QLabel(self)
         self.toolbar = self.addToolBar("Project")
         self.current_runner: AgentRunner | None = None
+        self._event_bus = get_event_bus()
+        self._last_error_message: Optional[str] = None
+
+        # Setup UI
         self._configure_window()
         self._build_layout()
         self._apply_styles()
         self._build_toolbar()
         self._setup_status_bar()
         self._connect_signals()
-        self._set_ready_state()
-        self._current_plan: Optional[SessionPlan] = None
-        self.chat_service = None
-        self.planning_service = None
-        self.orchestrator = None
-        self._event_bus = get_event_bus()
-        self._last_error_message: Optional[str] = None
+        self._connect_app_state_signals()
         self._subscribe_to_events()
         self._event_received.connect(self._handle_event)
 
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if api_key:
+        # Set initial state
+        self.app_state.set_status("Ready", config.COLORS.text)
 
-
-            self.chat_service = ChatService(api_key=api_key)
-            self.planning_service = PlanningService(self.chat_service)
-            self.orchestrator = Orchestrator(
-                self.planning_service,
-                self._working_directory,
-                self._agent_path,
-                api_key=api_key,
-                parent=self,
-            )
+        # Connect orchestrator signals if provided
+        if self.orchestrator:
             self._connect_orchestrator_signals()
             self._display_startup_header()
             self.display_output("Aura orchestration ready", config.COLORS.success)
-        else:
-            self.orchestrator = None
-            self.display_output("Set GEMINI_API_KEY for orchestration features", "#FFB74D")
 
         self._detect_default_agent()
 
@@ -239,7 +235,7 @@ class MainWindow(QMainWindow):
         separator = QLabel("|")
         separator.setStyleSheet("color: #3d3d3d; padding: 0 8px;")
 
-        dir_short = self._working_directory
+        dir_short = self.app_state.working_directory
         if len(dir_short) > 50:
             dir_short = "..." + dir_short[-47:]
         self.directory_label.setText(f"{dir_short}")
@@ -266,6 +262,29 @@ class MainWindow(QMainWindow):
         """Connect widget signals."""
         self.input_field.returnPressed.connect(self._handle_submit)
         self.clear_button.clicked.connect(self.clear_output)
+
+    def _connect_app_state_signals(self) -> None:
+        """Connect application state signals to UI update slots."""
+        self.app_state.status_changed.connect(self._on_status_changed)
+        self.app_state.working_directory_changed.connect(self._on_working_directory_changed)
+        self.app_state.current_plan_changed.connect(self._on_current_plan_changed)
+
+    def _on_status_changed(self, message: str, color: str) -> None:
+        """Handle status change from app state."""
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet(f"color: {color}; font-weight: 500;")
+
+    def _on_working_directory_changed(self, path: str) -> None:
+        """Handle working directory change from app state."""
+        dir_short = path
+        if len(dir_short) > 50:
+            dir_short = "..." + dir_short[-47:]
+        self.directory_label.setText(f"{dir_short}")
+
+    def _on_current_plan_changed(self, plan: Optional[SessionPlan]) -> None:
+        """Handle current plan change from app state."""
+        # This is a placeholder for future plan-related UI updates
+        pass
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to background orchestration events."""
@@ -310,12 +329,13 @@ class MainWindow(QMainWindow):
             return
         normalized = prompt.lower()
         approval_keywords = {"start", "yes", "go", "build it", "lets do it", "let's do it"}
-        if self._current_plan and normalized in approval_keywords:
+        if self.app_state.current_plan and normalized in approval_keywords:
             self.input_field.setEnabled(False)
             return
         if self._should_orchestrate(prompt):
             self.input_field.setEnabled(False)
-            self.orchestrator.execute_goal(prompt)
+            # Emit signal instead of directly calling orchestrator
+            self.execution_requested.emit(prompt)
         else:
             self.input_field.setEnabled(False)
             self.execute_command(prompt)
@@ -331,12 +351,12 @@ class MainWindow(QMainWindow):
             self.input_field.setFocus()
             return
         command_prompt = self._build_command_prompt(prompt)
-        agent_executable = self._agent_path or self._selected_agent
+        agent_executable = self.app_state.agent_path or self.app_state.selected_agent
         command = [agent_executable, "-p", command_prompt, "--yolo"]
         try:
             runner = AgentRunner(
                 command=command,
-                working_directory=self._working_directory,
+                working_directory=self.app_state.working_directory,
                 parent=self,
             )
         except ValueError as exc:
@@ -348,7 +368,7 @@ class MainWindow(QMainWindow):
         runner.process_finished.connect(self.handle_process_finished)
         runner.process_error.connect(self.handle_process_error)
         self.current_runner = runner
-        self._set_running_state()
+        self.app_state.set_status("Running...", config.COLORS.accent)
         runner.start()
 
     def _should_orchestrate(self, prompt: str) -> bool:
@@ -406,7 +426,7 @@ class MainWindow(QMainWindow):
 
     def _on_planning_started(self) -> None:
         """Handle planning started signal."""
-        self._current_plan = None
+        self.app_state.set_current_plan(None)
         self._set_running_state()
         self.input_field.setEnabled(False)
         self.display_output("Analyzing request and planning sessions...", config.COLORS.accent)
@@ -414,7 +434,7 @@ class MainWindow(QMainWindow):
     def _on_plan_ready(self, plan: SessionPlan) -> None:
         """Handle plan ready signal with formatted display."""
         if isinstance(plan, SessionPlan):
-            self._current_plan = plan
+            self.app_state.set_current_plan(plan)
             self.display_output("", config.COLORS.agent_output)
             self.display_output("Session Plan", config.COLORS.accent)
             self.display_output(f"   Total sessions: {len(plan.sessions)}", config.COLORS.agent_output)
@@ -439,7 +459,7 @@ class MainWindow(QMainWindow):
             self.display_output("", config.COLORS.agent_output)
             self.display_output("Type 'start' when ready to begin building.", config.COLORS.success)
         else:
-            self._current_plan = None
+            self.app_state.set_current_plan(None)
             self.display_output("Received invalid plan data.", "#FF6B6B")
 
         self.input_field.setEnabled(True)
@@ -447,7 +467,7 @@ class MainWindow(QMainWindow):
 
     def _on_session_started(self, index: int, session: Session) -> None:
         """Handle session started signal."""
-        total = len(self._current_plan.sessions) if self._current_plan else "?"
+        total = len(self.app_state.current_plan.sessions) if self.app_state.current_plan else "?"
         name = getattr(session, "name", "Unknown session")
         self._set_running_state()
         self.display_output("", config.COLORS.agent_output)
@@ -484,7 +504,7 @@ class MainWindow(QMainWindow):
 
     def _on_all_complete(self) -> None:
         """Handle all sessions complete signal."""
-        self._current_plan = None
+        self.app_state.set_current_plan(None)
         self._set_completed_state()
         self.display_output("", config.COLORS.agent_output)
         self.display_output("All sessions complete", config.COLORS.success)
@@ -498,7 +518,7 @@ class MainWindow(QMainWindow):
         self.display_output(f"Error: {error}", "#FF6B6B")
         self.input_field.setEnabled(True)
         self.input_field.setFocus()
-        self._current_plan = None
+        self.app_state.set_current_plan(None)
 
     def _format_plan(self, plan: SessionPlan) -> List[str]:
         """Format the session plan for display."""
@@ -539,19 +559,13 @@ class MainWindow(QMainWindow):
 
     def set_working_directory(self, path: str) -> None:
         """Update the working directory."""
-        if not path:
-            raise ValueError("Working directory must be provided.")
-        resolved = os.path.abspath(path)
-        if not os.path.isdir(resolved):
-            raise FileNotFoundError(f"Directory does not exist: {resolved}")
-        self._working_directory = resolved
-        if self.chat_service:
-            self.chat_service.clear_session_context()
-        else:
+        try:
+            self.app_state.set_working_directory(path)
             get_session_context_manager().clear()
-        LOGGER.info("Cleared session context due to working directory change: %s", self._working_directory)
-        self.directory_label.setText(f"Dir: {self._working_directory}")
-        self.display_output(f"Working directory set to {self._working_directory}", config.COLORS.accent)
+            LOGGER.info("Cleared session context due to working directory change: %s", path)
+            self.display_output(f"Working directory set to {path}", config.COLORS.accent)
+        except (ValueError, FileNotFoundError) as exc:
+            raise exc
 
     def _resolve_line_color(self, text: str) -> str:
         """Choose a color based on output content."""
@@ -567,28 +581,25 @@ class MainWindow(QMainWindow):
 
     def _set_ready_state(self) -> None:
         """Display the ready state."""
-        self._update_status("Ready", config.COLORS.text)
+        self.app_state.set_status("Ready", config.COLORS.text)
 
     def _set_running_state(self) -> None:
         """Display the running state."""
-        self._update_status("Running...", config.COLORS.accent)
+        self.app_state.set_status("Running...", config.COLORS.accent)
 
     def _set_completed_state(self) -> None:
         """Display the completed state."""
-        self._update_status("Completed", config.COLORS.success)
+        self.app_state.set_status("Completed", config.COLORS.success)
 
     def _set_error_state(self) -> None:
         """Display the error state."""
-        self._update_status("Error", "#FF6B6B")
-
-    def _update_status(self, message: str, color: str) -> None:
-        """Apply text and color to the status indicator."""
-        self.status_label.setText(message)
-        self.status_label.setStyleSheet(f"color: {color}; font-weight: 500;")
+        self.app_state.set_status("Error", "#FF6B6B")
 
     def _select_working_directory(self) -> None:
         """Prompt the user to choose a working directory."""
-        path = QFileDialog.getExistingDirectory(self, "Select Working Directory", self._working_directory)
+        path = QFileDialog.getExistingDirectory(
+            self, "Select Working Directory", self.app_state.working_directory
+        )
         if not path:
             return
         try:
@@ -598,12 +609,14 @@ class MainWindow(QMainWindow):
 
     def _validate_environment(self) -> bool:
         """Ensure prerequisites are met before starting the agent."""
-        if not os.path.isdir(self._working_directory):
+        if not os.path.isdir(self.app_state.working_directory):
             self.display_output("Working directory does not exist.", "#FF6B6B")
             self._set_error_state()
             return False
-        if not self._agent_path:
-            agent_display = config.AGENT_DISPLAY_NAMES.get(self._selected_agent, self._selected_agent)
+        if not self.app_state.agent_path:
+            agent_display = config.AGENT_DISPLAY_NAMES.get(
+                self.app_state.selected_agent, self.app_state.selected_agent
+            )
             self.display_output(
                 f"{agent_display} not found. Use 'Agent Settings...' to configure.", "#FF6B6B"
             )
@@ -615,23 +628,23 @@ class MainWindow(QMainWindow):
         """Detect and set the default available agent."""
         agents = find_cli_agents()
         for agent in agents:
-            if agent.is_available and agent.name == self._selected_agent:
-                self._agent_path = agent.executable_path
+            if agent.is_available and agent.name == self.app_state.selected_agent:
+                self.app_state.set_agent_path(agent.executable_path)
                 self.display_output(
                     f"Using {agent.display_name} at {agent.executable_path}", config.COLORS.success
                 )
                 if self.orchestrator:
-                    self.orchestrator.update_agent_path(self._agent_path)
+                    self.orchestrator.update_agent_path(agent.executable_path)
                 return
         for agent in agents:
             if agent.is_available:
-                self._selected_agent = agent.name
-                self._agent_path = agent.executable_path
+                self.app_state.set_selected_agent(agent.name)
+                self.app_state.set_agent_path(agent.executable_path)
                 self.display_output(
                     f"Using {agent.display_name} at {agent.executable_path}", config.COLORS.success
                 )
                 if self.orchestrator:
-                    self.orchestrator.update_agent_path(self._agent_path)
+                    self.orchestrator.update_agent_path(agent.executable_path)
                 return
         self.display_output(
             "No CLI agents found. Use 'Agent Settings...' to configure.", "#FFB74D"
@@ -651,14 +664,14 @@ class MainWindow(QMainWindow):
     def get_project_context(self) -> str:
         """Return a concise description of the workspace."""
         try:
-            snapshot = scan_directory(self._working_directory, max_depth=2)
+            snapshot = scan_directory(self.app_state.working_directory, max_depth=2)
         except (ValueError, FileNotFoundError) as exc:
-            return f"Working in: {self._working_directory}\nFiles: unavailable ({exc})"
+            return f"Working in: {self.app_state.working_directory}\nFiles: unavailable ({exc})"
         python_files = [item for item in snapshot["files"] if item.endswith(".py")]
         directory_lines = "\n".join(f"- {item}" for item in snapshot["directories"]) or "- None"
         file_lines = "\n".join(f"- {item}" for item in python_files) or "- None"
         return (
-            f"Working in: {self._working_directory}\n"
+            f"Working in: {self.app_state.working_directory}\n"
             f"Directories:\n{directory_lines}\n"
             f"Python files:\n{file_lines}"
         )

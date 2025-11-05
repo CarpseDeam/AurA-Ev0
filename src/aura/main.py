@@ -3,11 +3,130 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 import sys
 
 from PySide6.QtWidgets import QApplication
 
+from aura import config
+from aura.orchestrator import Orchestrator
+from aura.services import ChatService
+from aura.services.planning_service import PlanningService
+from aura.state import AppState
 from aura.ui.main_window import MainWindow
+
+
+class ApplicationController:
+    """Coordinates application components and wires them together.
+
+    This controller implements the dependency injection pattern,
+    creating all major components and connecting their signals/slots.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the application controller."""
+        self.app_state: AppState | None = None
+        self.chat_service: ChatService | None = None
+        self.planning_service: PlanningService | None = None
+        self.orchestrator: Orchestrator | None = None
+        self.main_window: MainWindow | None = None
+
+    def setup(self) -> MainWindow:
+        """Create and wire all application components.
+
+        Returns:
+            Configured MainWindow ready to display
+        """
+        # Initialize application state
+        self.app_state = AppState()
+
+        # Set initial working directory
+        app_source_path = Path(__file__).resolve().parent.parent
+        workspace_path = app_source_path.parent / "aura-workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        self.app_state.set_working_directory(str(workspace_path))
+        self.app_state.set_selected_agent(config.DEFAULT_AGENT)
+
+        # Initialize services if API key is available
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if api_key:
+            self.chat_service = ChatService(api_key=api_key)
+            self.planning_service = PlanningService(self.chat_service)
+            self.orchestrator = Orchestrator(
+                self.planning_service,
+                self.app_state.working_directory,
+                self.app_state.agent_path,
+                api_key=api_key,
+            )
+
+        # Create main window with dependencies
+        self.main_window = MainWindow(
+            app_state=self.app_state,
+            orchestrator=self.orchestrator,
+        )
+
+        # Wire signals and slots
+        self._connect_signals()
+
+        return self.main_window
+
+    def _connect_signals(self) -> None:
+        """Connect signals between components."""
+        if not self.main_window or not self.app_state:
+            return
+
+        # Connect working directory changes to orchestrator
+        if self.orchestrator:
+            self.app_state.working_directory_changed.connect(
+                self._on_working_directory_changed
+            )
+
+            # Connect execution requests from UI to orchestrator
+            self.main_window.execution_requested.connect(
+                self.orchestrator.execute_goal
+            )
+
+    def _on_working_directory_changed(self, path: str) -> None:
+        """Handle working directory changes.
+
+        Args:
+            path: New working directory path
+        """
+        if self.orchestrator:
+            # Recreate orchestrator with new working directory
+            self.orchestrator = Orchestrator(
+                self.planning_service,
+                path,
+                self.app_state.agent_path,
+                api_key=os.getenv("GEMINI_API_KEY", ""),
+            )
+            # Reconnect orchestrator signals to main window
+            self.orchestrator.planning_started.connect(
+                self.main_window._on_planning_started
+            )
+            self.orchestrator.plan_ready.connect(
+                self.main_window._on_plan_ready
+            )
+            self.orchestrator.session_started.connect(
+                self.main_window._on_session_started
+            )
+            self.orchestrator.session_output.connect(
+                self.main_window._on_session_output
+            )
+            self.orchestrator.session_complete.connect(
+                self.main_window._on_session_complete
+            )
+            self.orchestrator.all_sessions_complete.connect(
+                self.main_window._on_all_complete
+            )
+            self.orchestrator.error_occurred.connect(
+                self.main_window._on_error
+            )
+            # Reconnect execution request signal
+            self.main_window.execution_requested.connect(
+                self.orchestrator.execute_goal
+            )
 
 
 def _create_application() -> QApplication:
@@ -23,7 +142,11 @@ def _create_application() -> QApplication:
 def run() -> int:
     """Run the Aura UI event loop."""
     app = _create_application()
-    window = MainWindow()
+
+    # Create and setup application controller
+    controller = ApplicationController()
+    window = controller.setup()
+
     window.show()
     return app.exec()
 

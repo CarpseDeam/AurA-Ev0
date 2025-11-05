@@ -12,9 +12,9 @@ from typing import Dict, List
 from PySide6.QtCore import QObject, QEventLoop, QThread, Signal
 
 from aura import config
-from aura.agents import PythonCoderAgent, SessionContext
 from aura.events import EventType, get_event_bus
-from aura.services import AgentRunner, PlanningService
+from aura.execution import CliAgentExecutor, NativeAgentExecutor, SessionExecutor
+from aura.services import PlanningService
 from aura.services.planning_service import Session
 from aura.tools import GitHelper
 from aura.utils import scan_directory
@@ -242,102 +242,55 @@ class _ExecutionWorker(QObject):
         )
 
     def _run_session(self, index: int, session: Session) -> SessionResult:
-        """Execute a single session using PythonCoderAgent or fallback to CLI."""
-        # Try using native PythonCoderAgent if enabled and API key available
+        """Execute a single session using appropriate executor strategy."""
+        # Select executor strategy based on configuration
+        executor = self._select_executor()
+
+        # Prepare execution context
+        context = {
+            "working_dir": self._working_dir,
+            "context_notes": self._context_notes,
+        }
+
+        # Try using native agent if enabled and API key available
         if config.USE_NATIVE_PYTHON_AGENT and self._api_key:
             try:
-                result = self._run_native_agent(session)
+                result = executor.execute(session, context)
                 LOGGER.info("Session '%s' executed using native PythonCoderAgent", session.name)
                 return result
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Native agent failed, falling back to CLI: %s", exc)
                 self.session_output.emit(f"⚠️ Native agent failed, using CLI fallback: {exc}")
+                # Create CLI executor for fallback
+                executor = CliAgentExecutor(
+                    self._agent_path,
+                    output_signal=self.session_output,
+                    error_signal=self.error_occurred,
+                    parent=self,
+                )
 
-        # Fallback to AgentRunner subprocess approach
+        # Execute using selected executor
         if not config.USE_NATIVE_PYTHON_AGENT:
             LOGGER.info("Native agent disabled via config, using CLI agent")
-        return self._run_cli_agent(session)
+        return executor.execute(session, context)
 
-    def _run_native_agent(self, session: Session) -> SessionResult:
-        """Execute session using PythonCoderAgent."""
-        # Get project files from scan
-        snapshot = scan_directory(str(self._working_dir), max_depth=2)
-        python_files = [f for f in snapshot["files"] if f.endswith(".py")]
+    def _select_executor(self) -> SessionExecutor:
+        """Select the appropriate session executor based on configuration.
 
-        # Build session context
-        context = SessionContext(
-            working_dir=self._working_dir,
-            session_prompt=session.prompt,
-            previous_work=self._context_notes,
-            project_files=python_files,
-        )
-
-        # Create and execute agent
-        agent = PythonCoderAgent(api_key=self._api_key)
-        agent.progress_update.connect(self.session_output)
-        agent_result = agent.execute_session(context)
-
-        # Emit output lines
-        for line in agent_result.output_lines:
-            self.session_output.emit(line)
-
-        # Convert AgentResult to SessionResult
-        all_files = list(agent_result.files_created) + list(agent_result.files_modified)
-        return SessionResult(
-            session_name=session.name,
-            exit_code=0 if agent_result.success else 1,
-            duration_seconds=agent_result.duration_seconds,
-            files_created=all_files,
-            success=agent_result.success,
-        )
-
-    def _run_cli_agent(self, session: Session) -> SessionResult:
-        """Execute session using CLI agent subprocess (fallback)."""
-        before = self._snapshot_directory()
-        prompt = self._prepare_prompt(session.prompt)
-        runner = AgentRunner(
-            command=[self._agent_path, "-p", prompt, "--yolo"],
-            working_directory=str(self._working_dir),
+        Returns:
+            SessionExecutor instance (Native or CLI)
+        """
+        if config.USE_NATIVE_PYTHON_AGENT and self._api_key:
+            return NativeAgentExecutor(
+                api_key=self._api_key,
+                output_signal=self.session_output,
+            )
+        return CliAgentExecutor(
+            self._agent_path,
+            output_signal=self.session_output,
+            error_signal=self.error_occurred,
             parent=self,
         )
-        runner.output_line.connect(self.session_output)
-        runner.process_error.connect(self.error_occurred)
-        exit_code, duration = self._await_runner(runner)
-        after = self._snapshot_directory()
-        files_created = self._detect_file_changes(before, after)
-        success = exit_code == 0
-        return SessionResult(
-            session_name=session.name,
-            exit_code=exit_code,
-            duration_seconds=duration,
-            files_created=files_created,
-            success=success,
-        )
-
-    def _await_runner(self, runner: AgentRunner) -> tuple[int, float]:
-        """Start the runner and block until it finishes."""
-        loop = QEventLoop()
-        result = {"code": 1}
-
-        def _on_finished(code: int) -> None:
-            result["code"] = code
-            loop.quit()
-
-        runner.process_finished.connect(_on_finished)
-        start = time.monotonic()
-        runner.start()
-        loop.exec()
-        runner.wait()
-        elapsed = time.monotonic() - start
-        runner.deleteLater()
-        return result["code"], elapsed
-
-    def _prepare_prompt(self, original_prompt: str) -> str:
-        """Combine accumulated context with the session's prompt."""
-        context = self._format_context()
-        if not context:
-            return original_prompt
-        return f"Previous work:\n{context}\n\n{original_prompt}"
 
     def _update_context(self, index: int, session: Session, result: SessionResult) -> None:
         """Record the session outcome to inform subsequent work."""
@@ -351,23 +304,3 @@ class _ExecutionWorker(QObject):
     def _format_context(self) -> str:
         """Render accumulated context notes."""
         return "\n".join(self._context_notes)
-
-    def _snapshot_directory(self) -> Dict[str, float]:
-        """Capture a timestamp snapshot of the working directory."""
-        snapshot: Dict[str, float] = {}
-        for root, _, files in os.walk(self._working_dir):
-            for filename in files:
-                path = Path(root, filename)
-                relative = str(path.relative_to(self._working_dir))
-                snapshot[relative] = path.stat().st_mtime
-        return snapshot
-
-    def _detect_file_changes(self, before: Dict[str, float], after: Dict[str, float]) -> List[str]:
-        """Identify new or modified files between snapshots."""
-        created = [path for path in after if path not in before]
-        updated = [
-            path for path in after
-            if path in before and after[path] != before[path]
-        ]
-        annotated = created + [f"{path} (updated)" for path in updated]
-        return sorted(annotated)
