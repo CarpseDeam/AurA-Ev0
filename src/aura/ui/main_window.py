@@ -376,15 +376,15 @@ class MainWindow(QMainWindow):
     def _display_startup_header(self) -> None:
         """Display ASCII art header with gradient colors on startup."""
         header_html = """
-        <div style="font-family: 'Courier New', 'Consolas', monospace; font-size: 18px; line-height: 1.1; margin: 20px 0; white-space: pre;">
-<span style="color: #5294E2;">╔═══════════════════════════════════════════╗</span>
-<span style="color: #6B7FEE;">║   </span><span style="color: #7B68EE;">█████╗ ██╗   ██╗██████╗  █████╗</span><span style="color: #6B7FEE;">   ║</span>
-<span style="color: #8875E8;">║  </span><span style="color: #9370DB;">██╔══██╗██║   ██║██╔══██╗██╔══██╗</span><span style="color: #8875E8;">  ║</span>
-<span style="color: #A565DD;">║  </span><span style="color: #BA55D3;">███████║██║   ██║██████╔╝███████║</span><span style="color: #A565DD;">  ║</span>
-<span style="color: #C25DD8;">║  </span><span style="color: #DA70D6;">██╔══██║╚██╗ ██╔╝██╔══██╗██╔══██║</span><span style="color: #C25DD8;">  ║</span>
-<span style="color: #DA6FD7;">║  </span><span style="color: #EE82EE;">██║  ██║ ╚████╔╝ ██║  ██║██║  ██║</span><span style="color: #DA6FD7;">  ║</span>
-<span style="color: #EE7CC9;">║  </span><span style="color: #FF69B4;">╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═╝</span><span style="color: #EE7CC9;">  ║</span>
-<span style="color: #FF4EA3;">╚═══════════════════════════════════════════╝</span>
+        <div style="font-family: 'Courier New', 'Consolas', monospace; font-size: 16px; line-height: 1.2; margin: 20px 0; white-space: nowrap; overflow: hidden;">
+    <span style="color: #5294E2;">╔════════════════════════════════════════╗</span>
+    <span style="color: #6B7FEE;">║  </span><span style="color: #7B68EE;">█████╗ ██╗   ██╗██████╗  █████╗</span><span style="color: #6B7FEE;">  ║</span>
+    <span style="color: #8875E8;">║ </span><span style="color: #9370DB;">██╔══██╗██║   ██║██╔══██╗██╔══██╗</span><span style="color: #8875E8;"> ║</span>
+    <span style="color: #A565DD;">║ </span><span style="color: #BA55D3;">███████║██║   ██║██████╔╝███████║</span><span style="color: #A565DD;"> ║</span>
+    <span style="color: #C25DD8;">║ </span><span style="color: #DA70D6;">██╔══██║╚██╗ ██╔╝██╔══██╗██╔══██║</span><span style="color: #C25DD8;"> ║</span>
+    <span style="color: #DA6FD7;">║ </span><span style="color: #EE82EE;">██║  ██║ ╚████╔╝ ██║  ██║██║  ██║</span><span style="color: #DA6FD7;"> ║</span>
+    <span style="color: #EE7CC9;">║ </span><span style="color: #FF69B4;">╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═╝</span><span style="color: #EE7CC9;"> ║</span>
+    <span style="color: #FF4EA3;">╚════════════════════════════════════════╝</span>
         </div>
         """
         cursor = self.output_view.textCursor()
