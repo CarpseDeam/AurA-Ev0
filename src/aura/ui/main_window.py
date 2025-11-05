@@ -6,7 +6,9 @@ import html
 import os
 import subprocess
 from datetime import datetime
+from typing import List, Optional
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QFont, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -22,7 +24,9 @@ from PySide6.QtWidgets import (
 )
 
 from aura import config
+from aura.events import Event, EventType, get_event_bus
 from aura.services import AgentRunner
+from aura.services.planning_service import SessionPlan
 from aura.ui.agent_settings_dialog import AgentSettingsDialog
 from aura.utils import scan_directory
 from aura.utils.agent_finder import find_cli_agents
@@ -30,6 +34,8 @@ from aura.utils.agent_finder import find_cli_agents
 
 class MainWindow(QMainWindow):
     """Displays the primary Aura workspace."""
+
+    _event_received = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the main window."""
@@ -53,6 +59,30 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._detect_default_agent()
         self._set_ready_state()
+        self._current_plan: Optional[SessionPlan] = None
+        self.chat_service = None
+        self.planning_service = None
+        self.orchestrator = None
+        self._event_received.connect(self._handle_event)
+
+        # Initialize orchestration services
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if api_key:
+            from aura.services import ChatService, PlanningService
+            from aura.orchestrator import Orchestrator
+
+            self.chat_service = ChatService(api_key=api_key)
+            self.planning_service = PlanningService(self.chat_service)
+            self.orchestrator = Orchestrator(
+                self.planning_service,
+                self._working_directory,
+                parent=self,
+            )
+            self._subscribe_to_events()
+            self.display_output("✨ Aura orchestration ready", config.COLORS.success)
+        else:
+            self.orchestrator = None
+            self.display_output("⚠️ Set GEMINI_API_KEY for orchestration features", "#FFB74D")
 
     def _configure_window(self) -> None:
         """Configure top-level window properties."""
@@ -159,9 +189,22 @@ class MainWindow(QMainWindow):
             self.display_output("An agent run is already in progress.", "#FF6B6B")
             return
         self.input_field.clear()
-        self.input_field.setEnabled(False)
         self.display_output(f"> {prompt}", config.COLORS.accent)
-        self.execute_command(prompt)
+        if not self.orchestrator:
+            self.input_field.setEnabled(False)
+            self.execute_command(prompt)
+            return
+        normalized = prompt.lower()
+        if self._current_plan and normalized in {"start", "yes", "go", "build it"}:
+            self.input_field.setEnabled(False)
+            # Plan already generated, orchestrator will execute
+            return
+        if self._should_orchestrate(prompt):
+            self.input_field.setEnabled(False)
+            self.orchestrator.execute_goal(prompt)
+        else:
+            self.input_field.setEnabled(False)
+            self.execute_command(prompt)
 
     def execute_command(self, prompt: str) -> None:
         """Execute an agent command for the given prompt."""
@@ -194,6 +237,13 @@ class MainWindow(QMainWindow):
         self._set_running_state()
         runner.start()
 
+    def _should_orchestrate(self, prompt: str) -> bool:
+        """Decide if prompt needs full orchestration."""
+        lower = prompt.lower()
+        if any(word in lower for word in ["build", "create app", "add feature", "implement"]):
+            return len(prompt) > 30
+        return len(prompt) > 50
+
     def display_output(self, text: str, color: str | None = None) -> None:
         """Render output text in the transcript."""
         chosen_color = color or self._resolve_line_color(text)
@@ -208,6 +258,114 @@ class MainWindow(QMainWindow):
         self.output_view.setTextCursor(cursor)
         self.output_view.insertHtml(payload)
         self.output_view.ensureCursorVisible()
+
+    def _subscribe_to_events(self) -> None:
+        """Listen for orchestration events."""
+        bus = get_event_bus()
+        for event_type in (
+            EventType.PLANNING_STARTED,
+            EventType.PLAN_READY,
+            EventType.SESSION_STARTED,
+            EventType.SESSION_OUTPUT,
+            EventType.SESSION_COMPLETE,
+            EventType.ALL_COMPLETE,
+            EventType.ERROR,
+        ):
+            bus.subscribe(event_type, self._event_received.emit)
+
+    def _handle_event(self, event: Event) -> None:
+        """Dispatch incoming orchestration events."""
+        handlers = {
+            EventType.PLANNING_STARTED: self._on_planning_started,
+            EventType.PLAN_READY: self._on_plan_ready,
+            EventType.SESSION_STARTED: self._on_session_started,
+            EventType.SESSION_OUTPUT: self._on_session_output,
+            EventType.SESSION_COMPLETE: self._on_session_complete,
+            EventType.ALL_COMPLETE: self._on_all_complete,
+            EventType.ERROR: self._on_error,
+        }
+        handler = handlers.get(event.type)
+        if handler:
+            handler(event)
+
+    def _on_planning_started(self, _: Event) -> None:
+        self._current_plan = None
+        self._set_running_state()
+        self.input_field.setEnabled(False)
+        self.display_output(" Planning sessions...", config.COLORS.accent)
+
+    def _on_plan_ready(self, event: Event) -> None:
+        plan = event.data.get("plan")
+        if isinstance(plan, SessionPlan):
+            self._current_plan = plan
+            for line in self._format_plan(plan):
+                self.display_output(line, config.COLORS.agent_output)
+            self.display_output("Type 'start' to begin execution.", config.COLORS.accent)
+        else:
+            self._current_plan = None
+            self.display_output("Received invalid plan data.", "#FF6B6B")
+        self.input_field.setEnabled(True)
+        self.input_field.setFocus()
+
+    def _on_session_started(self, event: Event) -> None:
+        index = event.data.get("index", 0)
+        session = event.data.get("session")
+        total = len(self._current_plan.sessions) if self._current_plan else "?"
+        name = getattr(session, "name", "Unknown session")
+        self._set_running_state()
+        self.display_output(f"✨ Session {index + 1}/{total}: {name}", config.COLORS.accent)
+        self.display_output("-" * 40, config.COLORS.agent_output)
+
+    def _on_session_output(self, event: Event) -> None:
+        text = event.data.get("text")
+        if text:
+            self.display_output(text)
+
+    def _on_session_complete(self, event: Event) -> None:
+        result = event.data.get("result")
+        index = event.data.get("index", 0)
+        if result is None:
+            return
+        duration = getattr(result, "duration_seconds", 0.0)
+        files = getattr(result, "files_created", [])
+        success = getattr(result, "success", False)
+        name = getattr(result, "session_name", f"Session {index + 1}")
+        files_text = ", ".join(files) if files else "no file changes"
+        prefix = "✅" if success else "❌"
+        color = config.COLORS.success if success else "#FF6B6B"
+        self.display_output(
+            f"{prefix} {name} finished in {duration:.1f}s ({files_text})",
+            color,
+        )
+
+    def _on_all_complete(self, _: Event) -> None:
+        self._current_plan = None
+        self._set_completed_state()
+        self.display_output(" All sessions complete!", config.COLORS.success)
+        self.input_field.setEnabled(True)
+        self.input_field.setFocus()
+
+    def _on_error(self, event: Event) -> None:
+        error = event.data.get("error", "An orchestration error occurred.")
+        self._set_error_state()
+        self.display_output(error, "#FF6B6B")
+        self.input_field.setEnabled(True)
+        self.input_field.setFocus()
+        self._current_plan = None
+
+    def _format_plan(self, plan: SessionPlan) -> List[str]:
+        """Format the session plan for display."""
+        lines: List[str] = [
+            "🧠 Session Plan",
+            f"Total estimate: {plan.total_estimated_minutes} minutes",
+        ]
+        for idx, session in enumerate(plan.sessions, start=1):
+            deps = ", ".join(session.dependencies) if session.dependencies else "None"
+            lines.append(f"{idx}. {session.name} ({session.estimated_minutes} min)")
+            lines.append(f"   Dependencies: {deps}")
+        if plan.reasoning:
+            lines.append(f"Reasoning: {plan.reasoning}")
+        return lines
 
     def handle_process_finished(self, exit_code: int) -> None:
         """Handle completion of the agent process."""

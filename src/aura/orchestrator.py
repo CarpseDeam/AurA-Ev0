@@ -11,8 +11,10 @@ from typing import Dict, List
 
 from PySide6.QtCore import QObject, QEventLoop, QThread, Signal
 
+from aura.events import EventType, get_event_bus
 from aura.services import AgentRunner, PlanningService
-from aura.services.planning_service import Session, SessionPlan
+from aura.services.planning_service import Session
+from aura.tools import GitHelper
 from aura.utils import scan_directory
 
 LOGGER = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ class Orchestrator(QObject):
         self._working_dir = resolved
         self._thread: QThread | None = None
         self._worker: _ExecutionWorker | None = None
+        self._event_bus = get_event_bus()
 
     def execute_goal(self, goal: str) -> None:
         """Plan and execute the provided goal on a background thread."""
@@ -109,6 +112,8 @@ class _ExecutionWorker(QObject):
         self._working_dir = working_dir
         self._goal = goal
         self._context_notes: List[str] = []
+        self._event_bus = get_event_bus()
+        self._git = GitHelper(str(working_dir))
 
     def run(self) -> None:
         """Entry point when the worker thread starts."""
@@ -116,29 +121,53 @@ class _ExecutionWorker(QObject):
             self._execute()
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Orchestration failed: %s", exc)
-            self.error_occurred.emit(str(exc))
+            message = str(exc)
+            self._event_bus.publish(EventType.ERROR, error=message)
+            self.error_occurred.emit(message)
         finally:
             self.finished.emit()
 
     def _execute(self) -> None:
         """Perform planning then execute all sessions sequentially."""
         self.planning_started.emit()
+        self._event_bus.publish(EventType.PLANNING_STARTED)
         project_context = self._build_project_context()
         plan = self._planning_service.plan_sessions(self._goal, project_context)
         if not plan.sessions:
             raise ValueError("Planning produced no sessions.")
         self.plan_ready.emit(plan)
+        self._event_bus.publish(EventType.PLAN_READY, plan=plan)
         for index, session in enumerate(plan.sessions):
             self.session_started.emit(index, session)
+            self._event_bus.publish(EventType.SESSION_STARTED, index=index, session=session)
             result = self._run_session(index, session)
             self.session_complete.emit(index, result)
+            self._event_bus.publish(EventType.SESSION_COMPLETE, index=index, result=result)
             self._update_context(index, session, result)
+            if result.success and result.files_created:
+                commit_msg = f"Session {index + 1}: {session.name}"
+                if self._git.commit(commit_msg, result.files_created):
+                    self._event_bus.publish(
+                        EventType.SESSION_OUTPUT,
+                        text=f" Committed: {commit_msg}",
+                    )
+                else:
+                    self._event_bus.publish(
+                        EventType.ERROR,
+                        error=f"Failed to commit changes for {commit_msg}",
+                    )
             if not result.success:
-                self.error_occurred.emit(
-                    f"Session '{session.name}' failed with exit code {result.exit_code}."
-                )
+                error_message = f"Session '{session.name}' failed with exit code {result.exit_code}."
+                self._event_bus.publish(EventType.ERROR, error=error_message)
+                self.error_occurred.emit(error_message)
                 return
         self.all_sessions_complete.emit()
+        self._event_bus.publish(EventType.ALL_COMPLETE)
+        self._event_bus.publish(EventType.SESSION_OUTPUT, text=" Pushing to GitHub...")
+        if self._git.push():
+            self._event_bus.publish(EventType.SESSION_OUTPUT, text="✅ Pushed to GitHub")
+        else:
+            self._event_bus.publish(EventType.ERROR, error="Failed to push to GitHub")
 
     def _build_project_context(self) -> str:
         """Summarize the working directory for planning."""

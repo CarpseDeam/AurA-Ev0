@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterator, List, Mapping
 
 import google.generativeai as genai
@@ -28,6 +30,64 @@ AURA_SYSTEM_PROMPT = (
     'Bad: "The system will now create the user model"\n'
     'Good: "Let me build that user model for you"\n'
 )
+
+
+def read_project_file(path: str) -> str:
+    """Return the contents of a project file."""
+    try:
+        target = Path(path)
+        if not target.is_absolute():
+            target = Path.cwd() / target
+        if not target.exists():
+            return f"Error: file '{path}' does not exist."
+        return target.read_text(encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Failed to read project file %s: %s", path, exc)
+        return f"Error reading '{path}': {exc}"
+
+
+def list_project_files(directory: str = ".", extension: str = ".py") -> List[str]:
+    """List project files matching the given extension."""
+    try:
+        base = Path(directory)
+        if not base.is_absolute():
+            base = Path.cwd() / base
+        if not base.exists():
+            return []
+        suffix = extension if extension.startswith(".") else f".{extension}"
+        files = [_relative_to_cwd(path) for path in base.rglob(f"*{suffix}") if path.is_file()]
+        return sorted(files)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception(
+            "Failed to list project files in %s with extension %s: %s",
+            directory,
+            extension,
+            exc,
+        )
+        return []
+
+def _relative_to_cwd(path: Path) -> str:
+    """Return a path relative to the current working directory when possible."""
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)
+
+
+def get_git_status() -> str:
+    """Return the short git status for the current repository."""
+    result = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=os.getcwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        error = result.stderr.strip() or result.stdout.strip() or "git status failed"
+        LOGGER.error("git status failed: %s", error)
+        return f"Error: {error}"
+    return result.stdout.strip() or "clean"
 
 
 @dataclass
@@ -65,7 +125,8 @@ class ChatService:
         # Pass system prompt via system_instruction parameter
         model = genai.GenerativeModel(
             self.model,
-            system_instruction=AURA_SYSTEM_PROMPT
+            system_instruction=AURA_SYSTEM_PROMPT,
+            tools=[read_project_file, list_project_files, get_git_status],
         )
 
         # Build chat history, excluding system messages (Gemini doesn't accept them)
