@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -27,4 +28,27 @@ COLORS = ColorPalette(
 FONT_FAMILY: str = "JetBrains Mono"
 WINDOW_DIMENSIONS: tuple[int, int] = (900, 700)
 
-__all__ = ["COLORS", "FONT_FAMILY", "WINDOW_DIMENSIONS", "ColorPalette"]
+DEFAULT_AGENT: str = "gemini"
+
+AGENT_SEARCH_PATHS: list[str] = [
+    os.path.join(os.getenv("APPDATA", ""), "npm"),
+    os.path.join(os.getenv("LOCALAPPDATA", ""), "Programs"),
+    "/usr/local/bin",
+    os.path.expanduser("~/.local/bin"),
+]
+
+AGENT_DISPLAY_NAMES: dict[str, str] = {
+    "gemini": "Gemini CLI",
+    "claude": "Claude Code",
+    "codex": "Codex",
+}
+
+__all__ = [
+    "COLORS",
+    "FONT_FAMILY",
+    "WINDOW_DIMENSIONS",
+    "ColorPalette",
+    "DEFAULT_AGENT",
+    "AGENT_SEARCH_PATHS",
+    "AGENT_DISPLAY_NAMES",
+]

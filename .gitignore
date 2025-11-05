@@ -152,3 +152,4 @@ desktop.ini
 *.log
 *.tmp
 .temp/
+/.claude/

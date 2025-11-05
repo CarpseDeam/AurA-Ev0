@@ -23,7 +23,9 @@ from PySide6.QtWidgets import (
 
 from aura import config
 from aura.services import AgentRunner
+from aura.ui.agent_settings_dialog import AgentSettingsDialog
 from aura.utils import scan_directory
+from aura.utils.agent_finder import find_cli_agents
 
 
 class MainWindow(QMainWindow):
@@ -33,7 +35,8 @@ class MainWindow(QMainWindow):
         """Initialize the main window."""
         super().__init__(parent)
         self._working_directory = os.getcwd()
-        self._gemini_ready: bool | None = None
+        self._selected_agent: str = config.DEFAULT_AGENT
+        self._agent_path: str = ""
         self.output_view = QTextEdit(self)
         self.input_field = QLineEdit(self)
         self.clear_button = QPushButton("Clear", self)
@@ -48,6 +51,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._setup_status_bar()
         self._connect_signals()
+        self._detect_default_agent()
         self._set_ready_state()
 
     def _configure_window(self) -> None:
@@ -134,9 +138,12 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self) -> None:
         """Create the application toolbar."""
         self.toolbar.setMovable(False)
-        action = QAction("Set Working Directory", self)
-        action.triggered.connect(self._select_working_directory)
-        self.toolbar.addAction(action)
+        dir_action = QAction("Set Working Directory", self)
+        dir_action.triggered.connect(self._select_working_directory)
+        self.toolbar.addAction(dir_action)
+        agent_action = QAction("Agent Settings...", self)
+        agent_action.triggered.connect(self._open_agent_settings)
+        self.toolbar.addAction(agent_action)
 
     def _connect_signals(self) -> None:
         """Connect widget signals."""
@@ -157,7 +164,7 @@ class MainWindow(QMainWindow):
         self.execute_command(prompt)
 
     def execute_command(self, prompt: str) -> None:
-        """Execute a Gemini command for the given prompt."""
+        """Execute an agent command for the given prompt."""
         if not prompt:
             self.input_field.setEnabled(True)
             self.input_field.setFocus()
@@ -167,7 +174,8 @@ class MainWindow(QMainWindow):
             self.input_field.setFocus()
             return
         command_prompt = self._build_command_prompt(prompt)
-        command = ["gemini", "-p", command_prompt, "--yolo"]
+        agent_executable = self._agent_path or self._selected_agent
+        command = [agent_executable, "-p", command_prompt, "--yolo"]
         try:
             runner = AgentRunner(
                 command=command,
@@ -284,29 +292,42 @@ class MainWindow(QMainWindow):
             self.display_output("Working directory does not exist.", "#FF6B6B")
             self._set_error_state()
             return False
-        if not self._check_gemini_cli():
+        if not self._agent_path:
+            agent_display = config.AGENT_DISPLAY_NAMES.get(self._selected_agent, self._selected_agent)
             self.display_output(
-                "Gemini CLI not found. Ensure it is installed and on PATH.", "#FF6B6B"
+                f"{agent_display} not found. Use 'Agent Settings...' to configure.", "#FF6B6B"
             )
             self._set_error_state()
             return False
         return True
 
-    def _check_gemini_cli(self) -> bool:
-        """Verify the Gemini CLI is accessible."""
-        try:
-            result = subprocess.run(
-                ["gemini", "--version"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                text=True,
-            )
-        except FileNotFoundError:
-            self._gemini_ready = False
-            return False
-        self._gemini_ready = result.returncode == 0
-        return self._gemini_ready
+    def _detect_default_agent(self) -> None:
+        """Detect and set the default available agent."""
+        agents = find_cli_agents()
+        for agent in agents:
+            if agent.is_available and agent.name == self._selected_agent:
+                self._agent_path = agent.executable_path
+                self.display_output(
+                    f"Using {agent.display_name} at {agent.executable_path}", config.COLORS.success
+                )
+                return
+        for agent in agents:
+            if agent.is_available:
+                self._selected_agent = agent.name
+                self._agent_path = agent.executable_path
+                self.display_output(
+                    f"Using {agent.display_name} at {agent.executable_path}", config.COLORS.success
+                )
+                return
+        self.display_output(
+            "No CLI agents found. Use 'Agent Settings...' to configure.", "#FF6B6B"
+        )
+
+    def _open_agent_settings(self) -> None:
+        """Open the agent settings dialog."""
+        dialog = AgentSettingsDialog(self)
+        if dialog.exec():
+            self._detect_default_agent()
 
     def _build_command_prompt(self, prompt: str) -> str:
         """Compose the prompt with project context."""
