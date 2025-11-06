@@ -80,23 +80,22 @@ class AgentSettingsDialog(QDialog):
                 color: {config.COLORS.text};
             }}
             QTableWidget {{
-                background-color: #1b1b1b;
+                background-color: {config.COLORS.background};
                 color: {config.COLORS.text};
-                border: 1px solid {config.COLORS.accent};
-                gridline-color: #2d2d2d;
+                border: 1px solid #333333;
+                gridline-color: #222222;
             }}
             QHeaderView::section {{
-                background-color: #2d2d2d;
+                background-color: {config.COLORS.background};
                 color: {config.COLORS.text};
-                border: 1px solid #3a3a3a;
+                border: 1px solid #333333;
                 padding: 6px;
-                font-weight: bold;
+                font-weight: normal;
             }}
             QPushButton {{
-                background-color: #2d2d2d;
+                background-color: {config.COLORS.background};
                 color: {config.COLORS.text};
-                border: 1px solid #3a3a3a;
-                border-radius: 6px;
+                border: 1px solid #333333;
                 padding: 6px 12px;
                 min-width: 80px;
             }}

@@ -53,15 +53,15 @@ class StatusBarManager(QObject):
         """Configure the status bar labels and layout."""
         self._status_label.setText("Ready")
         self._status_label.setStyleSheet(
-            f"color: {config.COLORS.text}; font-weight: 500; padding: 4px 8px;"
+            f"color: {config.COLORS.secondary}; font-weight: 400; padding: 2px 8px;"
         )
 
-        self._separator.setStyleSheet("color: #3d3d3d; padding: 0 8px;")
+        self._separator.setStyleSheet("color: #333333; padding: 0 8px;")
 
         initial_directory = self._format_directory(self._app_state.working_directory)
         self._directory_label.setText(initial_directory)
         self._directory_label.setStyleSheet(
-            "color: #9e9e9e; padding: 4px 8px; font-size: 12px;"
+            f"color: {config.COLORS.secondary}; padding: 2px 8px; font-size: 11px;"
         )
 
         # Order matches the previous implementation to maintain layout.
@@ -77,7 +77,7 @@ class StatusBarManager(QObject):
     def _apply_status(self, message: str, color: str) -> None:
         """Apply the status text and color styling."""
         self._status_label.setText(message)
-        self._status_label.setStyleSheet(f"color: {color}; font-weight: 500; padding: 4px 8px;")
+        self._status_label.setStyleSheet(f"color: {color}; font-weight: 400; padding: 2px 8px;")
 
     def _on_status_changed(self, message: str, color: str) -> None:
         """Synchronize with AppState status updates."""

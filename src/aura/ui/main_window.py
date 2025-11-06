@@ -98,28 +98,25 @@ class MainWindow(QMainWindow):
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
-            "QMainWindow {{background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a1a1a, stop:1 "
-            f"{config.COLORS.background}); color: {config.COLORS.text};}}"
-            "QTextEdit {{background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a1a1a, stop:1 #1e1e1e); "
-            f"color: {config.COLORS.text}; border: 2px solid #2d2d2d; border-radius: 12px; padding: 16px; "
+            f"QMainWindow {{background: {config.COLORS.background}; color: {config.COLORS.text};}}"
+            f"QTextEdit {{background: {config.COLORS.background}; "
+            f"color: {config.COLORS.text}; border: none; padding: 16px; "
             f"selection-background-color: {config.COLORS.accent};}}"
-            f"QTextEdit:focus {{border-color: {config.COLORS.accent};}}"
-            "QLineEdit {{background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #262626, stop:1 #1f1f1f); "
-            f"color: {config.COLORS.text}; border: 2px solid #3a3a3a; border-radius: 10px; padding: 10px 14px; "
+            f"QLineEdit {{background: {config.COLORS.background}; "
+            f"color: {config.COLORS.text}; border: none; border-bottom: 1px solid #333333; padding: 10px 14px; "
             "font-size: 13px;}}"
-            "QLineEdit:focus {{border-color: "
-            f"{config.COLORS.accent}; background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2a2a2a, stop:1 #222222);}}"
-            "QStatusBar {{background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1a1a1a, stop:1 #222222); "
-            f"color: {config.COLORS.text}; border-top: 2px solid #2d2d2d; padding: 6px;}}"
-            "QToolBar {{background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1a1a1a, stop:1 #222222); "
-            "border-bottom: 2px solid #2d2d2d; spacing: 8px; padding: 4px;}}"
+            f"QLineEdit:focus {{border-bottom: 1px solid #333333;}}"
+            f"QStatusBar {{background: {config.COLORS.background}; "
+            f"color: {config.COLORS.text}; border: none; padding: 6px;}}"
+            f"QToolBar {{background: {config.COLORS.background}; "
+            "border: none; spacing: 8px; padding: 4px;}}"
         )
         self.clear_button.setStyleSheet(
-            "QPushButton {{background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #323232, stop:1 #282828); "
-            f"color: {config.COLORS.text}; border: 2px solid #3a3a3a; border-radius: 10px; padding: 8px 12px; "
+            f"QPushButton {{background: {config.COLORS.background}; "
+            f"color: {config.COLORS.text}; border: 1px solid #333333; padding: 8px 12px; "
             "font-weight: 500;}}"
             f"QPushButton:hover {{border-color: {config.COLORS.accent};}}"
-            "QPushButton:pressed {{background: #222222;}}"
+            f"QPushButton:pressed {{background: #111111;}}"
         )
 
     def _build_toolbar(self) -> None:

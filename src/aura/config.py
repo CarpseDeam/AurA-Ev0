@@ -22,7 +22,7 @@ class ColorPalette:
 
 
 COLORS = ColorPalette(
-    background="#1e1e1e",
+    background="#000000",
     text="#e0e0e0",
     accent="#64B5F6",
     success="#66BB6A",

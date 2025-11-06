@@ -1,706 +1,389 @@
-# Aura - Living Design Document
-**Version: 3.0 (Native Agent Architecture)**  
-**Last Updated: 2025-01-06**
 
----
+🏗️ What Aura Is
+Core Mission: Professional-grade AI coding orchestration that produces code indistinguishable from senior engineer work.
+Aura is Kori's insurance policy - a desktop application (PySide6/Qt on Windows) that transforms large coding requests into focused 3-7 session workflows. Each session produces clean, maintainable code where files stay under 200 lines and functions under 25 lines.
+The Innovation:
 
-## 🎯 Implementation Snapshot (2025-01-06)
+Control inputs (intelligent task decomposition) rather than post-process outputs
+Session-based architecture prevents god objects and spaghetti code
+Discovery phase uses 15 developer tools to understand codebases before planning
+Context passing between sessions prevents duplication and parameter mismatches
 
-### What Changed in v3.0
-**MAJOR ARCHITECTURE SHIFT:** Replaced subprocess CLI wrappers with native Python agents.
+Why It Matters:
+Kori transitioned from electrician ($26/hr) to Senior AI Engineer ($70/hr) at a billion-dollar AI annotation company. Aura produces code that passes professional code review without revealing AI assistance - code that "hides in plain sight."
 
-**Before (v2.0):**
-- Orchestrator → subprocess → Gemini CLI → stdout parsing → pain
+📊 Test #1 Results - The First Validation
+What We Tested
+Prompt: "Build a REST API for a todo app with authentication"
+Result: 7 sessions, ~45 minutes, generated complete Flask REST API
+Code Quality Analysis
+MetricTargetResultStatusFiles under 200 linesAll✅ ALL (longest: 61 lines)PASSFunctions under 25 linesAll⚠️ 1 violation (29 lines)MOSTLYType hints presentAll❌ ZEROFAILDocstrings presentAll❌ ZEROFAILClean architectureRequired✅ Perfect separationPASSNo emojis in codeRequired✅ NonePASS
+What WORKED ✅
 
-**After (v3.0):**
-- Aura Chat (Gemini API) → function calling → PythonCoderAgent → structured results → clean
+File sizes perfect - Every file under 200 lines (User model: 15 lines!)
+Clean architecture - Proper separation: models/routes/schemas
+Modular design - No god objects, focused modules
+RESTful patterns - Professional Flask best practices
+No AI tells - Professional naming, no generic functions
 
-### Current Architecture
-- **PySide6 desktop shell** with dark theme, real-time output streaming
-- **Aura Chat LLM** (Gemini 2.5 Pro) as orchestrating brain with personality
-- **Function calling** via Gemini native API - tools registered directly
-- **PythonCoderAgent** - custom Python agent with its own LLM for code generation
-- **Structured outputs** - Pydantic models, no stdout parsing
-- **Qt signals** for live UI updates throughout the stack
-- **Git integration** via tools (read files, commit, push)
+What FAILED ❌
+Critical Bugs:
 
-### File Structure
-```
+Missing email field in User model (but routes reference it) → crash
+Wrong import path: from app.extensions import db (doesn't exist) → crash
+Bcrypt imported but never used (werkzeug used instead) → confusion
+
+Quality Issues:
+
+Zero type hints → won't pass professional code review
+Zero docstrings → unprofessional, lacks documentation
+Explanatory comments → AI tell ("# Validate username and email")
+One function over 25 lines → needs extraction
+
+The Verdict: 6.5/10 First Attempt
+Proves: Session decomposition DOES produce modular, clean code structure
+Reveals: Quality standards must be enforced programmatically, not just suggested
+
+🛠️ Current Architecture
+File Structure (Unchanged)
 src/aura/
-├── main.py                    # Application entry point
-├── config.py                  # Colors, fonts, settings
+├── main.py                    # Entry + logging config
+├── config.py                  # Settings, colors, flags
 ├── ui/
-│   ├── main_window.py        # Main Qt window (~400 lines)
-│   └── agent_settings_dialog.py
+│   ├── main_window.py        # Qt container (~400 lines)
+│   ├── output_panel.py       # Terminal-styled display
+│   ├── status_bar_manager.py # Status updates
+│   ├── orchestration_handler.py # Event routing
+│   └── agent_execution_manager.py # Agent coordination
 ├── services/
-│   ├── chat_service.py       # Gemini API + tools (~250 lines)
-│   ├── planning_service.py   # Task decomposition (~150 lines)
-│   └── agent_runner.py       # Legacy CLI wrapper (fallback)
+│   ├── chat_service.py       # Gemini API + AFC (~307 lines)
+│   ├── planning_service.py   # Task decomposition
+│   └── agent_runner.py       # Legacy CLI wrapper
 ├── agents/
-│   └── python_coder.py       # 🆕 Native coding agent (~200 lines)
-├── orchestrator.py           # Session coordination (~300 lines)
-├── events.py                 # Event bus for coordination
-├── tools.py                  # Git helpers
+│   └── python_coder.py       # Native code generator
+├── orchestrator.py           # Session coordination
+├── events.py                 # Event bus
+├── tools/
+│   ├── file_system_tools.py  # File operations (4 tools)
+│   ├── python_tools.py       # Testing, linting (5 tools)
+│   └── git_tools.py          # Version control (4 tools)
 └── utils/
     ├── project_scanner.py    # Directory analysis
-    ├── agent_finder.py       # Detect available CLI agents
-    └── safety.py            # Prevent self-modification
-```
-
----
-
-## 🧠 What Aura Actually Does
-
-### The Three-Step Process (Updated for v3.0)
-
-```
+    ├── agent_finder.py       # CLI agent detection
+    └── safety.py             # Self-modification protection
+The Three-Step Process
 1. USER REQUEST
    "Build a REST API with authentication"
    ↓
 
-2. AURA CHAT LLM (Gemini 2.5 Pro + Function Calling)
-   - Reads existing files: read_project_file()
-   - Plans sessions: Decomposes into 3-7 focused tasks
-   - Executes code: execute_python_session()
-   - Verifies results: read_project_file() again
-   - Commits work: git_commit(), git_push()
+2. DISCOVERY PHASE (NEW - CRITICAL!)
+   Aura Chat uses 15 tools to understand codebase:
+   - list_project_files() → sees structure
+   - search_in_files() → finds patterns
+   - read_project_file() → reads implementations
+   - get_function_definitions() → understands signatures
+   Duration: ~35 seconds of intelligent analysis
    ↓
 
-3. PYTHONCODERAGENT (Worker Agent)
-   - Called as a tool by Aura Chat
-   - Generates code using Gemini API
+3. PLANNING PHASE
+   Aura Chat (Gemini 2.5 Pro):
+   - Analyzes discovery results
+   - Decomposes into 3-7 focused sessions
+   - Each session: one module, 10-25 minutes
+   - Returns SessionPlan with reasoning
+   ↓
+
+4. EXECUTION PHASE
+   For each session:
+   - PythonCoderAgent generates code
    - Writes files to disk
    - Runs validation commands
-   - Returns structured AgentResult
+   - Updates context for next session
    ↓
 
-4. CLEAN CODEBASE
-   Small files, clear separation, maintainable
-```
-
-### Example Session Flow
-
-**Session 1: "Create User model ONLY"**
-```python
-Aura Chat thinks:
-1. read_project_file("models/user.py") → doesn't exist
-2. execute_python_session(
-     "Create User model with bcrypt password hashing"
-   )
-3. PythonCoderAgent creates models/user.py (87 lines)
-4. Returns: {"success": true, "files_created": ["models/user.py"]}
-5. read_project_file("models/user.py") → verify it's good
-```
-
-**Session 2: "Create login/logout routes using existing User model"**
-```python
-Aura Chat thinks:
-1. read_project_file("models/user.py") → exists! Don't recreate
-2. execute_python_session(
-     "Create auth routes using existing User model at models/user.py"
-   )
-3. PythonCoderAgent creates routes/auth.py (134 lines)
-4. Returns structured results
-```
-
-**Key Innovation: The LLM Sees Everything**
-- Aura Chat reads files before and after sessions
-- It UNDERSTANDS what changed and why
-- It can adapt the plan based on what actually happened
-- It decides when to commit code, when to iterate
-
----
-
-## 🏗️ Architecture Diagram (v3.0)
-
-```
-┌──────────────────────────────────────────────────┐
-│           Aura GUI (PySide6/Qt)                  │
-│  ┌────────────────────────────────────────────┐  │
-│  │   QTextEdit (live output stream)           │  │
-│  │   - Colored, formatted HTML                │  │
-│  │   - Auto-scroll, timestamps                │  │
-│  └────────────────────────────────────────────┘  │
-│  ┌────────────────────────────────────────────┐  │
-│  │   QLineEdit (user input)                   │  │
-│  └────────────────────────────────────────────┘  │
-└──────────────────┬───────────────────────────────┘
-                   │ Qt Signals
-                   ↓
-┌──────────────────────────────────────────────────┐
-│        Aura Chat LLM (Gemini 2.5 Pro)            │
-│                                                  │
-│  "You are Aura, an AI orchestrator..."          │
-│                                                  │
-│  Tools Available:                                │
-│  ✓ read_project_file(path)                      │
-│  ✓ list_project_files(directory)                │
-│  ✓ execute_python_session(prompt, dir) ← NEW!   │
-│  ✓ get_git_status()                             │
-│  ✓ git_commit(message)                          │
-│  ✓ git_push(remote, branch)                     │
-│                                                  │
-│  Function Calling: Native Gemini API            │
-└──────────────────┬───────────────────────────────┘
-                   │ Tool Call
-                   ↓
-┌──────────────────────────────────────────────────┐
-│       PythonCoderAgent (Custom Worker)           │
-│                                                  │
-│  ┌────────────────────────────────────────────┐ │
-│  │  Gemini 1.5 Pro (Code Generation Brain)   │ │
-│  │  - Generates code from session prompt     │ │
-│  │  - Returns JSON plan: {files, commands}   │ │
-│  └────────────────────────────────────────────┘ │
-│                                                  │
-│  Actions:                                        │
-│  • Writes files to working_dir                   │
-│  • Runs commands (pytest, git, etc.)             │
-│  • Emits Qt signals for progress                 │
-│                                                  │
-│  Returns: AgentResult (Pydantic)                 │
-│    {success, files_created, files_modified,      │
-│     commands_run, output_lines, errors}          │
-└──────────────────────────────────────────────────┘
-```
-
----
-
-## 🔧 Technical Decisions (v3.0)
-
-### Core Tech Stack (Updated)
-
-**GUI Framework: PySide6 (Qt)**
-- ✅ Native performance
-- ✅ Cross-platform
-- ✅ Rich widgets (HTML support in QTextEdit)
-- ✅ Built-in threading (QThread)
-- ✅ Signal/slot pattern for async updates
-
-**Orchestration Brain: Gemini 2.5 Pro API + Function Calling**
-- ✅ Native function calling (no MCP needed yet)
-- ✅ Large context window (1M tokens)
-- ✅ Can read files, plan, execute, verify in one flow
-- ✅ Structured outputs via JSON mode
-- ✅ Agentic - makes decisions autonomously
-
-**Coding Worker: PythonCoderAgent (Custom)**
-- ✅ We own the code (no subprocess mysteries)
-- ✅ Returns structured data (Pydantic models)
-- ✅ Direct Gemini API integration
-- ✅ Testable, mockable, controllable
-- ✅ Qt signals for live updates
-- ❌ No more stdout parsing hell!
-
-### Key Architectural Choices
-
-#### 1. Function Calling Over Subprocess Wrappers
-
-**Old Approach (v2.0):**
-```python
-# Parse subprocess stdout with regex 😭
-process = subprocess.Popen(["gemini", "-p", prompt])
-for line in process.stdout:
-    if "Creating" in line:  # Fragile!
-        file = regex_magic(line)
-```
-
-**New Approach (v3.0):**
-```python
-# Structured tool response 🎉
-result = execute_python_session(
-    "Create calculator.py",
-    "/path/to/project"
-)
-# result = {
-#   "success": True,
-#   "files_created": ["calculator.py"],
-#   "summary": "Created 1 file"
-# }
-```
-
-**Why This Is Better:**
-- ✅ No regex parsing of stdout
-- ✅ Type-safe structured data
-- ✅ Proper error handling
-- ✅ Testable (mock tool responses)
-- ✅ LLM sees results and adapts
-
-#### 2. Aura Chat IS the Orchestrator
-
-**Philosophy:** The orchestrating LLM should be agentic, not just a planner.
-
-**What Aura Chat Can Do:**
-1. **Read project context** - sees what files exist
-2. **Plan sessions** - decomposes tasks intelligently
-3. **Execute code** - calls PythonCoderAgent
-4. **Verify results** - reads created files
-5. **Iterate** - if something's wrong, fix it
-6. **Commit & push** - handles git operations
-7. **Explain** - tells user what happened in friendly language
-
-**Example Conversation:**
-```
-User: "Add error handling to calculator"
-
-Aura: Let me check the current code...
-[reads calculator.py]
-
-I see the divide function doesn't handle zero. Let me fix that.
-[executes coding session]
-
-Done! Added ZeroDivisionError handling. Want me to commit this?
-
-User: yes
-
-Aura: [commits with message "Add zero division error handling"]
-Pushed to GitHub! ✅
-```
-
-#### 3. Structured Outputs Everywhere
-
-**Every interaction uses Pydantic models or JSON schemas:**
-
-```python
-# SessionContext (input to agent)
-@dataclass(frozen=True)
-class SessionContext:
-    working_dir: Path
-    session_prompt: str
-    previous_work: Sequence[str]
-    project_files: Sequence[str]
-
-# AgentResult (output from agent)
-@dataclass(frozen=True)
-class AgentResult:
-    success: bool
-    files_created: Sequence[str]
-    files_modified: Sequence[str]
-    commands_run: Sequence[str]
-    output_lines: Sequence[str]
-    errors: Sequence[str]
-    duration_seconds: float
-```
-
-**Benefits:**
-- Type safety at compile time
-- No parsing errors
-- Easy to test
-- Self-documenting
-- IDE autocomplete works
-
-#### 4. Qt Signals for Everything
-
-**All async updates use Qt's signal/slot pattern:**
-```python
-# In PythonCoderAgent
-progress_update = Signal(str)  # "Creating calculator.py..."
-command_executed = Signal(str)  # "Ran: pytest tests/"
-
-# In MainWindow
-agent.progress_update.connect(self.display_output)
-```
-
-**Why:**
-- ✅ Thread-safe GUI updates
-- ✅ Decoupled components
-- ✅ Multiple listeners possible
-- ✅ Built into Qt (no extra deps)
-
-#### 5. No MCP Yet (But Ready For It)
-
-**Current:** Native Gemini function calling  
-**Future:** Can add MCP when needed for:
-- External tool integrations (VS Code, etc.)
-- Agent marketplace
-- Cross-LLM compatibility
-
-**For now:** Native function calling is simpler and works great!
-
----
-
-## 🎨 Design Principles (Unchanged)
-
-### What Makes Aura's GUI "Slick"
-
-**Typography First**
-- JetBrains Mono everywhere
-- Proper size hierarchy (12px body, 14px headers)
-- Generous line height (1.6)
-
-**Color Palette (Dark Theme)**
-```
-Background:  #1e1e1e
-Surface:     #2c2c2c
-Text:        #e0e0e0
-Accent:      #64B5F6 (blue)
-Success:     #66BB6A (green)
-Warning:     #FFB74D (orange)
-Agent:       #FFD27F (gold)
-```
-
-**Real-time Feedback**
-- Every progress update streams immediately
-- Smooth auto-scroll
-- Progress indicators (Session 2/4)
-- Time elapsed counters
-
-**Minimal Chrome**
-- Focus on content
-- Input box at bottom (ChatGPT style)
-- Everything else is output
-
----
-
-## 📋 The Session Planning Prompt (Updated)
-
-### How Aura's Brain Works Now
-
-Aura Chat uses its tools to gather context, then plans:
-
-```python
-# Aura Chat workflow
-1. list_project_files() → see what exists
-2. read_project_file() → understand key files
-3. Plan 3-7 sessions internally
-4. Display plan to user for approval
-5. For each session:
-   - execute_python_session()
-   - read_project_file() to verify
-   - Update context for next session
-6. git_commit() when done
-7. Celebrate! 🎉
-```
-
-**Planning Criteria:**
-- 3-7 sessions per request
-- 10-25 minutes per session
-- 2-4 files per session
-- No file over 200 lines
-- Clear dependencies
-
----
-
-## 🔄 The Session Execution Flow (v3.0)
-
-### Detailed Step-by-Step
-
-**1. User Submits Request**
-```
-Input: "Build a REST API for a todo app with user auth"
-```
-
-**2. Aura Chat Gathers Context**
-```
-🤖 Aura Chat thinks:
-- Calls list_project_files(".") → sees empty project
-- Internally plans 4 sessions
-```
-
-**3. Display Plan to User**
-```
-📋 I've planned 4 focused sessions:
-
-Session 1: User Authentication Model (~12 min)
-  • models/user.py - User class with password hashing
-  • utils/jwt.py - JWT token utilities
-
-Session 2: Auth Endpoints (~10 min)  
-  • routes/auth.py - login/logout/register routes
-
-Session 3: Todo CRUD Operations (~15 min)
-  • models/todo.py - Todo model
-  • routes/todo.py - CRUD endpoints
-
-Session 4: Testing & Integration (~8 min)
-  • tests/ - Pytest suite
-
-Total: ~45 minutes
-
-Type 'start' when ready! 🚀
-```
-
-**4. User Approves → Aura Executes Session 1**
-```
-User: start
-
-Aura: ▶️ Session 1/4: User Authentication Model
-
-[calls execute_python_session with prompt]
-[PythonCoderAgent generates code]
-[returns structured result]
-
-✅ Created 2 files:
-  • models/user.py (87 lines)
-  • utils/jwt.py (45 lines)
-
-[reads models/user.py to understand what was created]
-```
-
-**5. Context Passed to Session 2**
-```
-Aura: ▶️ Session 2/4: Auth Endpoints
-
-[calls execute_python_session with context:]
-"Create auth routes using the existing User model at 
-models/user.py. Do NOT recreate the User class."
-
-[PythonCoderAgent sees context, doesn't duplicate]
-
-✅ Created 1 file:
-  • routes/auth.py (134 lines)
-```
-
-**6. All Sessions Complete**
-```
-Aura: 🎉 All sessions complete! (43m 12s)
-
-Created 12 files totaling 1,247 lines.
-Average file size: 104 lines.
-
-Want me to commit this to git?
-
-User: yes
-
-Aura: [commits with descriptive message]
-      [pushes to GitHub]
-      
-✅ Pushed to GitHub! Your todo API is ready!
-```
-
----
-
-## 🛣️ Development Roadmap (Updated)
-
-### Phase 1: Core MVP ✅ COMPLETE
-- [x] Basic Qt GUI
-- [x] Single session execution
-- [x] Dark theme styling
-- [x] Real-time output streaming
-
-### Phase 2: Multi-Session Orchestration ✅ COMPLETE
-- [x] Gemini planning integration
-- [x] Sequential session execution
-- [x] Context passing
-- [x] Progress display
-
-### Phase 3: Native Agent Architecture ✅ COMPLETE (v3.0)
-- [x] PythonCoderAgent built
-- [x] Function calling integration
-- [x] Structured outputs
-- [x] Git tool integration
-- [x] File reading tools
-
-### Phase 4: Polish & Refinement 🚧 IN PROGRESS
-- [ ] Wire agent into orchestrator
-- [ ] Full end-to-end testing
-- [ ] Error recovery
-- [ ] Session name quality improvements
-- [ ] Better prompt engineering
-
-### Phase 5: Power Features (Next)
-- [ ] Edit session plans before execution
-- [ ] Pause/resume sessions
-- [ ] Session history viewer
-- [ ] Templates for common architectures
-- [ ] Custom planning prompts
-- [ ] Auto-commit toggle
-
-### Future: Advanced Features
-- [ ] Domain-specific agents (Airtable, SQL, Hex)
-- [ ] MCP integration for external tools
-- [ ] Watch mode (auto-run on changes)
-- [ ] Session branching (try different approaches)
-- [ ] Cost tracking
-- [ ] Plugin system
-
----
-
-## 🔬 Technical Deep Dives
-
-### How PythonCoderAgent Works
-
-```python
-class PythonCoderAgent(QObject):
-    def execute_session(self, context: SessionContext) -> AgentResult:
-        # 1. Build prompt with context
-        prompt = self._build_prompt(context)
-        
-        # 2. Call Gemini to get code plan (JSON)
-        plan = self._request_plan(prompt)  # Returns: {files: [...], commands: [...]}
-        
-        # 3. Parse plan into file operations
-        operations = self._parse_file_operations(plan['files'])
-        
-        # 4. Write files to disk
-        for op in operations:
-            op.path.write_text(op.content)
-            self.progress_update.emit(f"✅ Created {op.path}")
-        
-        # 5. Run validation commands
-        for cmd in plan.get('commands', []):
-            result = subprocess.run(cmd, ...)
-            self.command_executed.emit(f"Ran: {cmd}")
-        
-        # 6. Return structured results
-        return AgentResult(
-            success=True,
-            files_created=[...],
-            duration_seconds=elapsed
-        )
-```
-
-### How Function Calling Works
-
-```python
-# In chat_service.py
-
-# 1. Define tool as Python function
-def execute_python_session(session_prompt: str, working_directory: str) -> dict:
-    agent = PythonCoderAgent(api_key=GEMINI_API_KEY)
-    result = agent.execute_session(SessionContext(...))
+5. CLEAN CODEBASE
+   Modular, maintainable, production-ready
+   (quality depends on tool usage)
+
+🔧 Technical Details
+15 Developer Tools (Current)
+File System Tools (4):
+
+read_project_file - Read file contents
+list_project_files - List files by extension
+search_in_files - Pattern search in code
+read_multiple_files - Batch file reading
+
+Python Tools (5):
+
+get_function_definitions - AST-based signature extraction
+run_tests - Execute pytest
+lint_code - Pylint checks
+format_code - Black formatting
+install_package - Pip package installation
+
+Git Tools (4):
+
+get_git_status - Check status
+git_commit - Commit changes
+git_push - Push to remote
+git_diff - Show differences
+
+Orchestration Tools (2):
+
+execute_python_session - Generate code files
+clear_session_context - Reset context
+
+Key Technologies
+Models (All Gemini 2.5 Pro):
+
+Aura Chat: Gemini 2.5 Pro (orchestration + personality)
+PlanningService: Gemini 2.5 Pro (session decomposition)
+PythonCoderAgent: Gemini 2.5 Pro (code generation)
+
+SDK: google-genai (NEW) not google.generativeai (OLD)
+Configuration:
+python# config.py
+USE_NATIVE_PYTHON_AGENT = True  # Use native vs CLI
+AUTO_COMMIT_SESSIONS = False    # User controls git
+AUTO_PUSH_ON_COMPLETE = False   # User controls push
+
+🚨 Known Issues & Gaps
+Critical Gaps Discovered from Test #1
+1. Missing Symbol Resolution Tools 🔴
+Would have prevented all 3 bugs in Test #1:
+
+find_definition("User") → would show missing email field
+get_imports("app/extensions.py") → would reveal wrong import path
+find_usages("User") → would show how registration uses it
+
+Status: Prompts written, ready to implement
+2. No Quality Enforcement 🔴
+System prompt suggests type hints/docstrings but doesn't enforce:
+
+No validation that code meets standards
+No automated quality checks post-generation
+No feedback loop to regenerate if quality fails
+
+Status: Need validate_generated_code() tool
+3. Discovery Phase Visibility 🟡
+Can't see what tools are being called or why:
+
+Google SDK handles AFC internally
+No visibility into decision-making process
+Can't debug why discovery missed critical context
+
+Status: Logging improvements in progress
+4. File Size Violations 🟡
+Several Aura files violate the 200-line limit:
+
+orchestrator.py: 398 lines (2x over)
+python_coder.py: 323 lines (1.6x over)
+main_window.py: ~400 lines (2x over)
+
+Status: Refactoring needed (after validation phase)
+
+🎯 Immediate Priorities (Next 2 Weeks)
+Week 1: Tool Foundation
+Priority 1: Add Symbol Resolution Tools 🔥
+Implement 3 critical tools:
+
+find_definition(symbol_name, directory) → Prevent field mismatch bugs
+find_usages(symbol_name, directory) → Prevent breaking changes
+get_imports(file_path) → Prevent wrong import bugs
+
+Why: Would have prevented ALL bugs in Test #1
+Priority 2: Improve Logging 🔥
+
+✅ Suppress Google SDK spam (DONE)
+✅ Add tool call tracking (DONE)
+🚧 Test visibility improvements
+
+Priority 3: Run Test #2 🔥
+Generate blog platform REST API to:
+
+Validate logging improvements work
+Establish clean baseline before symbol tools
+Compare quality to Test #1
+
+Week 2: Quality Enforcement
+Priority 4: Add Validation Tool
+pythondef validate_generated_code(file_path: str) -> dict:
+    """Check if code meets quality standards."""
     return {
-        "success": result.success,
-        "files_created": result.files_created,
-        # ... LLM can understand this
+        "has_type_hints": bool,
+        "has_docstrings": bool,
+        "functions_over_25_lines": list,
+        "ai_tells": list,
     }
+Priority 5: Update System Prompt
+Enforce (not suggest) quality standards:
 
-# 2. Register with Gemini
-model = genai.GenerativeModel(
-    "gemini-2.5-pro",
-    tools=[
-        read_project_file,
-        execute_python_session,  # ← Registered!
-        git_commit,
-    ]
-)
+Mandatory type hints
+Mandatory docstrings
+Mandatory tool usage before generation
+Examples of correct workflow
 
-# 3. Gemini decides when to call
-response = model.generate_content("Build a calculator")
-# Gemini: "I should call execute_python_session(...)"
+Priority 6: UI Polish
+Match Gemini CLI aesthetic:
 
-# 4. We execute the tool and return result
-tool_result = execute_python_session(...)
+HUGE gradient ASCII banner
+Pure black background (#000000)
+No borders/panels
+Cleaner input styling
 
-# 5. Gemini sees result and responds to user
-# Gemini: "✅ Created calculator.py! Here's what I built..."
-```
 
----
+🔬 Validation Phase (Current)
+Test Matrix
+TestStatusPurposeTest #1: Todo API✅ CompleteBaseline, prove conceptTest #2: Blog API🚧 RunningValidate logging improvementsTest #3: Todo API v2📋 PlannedWith symbol tools, compare qualityTest #4: Complex App📋 Planned7+ sessions, stress test
+Success Metrics
+Structural Quality:
 
-## 📊 Architecture Comparison
+✅ All files under 200 lines
+✅ Clean separation of concerns
+✅ Modular design, no god objects
 
-### v2.0 (Subprocess) vs v3.0 (Native Agent)
+Professional Quality:
 
-| Aspect | v2.0 Subprocess | v3.0 Native Agent |
-|--------|----------------|-------------------|
-| **Execution** | subprocess.Popen | Direct Python API call |
-| **Output** | stdout text stream | Structured Pydantic models |
-| **Parsing** | Regex on stdout 😭 | No parsing needed 🎉 |
-| **Context** | GEMINI.md files | Function parameters |
-| **Errors** | Parse stderr | Exception handling |
-| **Testing** | Mock subprocess | Mock API responses |
-| **Control** | Limited (CLI interface) | Full (we own the code) |
-| **Updates** | Real-time stdout | Qt signals |
-| **Reliability** | Fragile (CLI changes break us) | Robust (we control it) |
+❌ Type hints on all functions
+❌ Docstrings on all public APIs
+❌ No AI tells (generic names, explanatory comments)
 
----
+Functional Quality:
 
-## 🎯 Success Metrics
+⚠️ No field mismatch bugs
+⚠️ No wrong import bugs
+⚠️ No duplication bugs
 
-### What "Good" Looks Like
+Goal: All metrics GREEN before declaring v3.1 stable
 
-**Code Quality:**
-- Average file size: 80-150 lines
-- No files over 200 lines
-- Clear separation of concerns
-- Minimal code duplication
+🚀 Roadmap
+Phase 4: Validation & Quality (Current - Nov 2025)
 
-**User Experience:**
-- Request to first session: <15 seconds
-- Session execution: 10-25 minutes each
-- Real-time feedback streaming
-- Natural language interaction
+ Automatic function calling operational
+ First successful multi-session workflow
+ Code quality baseline established
+ Logging improvements validated
+ Symbol resolution tools implemented
+ Quality enforcement automated
+ Test suite demonstrates improvement
 
-**Reliability:**
-- Session success rate: >90%
-- No crashes on edge cases
-- Graceful error handling
-- Clear error messages
+Phase 5: Production Readiness (Dec 2025)
 
-**Performance:**
-- GUI stays responsive
-- Streaming updates <100ms latency
-- API calls complete in <5 seconds
-- File operations instant
+ All generated code passes quality checks
+ Symbol tools prevent parameter bugs
+ "Hide in plain sight" validation
+ UI matches Gemini CLI aesthetic
+ Performance optimization (discovery <20 seconds)
+ Error recovery and retry logic
 
----
+Phase 6: Domain-Specific Agents (Q1 2026)
 
-## 🐛 Known Issues & Future Fixes
+ Airtable schema analyzer
+ React component generator from schemas
+ SQL migration generator
+ Hex notebook integration
+ First business tool created (not just code)
 
-### Current Known Issues
-1. **Session name quality** - Sometimes vague names like "Core Implementation"
-2. **Context population** - previous_work and project_files not fully wired
-3. **Command security** - Using shell=True with LLM commands (needs review)
-4. **Integration gap** - PythonCoderAgent not yet used by Orchestrator
 
-### Planned Fixes (Priority Order)
-1. ✅ Enforce JSON responses from Gemini (use structured output)
-2. ✅ Add error handling in execute_python_session
-3. ✅ Populate project_files context
-4. ✅ Update system prompt to match new architecture
-5. 🚧 Wire PythonCoderAgent into Orchestrator
-6. 🚧 Pass session context properly
-7. 🚧 Improve planning prompt for better session names
+💡 Key Learnings
+What We've Proven ✅
 
----
+Session decomposition works - generates modular, focused code
+Automatic function calling is reliable - with gemini-2.5-pro
+Discovery phase runs - 35 seconds of tool usage before planning
+Architecture scales - 7 sessions, no performance issues
+File sizes controlled - session boundaries enforce small files
 
-## 💡 Design Philosophy
+What We've Learned ⚠️
 
-### Why This Architecture?
+Tool usage ≠ quality - discovery runs but doesn't prevent all bugs
+Suggestions ≠ enforcement - system prompt must REQUIRE quality
+Context passing is hard - sessions sometimes miss earlier work
+Visibility matters - can't debug what we can't see
+First attempt won't be perfect - iteration is essential
 
-**Control Inputs, Not Outputs**
-- Focus on task decomposition (input) vs post-processing (output)
-- Break problems into small, focused tasks
-- Each task produces clean code naturally
+What We Need to Prove 📊
 
-**Agentic Orchestration**
-- Let the LLM make decisions
-- Tools give it capabilities
-- Structured outputs ensure reliability
-- Human stays in the loop for approval
+Symbol tools prevent bugs - Test #3 will validate this
+Quality can be enforced - validation tool + updated prompts
+Scales to complex projects - 10+ sessions, multiple domains
+Faster than manual coding - end-to-end time vs human developer
+Actually hides in plain sight - passes real code review
 
-**Clean Code by Design**
-- Constraints force clean code (file size limits, focused sessions)
-- Context passing prevents duplication
-- Sequential execution builds incrementally
 
-**Developer Experience First**
-- Real-time feedback (see what's happening)
-- Natural language interaction
-- Professional code quality
-- "Hide in plain sight" - looks human-written
+🎨 Design Philosophy (Unchanged)
+Control Inputs, Not Outputs
+Focus on task decomposition (input) rather than post-processing (output). Break problems into focused sessions that naturally produce clean code.
+Agentic Orchestration
+Let the LLM make decisions with tools as capabilities. Structured outputs ensure reliability. Human stays in loop for approval.
+Clean Code by Design
+Constraints force quality:
 
----
+Session boundaries → small files
+Context passing → no duplication
+Sequential execution → incremental building
+Tool requirements → accurate information
 
-## 📚 References & Resources
+Developer Experience First
+Real-time feedback, natural language interaction, professional code quality, manual git control.
 
-### Key Technologies
-- **PySide6** - https://doc.qt.io/qtforpython/
-- **Gemini API** - https://ai.google.dev/docs
-- **Function Calling** - https://ai.google.dev/docs/function_calling
+📈 Success Metrics
+Code Quality (Current vs Target)
+MetricTest #1TargetStatusAvg file size30 lines80-150 lines✅ ExcellentMax file size61 lines<200 lines✅ PerfectType hints0%100%🔴 FailingDocstrings0%100%🔴 FailingFunctions >25 lines10🟡 CloseCritical bugs30🔴 Needs tools
+User Experience
+MetricCurrentTargetStatusDiscovery phase35 sec<20 sec🟡 AcceptableSession planning<15 sec<10 sec✅ GoodSession execution10-25 min10-20 min✅ GoodUI responsivenessInstantInstant✅ GoodLog readabilityImprovedClean🚧 In progress
 
-### Related Patterns
-- **ReAct** (Reason + Act) - Yao et al. 2022
-- **Planning agents** - AWS agentic patterns
-- **Tool use** - LangChain agent patterns
-- **Multi-agent orchestration** - Microsoft Agent Framework
+🔐 Critical Constraints (Unchanged)
 
----
+Production-grade quality - this is job security
+Code must pass review - without revealing AI assistance
+Windows environment - PyCharm, PowerShell, manual git
+User-controlled operations - no automation without approval
+No emojis in code - only in UI/logs
+Type hints required - lowercase list, dict, tuple
 
-**Last Reviewed:** 2025-01-06  
-**Next Review:** After Phase 4 completion
 
----
+🎯 The Big Questions
+Can We Answer These Now? (Post-Test #1)
+Q: Does session decomposition produce better code?
+A: YES for structure (modular, small files), NO for quality (missing type hints)
+Q: Does discovery phase help?
+A: PARTIALLY - it runs and uses tools, but didn't prevent bugs in Test #1
+Q: Can Aura replace manual coding?
+A: NOT YET - quality issues would fail code review
+Q: Is it faster than manual coding?
+A: YES - 45 minutes for complete REST API is fast, but needs quality
+What Test #2 Will Tell Us:
 
-## End of Design Doc v3.0
+Do logging improvements help debug tool usage?
+Does UI polish improve user experience?
+Are quality issues consistent or random?
+Can we predict what tools discovery needs?
+
+What Test #3 Will Tell Us (With Symbol Tools):
+
+Do symbol tools prevent parameter bugs?
+Does find_definition() stop field mismatches?
+Can tools enforce quality standards?
+Is code review-ready without manual polish?
+
+
+📚 References
+Key Technologies
+
+PySide6/Qt - https://doc.qt.io/qtforpython/
+Gemini API - https://ai.google.dev/docs
+Google GenAI SDK - https://github.com/google/generative-ai-python
+
+Inspiration
+
+Gemini CLI - Terminal aesthetic, massive gradient banner, pure black background
+ReAct Pattern - Reason + Act (Yao et al. 2022)
+AWS Agentic Patterns - Planning agents, tool use
+Microsoft Agent Framework - Multi-agent orchestration
+
+
+Status: Validation phase active. First test complete, second test running.
+Next Review: After Test #2 completion and symbol tools implementation
+Version: 3.1 (Post-Breakthrough Validation Phase)

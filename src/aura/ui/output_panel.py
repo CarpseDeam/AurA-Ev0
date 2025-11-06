@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime
 from typing import Optional
 
 from PySide6.QtGui import QFont, QTextCursor, QTextOption
@@ -37,14 +36,10 @@ class OutputPanel(QWidget):
         return self._text_edit
 
     def display_output(self, text: str, color: Optional[str] = None) -> None:
-        """Append timestamped output to the transcript."""
+        """Append output to the transcript."""
         chosen_color = color or self._resolve_line_color(text)
         escaped_text = html.escape(text)
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        payload = (
-            f'<span style="color: {config.COLORS.secondary};">[{timestamp}]</span> '
-            f'<span style="color: {chosen_color};">{escaped_text}</span><br>'
-        )
+        payload = f'<span style="color: {chosen_color};">{escaped_text}</span><br>'
         self._append_html(payload)
 
     def display_thinking(self, text: str) -> None:
@@ -80,13 +75,16 @@ class OutputPanel(QWidget):
     def display_startup_header(self) -> None:
         """Render the startup ASCII art header."""
         header_html = """
-<pre style="font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 12px; line-height: 1.0; margin: 10px 0; display: block;">
-<span style="color: #9370DB;">    █████╗ ██╗   ██╗██████╗  █████╗</span>
-<span style="color: #7E85E8;">   ██╔══██╗██║   ██║██╔══██╗██╔══██╗</span>
-<span style="color: #6A90F5;">   ███████║██║   ██║██████╔╝███████║</span>
-<span style="color: #569AFB;">   ██╔══██║██║   ██║██╔══██╗██╔══██║</span>
-<span style="color: #42A5F5;">   ██║  ██║╚██████╔╝██║  ██║██║  ██║</span>
-<span style="color: #40E0D0;">   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝</span>
+<pre style="font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 14px; line-height: 1.2; margin: 20px 0; display: block;">
+<span style="color: #00CED1;">   █████╗ ██╗   ██╗██████╗  █████╗ </span>
+<span style="color: #40E0D0;">  ██╔══██╗██║   ██║██╔══██╗██╔══██╗</span>
+<span style="color: #42A5F5;">  ███████║██║   ██║██████╔╝███████║</span>
+<span style="color: #64B5F6;">  ██╔══██║██║   ██║██╔══██╗██╔══██║</span>
+<span style="color: #7E85E8;">  ██║  ██║╚██████╔╝██║  ██║██║  ██║</span>
+<span style="color: #9370DB;">  ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝</span>
+<span style="color: #B19CD9;">  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
+<span style="color: #DA70D6;">   AI-Powered Development Assistant</span>
+<span style="color: #FF69B4;">  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
 </pre><br>
         """
         self._append_html(header_html)
