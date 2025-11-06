@@ -37,6 +37,8 @@ LOGGER = logging.getLogger(__name__)
 
 def execute_cli_agent(prompt: str, working_directory: Optional[str] = None) -> dict[str, object]:
     """Synchronously execute the Gemini CLI agent and return structured results."""
+    from aura.utils.agent_finder import find_cli_agents
+
     cwd = working_directory or os.getcwd()
     resolved_cwd = Path(cwd).resolve()
     if not resolved_cwd.exists():
@@ -47,8 +49,24 @@ def execute_cli_agent(prompt: str, working_directory: Optional[str] = None) -> d
         LOGGER.error("CLI agent execution aborted: workspace missing | cwd=%s", resolved_cwd)
         return {"success": False, "output": message, "exit_code": 1}
 
+    # Find the Gemini CLI agent executable
+    agents = find_cli_agents()
+    gemini_agent = next((agent for agent in agents if agent.name == "gemini" and agent.is_available), None)
+
+    if not gemini_agent:
+        LOGGER.error("Gemini CLI agent not found or is not available.")
+        return {
+            "success": False,
+            "output": "The Gemini CLI agent is not configured or could not be found. "
+            "Please ensure it is installed and configured correctly.",
+            "exit_code": 1,
+        }
+
+    executable_path = gemini_agent.executable_path
+    LOGGER.debug("Using Gemini CLI executable: %s", executable_path)
+
     prompt_text = "" if prompt is None else str(prompt)
-    command = ["gemini", "-p", prompt_text, "--yolo"]
+    command = [executable_path, "-p", prompt_text, "--yolo"]
     LOGGER.info(
         "execute_cli_agent start | cwd=%s | prompt_chars=%d",
         resolved_cwd,
