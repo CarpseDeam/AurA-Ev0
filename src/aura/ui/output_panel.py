@@ -41,9 +41,13 @@ class OutputPanel(QWidget):
         chosen_color = color or self._resolve_line_color(text)
         escaped_text = html.escape(text)
         timestamp = datetime.now().strftime("%H:%M:%S")
+        wrap_style = (
+            f"color: {chosen_color}; white-space: pre-wrap; "
+            "overflow-wrap: anywhere; word-break: break-word;"
+        )
         payload = (
             f'<span style="color: {config.COLORS.secondary};">[{timestamp}]</span> '
-            f'<span style="color: {chosen_color}; white-space: pre-wrap;">{escaped_text}</span><br>'
+            f'<span style="{wrap_style}">{escaped_text}</span><br>'
         )
         self._append_html(payload)
 
@@ -74,7 +78,11 @@ class OutputPanel(QWidget):
             return
         chosen_color = color or config.COLORS.agent_output
         escaped_text = html.escape(text)
-        payload = f'<span style="color: {chosen_color}; white-space: pre-wrap;">{escaped_text}</span><br>'
+        wrap_style = (
+            f"color: {chosen_color}; white-space: pre-wrap; "
+            "overflow-wrap: anywhere; word-break: break-word;"
+        )
+        payload = f'<span style="{wrap_style}">{escaped_text}</span><br>'
         self._append_html(payload)
 
     def display_startup_header(self) -> None:
