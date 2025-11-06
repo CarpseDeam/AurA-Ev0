@@ -107,11 +107,6 @@ class ApplicationController:
                 Qt.ConnectionType.UniqueConnection,
             )
 
-            self.orchestrator.session_output.connect(
-                self.main_window.append_to_log,
-                Qt.ConnectionType.UniqueConnection,
-            )
-
     def _on_working_directory_changed(self, path: str) -> None:
         """Handle working directory changes.
 
@@ -142,10 +137,6 @@ class ApplicationController:
         )
         self.orchestrator.session_output.connect(
             self.main_window._on_session_output,
-            Qt.ConnectionType.UniqueConnection,
-        )
-        self.orchestrator.session_output.connect(
-            self.main_window.append_to_log,
             Qt.ConnectionType.UniqueConnection,
         )
         self.orchestrator.session_complete.connect(

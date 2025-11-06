@@ -224,9 +224,6 @@ class MainWindow(QMainWindow):
     def _set_input_enabled(self, enabled: bool) -> None:
         self.input_field.setEnabled(enabled)
 
-    def append_to_log(self, text: str, color: Optional[str] = None) -> None:
-        self.output_panel.append_to_log(text, color)
-
     def handle_process_finished(self, exit_code: int) -> None:
         if exit_code == 0:
             self.output_panel.display_output("Agent run completed successfully.", config.COLORS.success)
