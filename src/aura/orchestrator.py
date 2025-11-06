@@ -341,6 +341,15 @@ class _ExecutionWorker(QObject):
             self.session_complete.emit(index, result)
             self._update_context(index, session, result)
             all_results.append(result)
+
+            if not result.success and getattr(result, 'syntax_errors', None):
+                error_message = f"Session '{session.name}' failed after multiple retries due to persistent syntax errors.\n"
+                for error in result.syntax_errors:
+                    error_message += f"  - File: {error['file_path']}, Line: {error['line_number']}: {error['error_message']}\n"
+                self._event_bus.publish(EventType.ERROR, error=error_message)
+                self.error_occurred.emit(error_message)
+                return
+
             if config.AUTO_COMMIT_SESSIONS:
                 if result.success and result.files_created:
                     commit_msg = f"Session {index + 1}: {session.name}"

@@ -125,6 +125,7 @@ class AgentResult:
     errors: Sequence[str]
     duration_seconds: float
     tool_calls: Sequence[Mapping[str, object]] | None = None
+    syntax_errors: Sequence[Mapping[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -482,86 +483,164 @@ Code that violates these principles WILL BE REJECTED.
             len(context.previous_work),
         )
         start = perf_counter()
-        created: List[str] = []
-        modified: List[str] = []
-        commands: List[str] = []
-        outputs: List[str] = []
-        errors: List[str] = []
-        summary = ""
-        tool_calls: List[Mapping[str, object]] = []
-        self.progress_update.emit("⋯ Generating code...")
-        try:
-            prompt = self._build_prompt(context)
-            LOGGER.debug("Built prompt with %d characters", len(prompt))
+        original_prompt = self._build_prompt(context)
+        prompt = original_prompt
+        
+        max_retries = 2
+        for i in range(max_retries + 1):
+            created: List[str] = []
+            modified: List[str] = []
+            commands: List[str] = []
+            outputs: List[str] = []
+            errors: List[str] = []
+            summary = ""
+            tool_calls: List[Mapping[str, object]] = []
+            syntax_errors: List[Mapping[str, object]] = []
+            
+            self.progress_update.emit("⋯ Generating code...")
+            try:
+                if i > 0:
+                    LOGGER.info("Retry %d/%d: Attempting to fix syntax errors...", i, max_retries)
+                    self.progress_update.emit(f"Retry {i}/{max_retries}: Attempting to fix syntax errors...")
 
-            if context.previous_work:
-                LOGGER.info("PHASE 1: Context Gathering Started")
+                if context.previous_work:
+                    LOGGER.info("PHASE 1: Context Gathering Started")
 
-            plan, new_tool_calls = self._request_plan(prompt)
-            tool_calls.extend(new_tool_calls)
+                plan, new_tool_calls = self._request_plan(prompt)
+                tool_calls.extend(new_tool_calls)
 
-            if new_tool_calls:
-                LOGGER.info(
-                    "CHECKPOINT: Verified signatures for %d tool calls.", len(new_tool_calls)
+                if new_tool_calls:
+                    LOGGER.info(
+                        "CHECKPOINT: Verified signatures for %d tool calls.", len(new_tool_calls)
+                    )
+
+                summary = plan.get("summary", "")
+                LOGGER.info("PHASE 2: Design - Received plan: %s", summary)
+                plan_summary = summary.strip() or "No summary provided"
+                self.progress_update.emit(f"⋯ {plan_summary}")
+
+                LOGGER.info("PHASE 3: Implementation")
+                file_ops = self._parse_file_operations(plan.get("files", []), context.working_dir)
+                LOGGER.debug("Parsed %d file operations", len(file_ops))
+
+                created, modified, all_paths = self._apply_files(file_ops, context.working_dir)
+                LOGGER.info("Applied files: %d created, %d modified", len(created), len(modified))
+                
+                LOGGER.info("Validating syntax for %d files...", len(all_paths))
+                syntax_errors = self._validate_syntax(all_paths)
+                if syntax_errors:
+                    LOGGER.warning("✗ Found %d syntax errors", len(syntax_errors))
+                    if i < max_retries:
+                        prompt = self._build_retry_prompt(original_prompt, syntax_errors)
+                        continue
+                else:
+                    LOGGER.info("✓ All files valid")
+
+                plan_commands = plan.get("commands", [])
+                if plan_commands:
+                    LOGGER.info("PHASE 4: Validation")
+                    self.progress_update.emit("▶ Running validation...")
+
+                commands, cmd_outputs, cmd_errors = self._execute_commands(
+                    plan_commands,
+                    context.working_dir,
+                )
+                LOGGER.info("Executed %d commands", len(commands))
+
+                outputs.extend(cmd_outputs)
+                errors.extend(cmd_errors)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Coding session failed: %s", exc)
+                errors.append(str(exc))
+
+            duration = perf_counter() - start
+            success = not errors and not syntax_errors
+            files_count = len(created) + len(modified)
+            if success:
+                self.progress_update.emit(
+                    f"✓ Created {len(created)} files, modified {len(modified)} files"
                 )
 
-            summary = plan.get("summary", "")
-            LOGGER.info("PHASE 2: Design - Received plan: %s", summary)
-            plan_summary = summary.strip() or "No summary provided"
-            self.progress_update.emit(f"⋯ {plan_summary}")
-
-            LOGGER.info("PHASE 3: Implementation")
-            file_ops = self._parse_file_operations(plan.get("files", []), context.working_dir)
-            LOGGER.debug("Parsed %d file operations", len(file_ops))
-
-            created, modified = self._apply_files(file_ops, context.working_dir)
-            LOGGER.info("Applied files: %d created, %d modified", len(created), len(modified))
-
-            plan_commands = plan.get("commands", [])
-            if plan_commands:
-                LOGGER.info("PHASE 4: Validation")
-                self.progress_update.emit("▶ Running validation...")
-
-            commands, cmd_outputs, cmd_errors = self._execute_commands(
-                plan_commands,
-                context.working_dir,
-            )
-            LOGGER.info("Executed %d commands", len(commands))
-
-            outputs.extend(cmd_outputs)
-            errors.extend(cmd_errors)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Coding session failed: %s", exc)
-            errors.append(str(exc))
-
-        duration = perf_counter() - start
-        success = (len(created) + len(modified) > 0) or not errors
-        files_count = len(created) + len(modified)
-        if success:
-            self.progress_update.emit(
-                f"✓ Created {len(created)} files, modified {len(modified)} files"
+            LOGGER.info(
+                "Session completed: success=%s, duration=%.2fs, files=%d, commands=%d, tool_calls=%d",
+                success,
+                duration,
+                files_count,
+                len(commands),
+                len(tool_calls),
             )
 
-        LOGGER.info(
-            "Session completed: success=%s, duration=%.2fs, files=%d, commands=%d, tool_calls=%d",
-            success,
-            duration,
-            files_count,
-            len(commands),
-            len(tool_calls),
-        )
-
+            return AgentResult(
+                success=success,
+                summary=summary,
+                files_created=tuple(created),
+                files_modified=tuple(modified),
+                commands_run=tuple(commands),
+                output_lines=tuple(outputs),
+                errors=tuple(errors),
+                duration_seconds=duration,
+                tool_calls=tuple(tool_calls),
+                syntax_errors=tuple(syntax_errors),
+            )
+        
         return AgentResult(
-            success=success,
-            summary=summary,
-            files_created=tuple(created),
-            files_modified=tuple(modified),
-            commands_run=tuple(commands),
-            output_lines=tuple(outputs),
-            errors=tuple(errors),
-            duration_seconds=duration,
-            tool_calls=tuple(tool_calls),
+            success=False,
+            summary="Session failed after multiple retries due to persistent syntax errors.",
+            files_created=(),
+            files_modified=(),
+            commands_run=(),
+            output_lines=(),
+            errors=("Session failed after multiple retries due to persistent syntax errors.",),
+            duration_seconds=perf_counter() - start,
+            tool_calls=(),
+            syntax_errors=tuple(syntax_errors),
         )
+
+    def _build_retry_prompt(self, original_prompt: str, syntax_errors: List[Mapping[str, object]]) -> str:
+        """Build a prompt for retrying a session with syntax errors."""
+        error_feedback = [
+            "PREVIOUS ATTEMPT FAILED WITH SYNTAX ERRORS:",
+        ]
+        for error in syntax_errors:
+            error_feedback.append(f"File: {error['file_path']}")
+            error_feedback.append(f"Line {error['line_number']}: {error['error_message']}")
+            if error.get('problematic_code'):
+                error_feedback.append(f"Problematic code: {error['problematic_code']}")
+            error_feedback.append("")
+
+        error_feedback.append("CRITICAL: The code you generated has syntax errors. Review the errors above and generate corrected, syntactically valid Python code.")
+        error_feedback.append("ORIGINAL REQUEST:")
+        error_feedback.append(original_prompt)
+        
+        return "\n".join(error_feedback)
+
+    def _validate_syntax(self, file_paths: List[Path]) -> List[Mapping[str, object]]:
+        """Validate the syntax of Python files."""
+        errors = []
+        for file_path in file_paths:
+            if file_path.suffix != ".py":
+                continue
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if not content.strip():
+                    continue
+                compile(content, str(file_path), "exec")
+            except SyntaxError as e:
+                errors.append({
+                    "file_path": str(file_path),
+                    "line_number": e.lineno,
+                    "error_message": e.msg,
+                    "problematic_code": e.text,
+                })
+            except (UnicodeDecodeError, FileNotFoundError) as e:
+                errors.append({
+                    "file_path": str(file_path),
+                    "line_number": 0,
+                    "error_message": f"Could not read file: {e}",
+                    "problematic_code": "",
+                })
+        return errors
 
     def _build_prompt(self, context: SessionContext) -> str:
         sections = [context.session_prompt.strip()]
@@ -785,14 +864,16 @@ Code that violates these principles WILL BE REJECTED.
         self,
         operations: Sequence[_FileOperation],
         working_dir: Path,
-    ) -> Tuple[List[str], List[str]]:
+    ) -> Tuple[List[str], List[str], List[Path]]:
         created: List[str] = []
         modified: List[str] = []
+        all_paths: List[Path] = []
         for op in operations:
             op.path.parent.mkdir(parents=True, exist_ok=True)
             existed = op.path.exists()
             op.path.write_text(op.content, encoding="utf-8")
             rel_path = self._to_relative(working_dir, op.path)
+            all_paths.append(op.path)
 
             if existed:
                 self.progress_update.emit(f"~ Modifying {rel_path}")
@@ -800,7 +881,7 @@ Code that violates these principles WILL BE REJECTED.
             else:
                 self.progress_update.emit(f"+ Creating {rel_path}")
                 created.append(rel_path)
-        return created, modified
+        return created, modified, all_paths
 
     def _execute_commands(
         self,
