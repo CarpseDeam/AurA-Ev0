@@ -15,8 +15,8 @@ from typing import List, Tuple
 
 from PySide6.QtCore import QObject, QThread, Signal
 
-from src.aura import config
-from src.aura.services.chat_service import ChatService
+from aura import config
+from aura.services.chat_service import ChatService
 
 LOGGER = logging.getLogger(__name__)
 

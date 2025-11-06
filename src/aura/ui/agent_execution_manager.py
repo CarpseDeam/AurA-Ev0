@@ -6,15 +6,15 @@ import logging
 import os
 from typing import TYPE_CHECKING, Optional
 
-from src.aura import config
-from src.aura.services.chat_service import get_session_context_manager
-from src.aura.state import AppState
-from src.aura.ui.output_panel import OutputPanel
-from src.aura.ui.status_bar_manager import StatusBarManager
-from src.aura.utils import find_cli_agents, scan_directory
+from aura import config
+from aura.services.chat_service import get_session_context_manager
+from aura.state import AppState
+from aura.ui.output_panel import OutputPanel
+from aura.ui.status_bar_manager import StatusBarManager
+from aura.utils import find_cli_agents, scan_directory
 
 if TYPE_CHECKING:
-    from src.aura.orchestrator import Orchestrator
+    from aura.orchestrator import Orchestrator
 
 LOGGER = logging.getLogger(__name__)
 

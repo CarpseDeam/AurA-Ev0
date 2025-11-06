@@ -8,13 +8,13 @@ from typing import List, Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from src.aura import config
-from src.aura.events import Event, EventType
-from src.aura.orchestrator import SessionResult
-from src.aura.services.planning_service import Session, SessionPlan
-from src.aura.state import AppState
-from src.aura.ui.output_panel import OutputPanel
-from src.aura.ui.status_bar_manager import StatusBarManager
+from aura import config
+from aura.events import Event, EventType
+from aura.orchestrator import SessionResult
+from aura.services.planning_service import Session, SessionPlan
+from aura.state import AppState
+from aura.ui.output_panel import OutputPanel
+from aura.ui.status_bar_manager import StatusBarManager
 
 LOGGER = logging.getLogger(__name__)
 

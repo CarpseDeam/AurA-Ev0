@@ -7,8 +7,8 @@ from typing import Optional
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QLabel, QStatusBar
 
-from src.aura import config
-from src.aura.state import AppState
+from aura import config
+from aura.state import AppState
 
 
 class StatusBarManager(QObject):

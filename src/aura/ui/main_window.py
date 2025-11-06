@@ -18,16 +18,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.aura import config
-from src.aura.events import Event, EventType, get_event_bus
-from src.aura.orchestrator import Orchestrator
-from src.aura.services import AgentRunner
-from src.aura.state import AppState
-from src.aura.ui import AgentSettingsDialog
-from src.aura.ui.agent_execution_manager import AgentExecutionManager
-from src.aura.ui.orchestration_handler import OrchestrationHandler
-from src.aura.ui.output_panel import OutputPanel
-from src.aura.ui.status_bar_manager import StatusBarManager
+from aura import config
+from aura.events import Event, EventType, get_event_bus
+from aura.orchestrator import Orchestrator
+from aura.services import AgentRunner
+from aura.state import AppState
+from aura.ui import AgentSettingsDialog
+from aura.ui.agent_execution_manager import AgentExecutionManager
+from aura.ui.orchestration_handler import OrchestrationHandler
+from aura.ui.output_panel import OutputPanel
+from aura.ui.status_bar_manager import StatusBarManager
 
 LOGGER = logging.getLogger(__name__)
 

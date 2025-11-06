@@ -8,7 +8,7 @@ from typing import Optional
 from PySide6.QtGui import QFont, QTextCursor, QTextOption
 from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
 
-from src.aura import config
+from aura import config
 
 
 class OutputPanel(QWidget):

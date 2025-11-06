@@ -11,7 +11,7 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from src.aura.services.planning_service import SessionPlan
+from aura.services.planning_service import SessionPlan
 
 
 class AppState(QObject):

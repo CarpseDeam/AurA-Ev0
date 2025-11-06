@@ -11,16 +11,16 @@ from typing import Callable, Optional, Set
 from google import genai
 from google.genai import types
 
-from src.aura import config
-from src.aura.services.agent_runner import AgentRunner, run_agent_command_sync
-from src.aura.tools.file_system_tools import (
+from aura import config
+from aura.services.agent_runner import AgentRunner, run_agent_command_sync
+from aura.tools.file_system_tools import (
     list_project_files,
     read_multiple_files,
     read_project_file,
     search_in_files,
 )
-from src.aura.tools.git_tools import git_commit, git_diff, git_push, get_git_status
-from src.aura.tools.python_tools import (
+from aura.tools.git_tools import git_commit, git_diff, git_push, get_git_status
+from aura.tools.python_tools import (
     format_code,
     get_function_definitions,
     install_package,
@@ -28,7 +28,7 @@ from src.aura.tools.python_tools import (
     run_tests,
 )
 # Symbol resolution tools for understanding code structure
-from src.aura.tools.symbol_tools import find_definition, find_usages, get_imports
+from aura.tools.symbol_tools import find_definition, find_usages, get_imports
 
 LOGGER = logging.getLogger(__name__)
 
