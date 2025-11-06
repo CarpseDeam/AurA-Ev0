@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Set
 
@@ -11,6 +12,7 @@ from google import genai
 from google.genai import types
 
 from src.aura import config
+from src.aura.services.agent_runner import AgentRunner, run_agent_command_sync
 from src.aura.tools.file_system_tools import (
     list_project_files,
     read_multiple_files,
@@ -29,6 +31,30 @@ from src.aura.tools.python_tools import (
 from src.aura.tools.symbol_tools import find_definition, find_usages, get_imports
 
 LOGGER = logging.getLogger(__name__)
+
+
+def execute_cli_agent(prompt: str, working_directory: Optional[str] = None) -> dict[str, object]:
+    """Synchronously execute the Gemini CLI agent and return structured results."""
+    cwd = working_directory or os.getcwd()
+    prompt_text = "" if prompt is None else str(prompt)
+    command = ["gemini", "-p", prompt_text, "--yolo"]
+
+    try:
+        runner = AgentRunner(command=command, working_directory=cwd, parent=None)
+        exit_code, output = run_agent_command_sync(runner)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Failed to execute CLI agent")
+        return {
+            "success": False,
+            "output": f"Failed to execute CLI agent: {exc}",
+            "exit_code": 1,
+        }
+
+    return {
+        "success": exit_code == 0,
+        "output": output,
+        "exit_code": exit_code,
+    }
 
 
 AURA_SYSTEM_PROMPT = """
@@ -94,8 +120,21 @@ YOUR RESPONSE:
    validates credentials, generates tokens via jwt_encode(), and returns them. The
    auth_middleware intercepts requests and validates tokens."
 
+FINAL EXECUTION STEP
+
+After you have gathered all relevant context and fully understand the request, you may trigger code generation.
+- Use execute_cli_agent(prompt, working_directory) to run the Gemini CLI agent.
+- Only invoke it once analysis is complete and you have a clear implementation plan.
+- Build the prompt to include:
+  * All discovered project context (files, structure, dependencies)
+  * Existing code patterns or conventions to follow
+  * Specific requirements from the user's request
+  * Constraints, risks, or considerations identified during analysis
+This is the final step after analysis is complete.
+
+
 ═══════════════════════════════════════════════════════════════════════════════
-AVAILABLE TOOLS (16 TOTAL)
+AVAILABLE TOOLS (17 TOTAL)
 ═══════════════════════════════════════════════════════════════════════════════
 
 File System Tools:
@@ -121,6 +160,9 @@ Git Tools:
 - git_commit: Create a commit
 - git_push: Push to remote
 - git_diff: Show git diff
+
+Execution Tool:
+- execute_cli_agent: Run the Gemini CLI agent to execute code generation after analysis
 
 ═══════════════════════════════════════════════════════════════════════════════
 RESPONSE GUIDELINES
@@ -188,6 +230,7 @@ class ChatService:
                     find_definition,
                     find_usages,
                     get_imports,
+                    execute_cli_agent,
                 ],
                 system_instruction=AURA_SYSTEM_PROMPT,
             )
@@ -197,7 +240,7 @@ class ChatService:
             # - Executes the functions
             # - Sends results back to model
             # - Repeats until model returns text
-            LOGGER.info("🤖 Sending message to Gemini with 16 tools available")
+            LOGGER.info("Sending message to Gemini with 17 tools available")
             stream = self._client.models.generate_content_stream(
                 model=self.model_name,
                 contents=user_message,

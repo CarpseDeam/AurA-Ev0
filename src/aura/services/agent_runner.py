@@ -127,3 +127,47 @@ class AgentRunner(QThread):
                     LOGGER.warning(warning)
                     self.output_line.emit(warning)
                 break
+
+
+def run_agent_command_sync(runner: AgentRunner) -> tuple[int, str]:
+    """Execute a Gemini CLI command synchronously and return exit code and output."""
+    env = runner._build_environment()
+
+    try:
+        process = subprocess.Popen(
+            runner._command,
+            cwd=runner._cwd,
+            env=dict(env),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as exc:  # noqa: BLE001
+        message = f"Failed to start process: {exc}"
+        LOGGER.exception(message)
+        return 1, message
+
+    assert process.stdout is not None
+    output_lines: list[str] = []
+    try:
+        for line in iter(process.stdout.readline, ""):
+            if not line:
+                break
+            stripped_line = line.rstrip("\r\n")
+            runner._check_file_protection(stripped_line)
+            output_lines.append(stripped_line)
+    except Exception as exc:  # noqa: BLE001
+        message = f"Error while reading process output: {exc}"
+        LOGGER.exception(message)
+        output_lines.append(message)
+    finally:
+        process.stdout.close()
+
+    exit_code = process.wait()
+    if exit_code != 0:
+        message = f"Process exited with code {exit_code}"
+        LOGGER.error(message)
+        output_lines.append(message)
+
+    return exit_code, "\n".join(output_lines)
