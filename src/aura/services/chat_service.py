@@ -350,6 +350,7 @@ class ChatService:
     model: str = "gemini-2.5-pro"
     _history: list[ChatMessage] = field(default_factory=list, init=False)
     _client_configured: bool = field(default=False, init=False)
+    _tools_dict: dict[str, object] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         """Validate API key and configure client."""
@@ -358,13 +359,47 @@ class ChatService:
         genai.configure(api_key=self.api_key)
         self._client_configured = True
 
+        # Build tools dictionary for function execution
+        self._tools_dict = {
+            "execute_python_session": execute_python_session,
+            "read_project_file": read_project_file,
+            "list_project_files": list_project_files,
+            "search_in_files": search_in_files,
+            "get_function_definitions": get_function_definitions,
+            "read_multiple_files": read_multiple_files,
+            "get_git_status": get_git_status,
+            "git_commit": git_commit,
+            "git_push": git_push,
+            "git_diff": git_diff,
+            "run_tests": run_tests,
+            "lint_code": lint_code,
+            "format_code": format_code,
+            "install_package": install_package,
+            "clear_session_context": clear_session_context,
+        }
+
     def clear_session_context(self) -> None:
         """Reset stored tool session context."""
         get_session_context_manager().clear()
         LOGGER.info("ChatService cleared session context.")
 
+    def _execute_tool(self, function_name: str, function_args: dict) -> dict:
+        """Execute a registered tool and return its result."""
+        tool_func = self._tools_dict.get(function_name)
+        if not tool_func:
+            LOGGER.error("Unknown tool requested: %s", function_name)
+            return {"error": f"Unknown tool: {function_name}"}
+
+        try:
+            LOGGER.warning("🔧 TOOL CALLED: %s", function_name)
+            result = tool_func(**function_args)
+            return {"result": result}
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Tool execution failed: %s", function_name)
+            return {"error": str(exc)}
+
     def send_message(self, message: str) -> Iterator[str]:
-        """Send a message and yield the streaming response."""
+        """Send a message and yield the response, executing any function calls."""
         if not message:
             raise ValueError("Message must be a non-empty string.")
         self._history.append(ChatMessage(role="user", content=message))
@@ -392,37 +427,92 @@ class ChatService:
             ],
         )
 
+        # Build conversation history for function calling loop
         chat_history = [
             {"role": msg.role, "parts": [msg.content]}
             for msg in self._history
             if msg.role != "system"
         ]
 
-        response = model.generate_content(
-            chat_history,
-            stream=True,
-        )
-        collected = []
-        try:
-            for chunk in response:
-                function_calls = getattr(chunk, "function_calls", None)
-                if function_calls:
-                    for fc in function_calls:
-                        fc_args = getattr(fc, "args", {}) or {}
-                        args_summary = ", ".join([f"{k}={v}" for k, v in fc_args.items()])
-                        yield f"TOOL_CALL::{fc.name}::{args_summary}"
+        # Multi-turn conversation loop for function calling
+        max_iterations = 10  # Prevent infinite loops
+        iteration = 0
 
-                text = getattr(chunk, "text", "") or ""
-                if text:
-                    collected.append(text)
-                    yield text
+        try:
+            while iteration < max_iterations:
+                iteration += 1
+                LOGGER.debug("Function calling loop iteration %d", iteration)
+
+                # Use non-streaming generate_content for function calling
+                response = model.generate_content(chat_history, stream=False)
+
+                # Check if response has function calls
+                if not response.candidates:
+                    LOGGER.warning("No candidates in response")
+                    yield "[Aura] I didn't get a proper response from Gemini."
+                    return
+
+                candidate = response.candidates[0]
+                if not candidate.content or not candidate.content.parts:
+                    LOGGER.warning("No content parts in response")
+                    yield "[Aura] Got an empty response from Gemini."
+                    return
+
+                # Check first part for function call
+                first_part = candidate.content.parts[0]
+                if hasattr(first_part, "function_call") and first_part.function_call:
+                    # Model wants to call a function
+                    function_call = first_part.function_call
+                    function_name = function_call.name
+                    function_args = dict(function_call.args) if function_call.args else {}
+
+                    LOGGER.info("Model requested function call: %s with args: %s", function_name, function_args)
+
+                    # Notify user about the tool call
+                    args_summary = ", ".join([f"{k}={v}" for k, v in function_args.items()])
+                    yield f"🔧 Calling tool: {function_name}({args_summary})\n\n"
+
+                    # Execute the function
+                    result = self._execute_tool(function_name, function_args)
+
+                    # Append model's function call to conversation history
+                    chat_history.append({"role": "model", "parts": [first_part]})
+
+                    # Append function response to conversation history
+                    function_response_part = genai.protos.Part(
+                        function_response=genai.protos.FunctionResponse(
+                            name=function_name,
+                            response=result
+                        )
+                    )
+                    chat_history.append({"role": "user", "parts": [function_response_part]})
+
+                    # Continue the loop to get next response from model
+                    continue
+
+                else:
+                    # No function call - we got the final text response
+                    try:
+                        final_text = response.text
+                        if final_text:
+                            self._history.append(ChatMessage(role="model", content=final_text))
+                            yield final_text
+                        else:
+                            yield "[Aura] Got an empty text response."
+                        return
+                    except Exception as text_exc:  # noqa: BLE001
+                        LOGGER.exception("Failed to extract text from response: %s", text_exc)
+                        yield "[Aura] Something went wrong getting the response text."
+                        return
+
+            # If we hit max iterations
+            LOGGER.warning("Hit max function calling iterations (%d)", max_iterations)
+            yield "[Aura] I got stuck in a loop calling tools. Let me know if you want to try again."
+
         except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Chat streaming failed: %s", exc)
+            LOGGER.exception("Chat with function calling failed: %s", exc)
             yield "[Aura] Uh-oh, something went sideways talking to Gemini."
             return
-        combined = "".join(collected)
-        if combined:
-            self._history.append(ChatMessage(role="model", content=combined))
 
     def get_history(self) -> list[Mapping[str, str]]:
         """Return the chat history including system prompt."""
