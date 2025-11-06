@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Callable, Optional, Set
+from typing import Callable, Iterable, Optional, Set
 
 from google import genai
 from google.genai import types
@@ -40,6 +40,7 @@ class SessionContextManager:
 
     def __init__(self) -> None:
         self._context: list[str] = []
+        self._function_signatures: dict[str, list[dict[str, object]]] = {}
         self._lock = Lock()
 
     def get_context(self) -> tuple[str, ...]:
@@ -47,18 +48,152 @@ class SessionContextManager:
         with self._lock:
             return tuple(self._context)
 
-    def add_entry(self, entry: str) -> None:
-        """Append a context entry if it is non-empty."""
+    def add_entry(
+        self,
+        entry: str,
+        *,
+        files: Iterable[str] | None = None,
+        working_dir: Path | None = None,
+    ) -> None:
+        """Append a context entry and store any discovered function signatures."""
         sanitized = entry.strip()
         if not sanitized:
             return
+
+        if files:
+            for file_label in files:
+                normalized_label = self._normalize_file_label(file_label)
+                if not normalized_label.endswith(".py"):
+                    continue
+                file_path = Path(normalized_label)
+                if not file_path.is_absolute():
+                    if working_dir is not None:
+                        file_path = working_dir / file_path
+                    else:
+                        file_path = Path.cwd() / file_path
+                self.parse_and_store_file(file_path, display_path=normalized_label)
+
         with self._lock:
             self._context.append(sanitized)
+
+    def parse_and_store_file(
+        self,
+        file_path: str | Path,
+        *,
+        display_path: str | None = None,
+    ) -> None:
+        """Parse a Python file and cache its function signatures."""
+        path = Path(file_path)
+        signatures = get_function_definitions(str(path))
+        key = display_path or self._normalize_storage_key(path)
+        normalized = self._normalize_definitions(signatures)
+        with self._lock:
+            self._function_signatures[key] = normalized
+
+    def get_function_signatures(self) -> dict[str, list[dict[str, object]]]:
+        """Return a deep copy of stored function signatures."""
+        with self._lock:
+            return {
+                name: [
+                    {
+                        "name": entry.get("name", ""),
+                        "params": list(entry.get("params", [])),
+                        "line": entry.get("line", 0),
+                        "docstring": entry.get("docstring", ""),
+                        "return_type": entry.get("return_type", "Any"),
+                    }
+                    for entry in entries
+                ]
+                for name, entries in self._function_signatures.items()
+            }
+
+    def get_function_signatures_for_files(self, file_list: Iterable[str]) -> str:
+        """Return a formatted string of cached signatures for the given files."""
+        lines: list[str] = []
+        with self._lock:
+            for file_name in file_list:
+                normalized_name = self._normalize_file_label(file_name)
+                entries = self._function_signatures.get(normalized_name)
+                if not entries:
+                    continue
+                lines.append(f"{normalized_name}:")
+                for entry in entries:
+                    lines.append(f"- {self._format_signature(entry)}")
+        if not lines:
+            return ""
+
+        header = ["EXACT FUNCTION SIGNATURES FROM PREVIOUS FILES:"]
+        footer = ["USE THESE EXACT PARAMETER NAMES. DO NOT GUESS."]
+        return "\n".join(header + lines + footer)
 
     def clear(self) -> None:
         """Remove all stored context entries."""
         with self._lock:
             self._context.clear()
+            self._function_signatures.clear()
+
+    @staticmethod
+    def _normalize_file_label(label: str) -> str:
+        """Strip status annotations like ' (updated)' from file labels."""
+        cleaned = label.strip()
+        if cleaned.endswith(" (updated)"):
+            return cleaned[: -len(" (updated)")]
+        return cleaned
+
+    @staticmethod
+    def _normalize_storage_key(path: Path) -> str:
+        """Return a storage key for a given file path."""
+        try:
+            return path.as_posix()
+        except Exception:  # noqa: BLE001
+            return str(path)
+
+    @staticmethod
+    def _normalize_definitions(
+        signatures: Iterable[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        """Normalize signature dictionaries for safe storage."""
+        normalized: list[dict[str, object]] = []
+        if signatures is None:
+            return normalized
+        for item in signatures:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", ""))
+            params_raw = item.get("params", [])
+            if isinstance(params_raw, (list, tuple)):
+                params = [str(param) for param in params_raw]
+            else:
+                params = [str(params_raw)]
+            docstring = str(item.get("docstring", ""))
+            line_number = item.get("line", 0)
+            try:
+                line = int(line_number)
+            except (TypeError, ValueError):
+                line = 0
+            return_type = item.get("return_type")
+            normalized.append(
+                {
+                    "name": name,
+                    "params": params,
+                    "line": line,
+                    "docstring": docstring,
+                    "return_type": str(return_type) if return_type else "Any",
+                }
+            )
+        return normalized
+
+    @staticmethod
+    def _format_signature(entry: dict[str, object]) -> str:
+        """Format a signature dictionary for display."""
+        name = str(entry.get("name", ""))
+        params = entry.get("params", [])
+        if isinstance(params, (list, tuple)):
+            formatted_params = ", ".join(f"{param}: Any" for param in params)
+        else:
+            formatted_params = f"{params}: Any" if params else ""
+        return_type = str(entry.get("return_type", "Any"))
+        return f"{name}({formatted_params}) -> {return_type}"
 
 
 _SESSION_CONTEXT_MANAGER: SessionContextManager | None = None
@@ -99,6 +234,7 @@ def execute_python_session(session_prompt: str, working_directory: str) -> dict[
             session_prompt=session_prompt,
             previous_work=list(context_manager.get_context()),
             project_files=project_files,
+            function_signatures=context_manager.get_function_signatures(),
         )
 
         result = agent.execute_session(context)
@@ -108,7 +244,11 @@ def execute_python_session(session_prompt: str, working_directory: str) -> dict[
             ordered_files = list(dict.fromkeys(files))
             files_section = ", ".join(ordered_files) if ordered_files else "none"
             summary_text = (result.summary or "").strip() or "No summary provided"
-            context_manager.add_entry(f"Session: {summary_text} | Files: {files_section}")
+            context_manager.add_entry(
+                f"Session: {summary_text} | Files: {files_section}",
+                files=ordered_files,
+                working_dir=working_dir,
+            )
 
         return {
             "success": result.success,

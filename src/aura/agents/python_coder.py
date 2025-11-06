@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Iterable, List, Mapping, Sequence, Set, Tuple
@@ -31,11 +31,85 @@ class SessionContext:
     session_prompt: str
     previous_work: Sequence[str]
     project_files: Sequence[str]
+    function_signatures: Mapping[str, Sequence[Mapping[str, object]]] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "working_dir", Path(self.working_dir).resolve())
         object.__setattr__(self, "previous_work", tuple(self.previous_work))
         object.__setattr__(self, "project_files", tuple(self.project_files))
+        normalized_signatures: dict[str, tuple[Mapping[str, object], ...]] = {}
+        for file_name, entries in (self.function_signatures or {}).items():
+            if not entries:
+                continue
+            normalized_entries: list[Mapping[str, object]] = []
+            for entry in entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                params_raw = entry.get("params", [])
+                if isinstance(params_raw, (list, tuple)):
+                    params = tuple(str(param) for param in params_raw)
+                elif params_raw:
+                    params = (str(params_raw),)
+                else:
+                    params = ()
+                line_number = entry.get("line", 0)
+                try:
+                    line = int(line_number)
+                except (TypeError, ValueError):
+                    line = 0
+                normalized_entries.append(
+                    {
+                        "name": str(entry.get("name", "")),
+                        "params": params,
+                        "line": line,
+                        "docstring": str(entry.get("docstring", "")),
+                        "return_type": str(entry.get("return_type", "Any")),
+                    }
+                )
+            if normalized_entries:
+                normalized_signatures[str(file_name)] = tuple(normalized_entries)
+        object.__setattr__(self, "function_signatures", normalized_signatures)
+
+    def format_function_signatures(self, files: Iterable[str]) -> str:
+        """Return a formatted signature block for the given files."""
+        seen: Set[str] = set()
+        lines: list[str] = []
+        for label in files:
+            normalized_label = self._normalize_file_label(label)
+            if not normalized_label or normalized_label in seen:
+                continue
+            seen.add(normalized_label)
+            entries = self.function_signatures.get(normalized_label)
+            if not entries:
+                continue
+            lines.append(f"{normalized_label}:")
+            for entry in entries:
+                lines.append(f"- {self._format_signature(entry)}")
+        if not lines:
+            return ""
+        header = ["EXACT FUNCTION SIGNATURES FROM PREVIOUS FILES:"]
+        footer = ["USE THESE EXACT PARAMETER NAMES. DO NOT GUESS."]
+        return "\n".join(header + lines + footer)
+
+    @staticmethod
+    def _format_signature(entry: Mapping[str, object]) -> str:
+        name = str(entry.get("name", ""))
+        params = entry.get("params", ())
+        if isinstance(params, (list, tuple)):
+            formatted_params = ", ".join(f"{param}: Any" for param in params)
+        else:
+            formatted_params = f"{params}: Any" if params else ""
+        return_type = str(entry.get("return_type", "Any"))
+        return f"{name}({formatted_params}) -> {return_type}"
+
+    @staticmethod
+    def _normalize_file_label(label: str) -> str:
+        cleaned = label.strip()
+        if cleaned.endswith(" (updated)"):
+            return cleaned[: -len(" (updated)")]
+        return cleaned
 
 
 @dataclass(frozen=True)
@@ -493,16 +567,39 @@ Code that violates these principles WILL BE REJECTED.
         sections = [context.session_prompt.strip()]
         if context.previous_work:
             # Extract file names from previous work context
-            files_created = []
+            files_created: list[str] = []
+            seen_files: Set[str] = set()
             for work_item in context.previous_work:
-                # Parse "Session N (name) created: file1.py, file2.py" format
+                extracted_files: list[str] = []
+                # Parse known formats for file tracking
                 if "created:" in work_item:
                     files_part = work_item.split("created:", 1)[1].strip()
-                    files_created.extend(f.strip() for f in files_part.split(","))
+                    extracted_files = [f.strip() for f in files_part.split(",")]
+                elif "| Files:" in work_item:
+                    files_part = work_item.split("| Files:", 1)[1].strip()
+                    extracted_files = [f.strip() for f in files_part.split(",")]
+
+                for file_name in extracted_files:
+                    if not file_name or file_name.lower() == "none":
+                        continue
+                    normalized = SessionContext._normalize_file_label(file_name)
+                    if normalized and normalized not in seen_files:
+                        seen_files.add(normalized)
+                        files_created.append(normalized)
+
+            if not files_created and context.function_signatures:
+                for name in context.function_signatures:
+                    normalized = SessionContext._normalize_file_label(str(name))
+                    if normalized and normalized not in seen_files:
+                        seen_files.add(normalized)
+                        files_created.append(normalized)
 
             previous_work_section = "Previous work:\n" + "\n".join(context.previous_work)
 
             if files_created:
+                signature_section = context.format_function_signatures(files_created)
+                if signature_section:
+                    previous_work_section += f"\n\n{signature_section}"
                 previous_work_section += (
                     "\n\n⚠️ CRITICAL REQUIREMENT - READ THIS:\n"
                     "Previous sessions created files that you may need to call or import.\n"

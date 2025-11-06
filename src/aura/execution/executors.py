@@ -20,6 +20,7 @@ from PySide6.QtCore import QEventLoop, QObject, Signal
 
 from src.aura.agents import AgentResult, PythonCoderAgent, SessionContext
 from src.aura.services import AgentRunner
+from src.aura.services.chat_service import get_session_context_manager
 from src.aura.utils import scan_directory
 
 if TYPE_CHECKING:
@@ -126,6 +127,7 @@ class NativeAgentExecutor(SessionExecutor):
         """
         working_dir = context["working_dir"]
         context_notes = context.get("context_notes", [])
+        context_manager = get_session_context_manager()
 
         # Get project files from scan
         snapshot = scan_directory(str(working_dir), max_depth=2)
@@ -137,6 +139,7 @@ class NativeAgentExecutor(SessionExecutor):
             session_prompt=session.prompt,
             previous_work=context_notes,
             project_files=python_files,
+            function_signatures=context_manager.get_function_signatures(),
         )
 
         # Create and execute agent
@@ -154,6 +157,17 @@ class NativeAgentExecutor(SessionExecutor):
 
         # MANDATORY: Validate that context gathering was performed if required
         self._validate_context_gathering(session_context, agent_result)
+
+        if agent_result.success:
+            files = list(agent_result.files_created) + list(agent_result.files_modified)
+            ordered_files = list(dict.fromkeys(files))
+            files_section = ", ".join(ordered_files) if ordered_files else "none"
+            summary_text = (agent_result.summary or "").strip() or "No summary provided"
+            context_manager.add_entry(
+                f"Session: {summary_text} | Files: {files_section}",
+                files=ordered_files,
+                working_dir=working_dir,
+            )
 
         # Output is already emitted in real-time via progress_update signal connection
         # No need to emit output_lines again here to avoid duplicates
