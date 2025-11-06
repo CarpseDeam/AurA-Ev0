@@ -24,6 +24,17 @@ from src.aura.utils import scan_directory
 
 LOGGER = logging.getLogger(__name__)
 
+PROJECT_INDICATOR_DIRS = {"app", "src", "tests"}
+PROJECT_INDICATOR_FILES = {
+    "requirements.txt",
+    "pyproject.toml",
+    "setup.py",
+    "manage.py",
+    "pipfile",
+    "pipfile.lock",
+}
+PROJECT_IGNORE_DIRS = {".git", ".idea", ".venv", "__pycache__", ".pytest_cache"}
+
 
 def _infer_project_name(goal: str) -> str:
     """Infer a project name from the user's goal.
@@ -243,26 +254,12 @@ class _ExecutionWorker(QObject):
 
     def _execute(self) -> None:
         """Perform planning then execute all sessions sequentially."""
-        # Infer project name and create project directory
-        project_name = _infer_project_name(self._goal)
-        project_dir = _ensure_unique_project_dir(self._working_dir, project_name)
+        # Resolve which project directory to use (existing vs new)
+        project_dir = self._resolve_project_directory()
 
-        LOGGER.info("Inferred project name: %s", project_name)
-        LOGGER.info("Creating project directory: %s", project_dir)
-
-        # Create the project directory
-        try:
-            project_dir.mkdir(parents=True, exist_ok=False)
-            self.session_output.emit(f"📁 Creating project: {project_dir.name}")
-            self.session_output.emit(f"   └─ Location: {project_dir}")
-            self.session_output.emit("")
-        except FileExistsError:
-            LOGGER.warning("Project directory already exists: %s", project_dir)
-            self.session_output.emit(f"📁 Using existing project: {project_dir.name}")
-            self.session_output.emit("")
-
-        # Update working directory to the project directory
+        # Update working directory to the project directory and refresh git helper
         self._working_dir = project_dir
+        self._git = GitHelper(str(self._working_dir))
 
         self.progress_update.emit("Generating session plan...")
         self.planning_started.emit()
@@ -311,12 +308,7 @@ class _ExecutionWorker(QObject):
                     self.session_output.emit("Committing changes...")
                     self.session_output.emit(f"  └─ {commit_msg}")
                     LOGGER.info("Committing changes: %s", commit_msg)
-                    if self._git.commit(commit_msg, result.files_created):
-                        self._event_bus.publish(
-                            EventType.SESSION_OUTPUT,
-                            text=f"  └─ {commit_msg}",
-                        )
-                    else:
+                    if not self._git.commit(commit_msg, result.files_created):
                         self._event_bus.publish(
                             EventType.ERROR,
                             error=f"Failed to commit changes for {commit_msg}",
@@ -345,17 +337,108 @@ class _ExecutionWorker(QObject):
         if config.AUTO_PUSH_ON_COMPLETE:
             self.progress_update.emit("Pushing to GitHub...")
             self.session_output.emit("Pushing to GitHub...")
-            self._event_bus.publish(EventType.SESSION_OUTPUT, text="Pushing to GitHub...")
             LOGGER.info("Pushing changes to GitHub")
             if self._git.push():
                 self.session_output.emit("  ├─ ✓ Pushed to GitHub")
-                self._event_bus.publish(EventType.SESSION_OUTPUT, text="  ├─ ✓ Pushed to GitHub")
             else:
                 self.session_output.emit("  ├─ ✗ Push failed")
                 self._event_bus.publish(EventType.ERROR, error="Failed to push to GitHub")
 
         self.session_output.emit(f"  └─ Total time: {total_duration:.1f}s")
         LOGGER.info("Orchestration complete: %d sessions, %.1fs total", session_count, total_duration)
+
+    def _resolve_project_directory(self) -> Path:
+        """Determine the project directory for the current run."""
+        base_dir = self._working_dir
+        has_existing_project, indicators = self._detect_project_indicators(base_dir)
+
+        if has_existing_project:
+            indicator_text = ", ".join(indicators[:3])
+            if indicator_text:
+                LOGGER.info(
+                    "Existing project detected at %s (indicators: %s)",
+                    base_dir,
+                    indicator_text,
+                )
+            else:
+                LOGGER.info("Existing project detected at %s", base_dir)
+            self.session_output.emit(f"📁 Using existing project: {base_dir.name}")
+            self.session_output.emit(f"   ├─ Location: {base_dir}")
+            if indicator_text:
+                self.session_output.emit(f"   └─ Indicators: {indicator_text}")
+            else:
+                self.session_output.emit("   └─ Indicators: project files detected")
+            self.session_output.emit("")
+            return base_dir
+
+        project_name = _infer_project_name(self._goal)
+        project_dir = _ensure_unique_project_dir(base_dir, project_name)
+
+        LOGGER.info("Inferred project name: %s", project_name)
+        LOGGER.info("Preparing project directory: %s", project_dir)
+
+        try:
+            project_dir.mkdir(parents=True, exist_ok=False)
+            self.session_output.emit(f"📁 Creating project: {project_dir.name}")
+        except FileExistsError:
+            LOGGER.warning("Project directory already exists: %s", project_dir)
+            self.session_output.emit(f"📁 Using existing project: {project_dir.name}")
+        self.session_output.emit(f"   └─ Location: {project_dir}")
+        self.session_output.emit("")
+        return project_dir
+
+    def _detect_project_indicators(self, directory: Path) -> tuple[bool, list[str]]:
+        """Return whether the directory looks like an existing project."""
+        try:
+            snapshot = scan_directory(str(directory), max_depth=2)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Unable to scan %s for project indicators: %s",
+                directory,
+                exc,
+            )
+            return False, []
+
+        files = snapshot.get("files", [])
+        directories = snapshot.get("directories", [])
+
+        has_python_files = False
+        key_files_found: set[str] = set()
+        key_dirs_found: set[str] = set()
+
+        for file_rel in files:
+            relative = Path(file_rel)
+            parts = relative.parts
+            if parts and parts[0] in PROJECT_IGNORE_DIRS:
+                continue
+            if relative.suffix.lower() == ".py":
+                has_python_files = True
+            name_lower = relative.name.lower()
+            if name_lower in PROJECT_INDICATOR_FILES:
+                key_files_found.add(name_lower)
+
+        for dir_rel in directories:
+            relative = Path(dir_rel)
+            parts = relative.parts
+            if not parts or parts[0] in PROJECT_IGNORE_DIRS:
+                continue
+            for part in parts:
+                if part in PROJECT_INDICATOR_DIRS:
+                    key_dirs_found.add(part)
+
+        indicators: list[str] = []
+        if has_python_files:
+            indicators.append("python files")
+        indicators.extend(sorted(key_files_found))
+        indicators.extend(f"{name} directory" for name in sorted(key_dirs_found))
+
+        return bool(indicators), indicators
+
+    def _emit_stream_chunk(self, chunk: str) -> None:
+        """Relay streaming chunks from agents to the UI."""
+        if not chunk:
+            return
+        self.session_output.emit(chunk)
 
     def _install_dependencies(self) -> None:
         """Install dependencies from requirements.txt once sessions complete."""
@@ -534,7 +617,10 @@ class _ExecutionWorker(QObject):
             # Get discovery response with automatic tool calling
             # The SDK will automatically execute all tool calls behind the scenes
             self.session_output.emit("    └─ Running discovery phase with automatic tool calling...")
-            combined_discovery = chat.send_message(discovery_prompt)
+            combined_discovery = chat.send_message(
+                discovery_prompt,
+                on_chunk=self._emit_stream_chunk,
+            )
 
             # Note: With automatic function calling, we don't get visibility into individual tool calls
             # The SDK handles the entire function calling loop internally

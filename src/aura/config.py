@@ -41,6 +41,7 @@ FONT_SIZE_STATUS: int = 11  # Status bar font size
 WINDOW_DIMENSIONS: tuple[int, int] = (900, 700)
 
 DEFAULT_AGENT: str = "gemini"
+STREAM_PREFIX: str = "STREAM::"
 
 AGENT_SEARCH_PATHS: list[str] = [
     os.path.join(os.getenv("APPDATA", ""), "npm"),
@@ -72,6 +73,7 @@ __all__ = [
     "WINDOW_DIMENSIONS",
     "ColorPalette",
     "DEFAULT_AGENT",
+    "STREAM_PREFIX",
     "AGENT_SEARCH_PATHS",
     "AGENT_DISPLAY_NAMES",
     "USE_NATIVE_PYTHON_AGENT",

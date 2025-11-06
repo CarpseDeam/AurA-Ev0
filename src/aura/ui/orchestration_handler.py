@@ -63,22 +63,31 @@ class OrchestrationHandler(QObject):
         self._output_panel.display_output(
             f"▶ Session {index + 1}/{total}: {name}",
             config.COLORS.accent,
-            font_size=config.FONT_SIZE_HEADER,
         )
 
     def handle_session_output(self, text: str) -> None:
         """Relay streaming session output to the transcript."""
-        if not text:
+        if text is None:
             return
 
-        stripped_text = text.strip()
+        raw_text = text if isinstance(text, str) else str(text)
+
+        if raw_text.startswith(config.STREAM_PREFIX):
+            chunk = raw_text[len(config.STREAM_PREFIX) :]
+            self._output_panel.display_stream_chunk(chunk, config.COLORS.agent_output)
+            return
+
+        if not raw_text:
+            return
+
+        stripped_text = raw_text.strip()
 
         if stripped_text.startswith("TOOL_CALL::"):
             try:
                 _, tool_name, args_summary = stripped_text.split("::", 2)
                 self._output_panel.display_tool_call(tool_name, args_summary)
             except ValueError:
-                self._output_panel.display_output(text)  # Fallback
+                self._output_panel.display_output(raw_text)  # Fallback
         elif stripped_text.startswith("⋯"):
             self._output_panel.display_thinking(stripped_text[1:].strip())
         elif stripped_text.startswith("▶"):
@@ -92,7 +101,7 @@ class OrchestrationHandler(QObject):
             action, path = stripped_text[1:].strip().split(maxsplit=1)
             self._output_panel.display_file_operation(action, path)
         else:
-            self._output_panel.display_output(text)
+            self._output_panel.display_output(raw_text)
 
     def handle_session_complete(self, index: int, result: SessionResult) -> None:
         """Summarize the result of a completed session."""
@@ -174,7 +183,6 @@ class OrchestrationHandler(QObject):
         self._output_panel.display_output(
             "┌ Session Plan",
             config.COLORS.accent,
-            font_size=config.FONT_SIZE_HEADER,
         )
 
         if plan.reasoning:

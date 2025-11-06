@@ -8,10 +8,13 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Iterable, List, Mapping, Sequence, Tuple
+from typing import Iterable, List, Mapping, Sequence, Set, Tuple
 
 import google.generativeai as genai
+from google.generativeai.types import generation_types
 from PySide6.QtCore import QObject, Signal
+
+from src.aura import config
 
 LOGGER = logging.getLogger(__name__)
 
@@ -431,9 +434,102 @@ Code that violates these principles WILL BE REJECTED.
 
     def _request_plan(self, prompt: str) -> Mapping[str, object]:
         LOGGER.debug("Requesting plan from Gemini API")
-        response = self._model.generate_content(prompt)
-        payload = (response.text or "").strip()
+        response = self._model.generate_content(prompt, stream=True)
 
+        try:
+            iterator = iter(response)
+        except TypeError:
+            payload = (getattr(response, "text", "") or "").strip()
+            if payload:
+                self._emit_stream_chunk(payload)
+                self._emit_stream_chunk("\n")
+            return self._parse_plan_payload(payload)
+
+        aggregated_text = ""
+        collected_parts: List[str] = []
+        seen_calls: Set[str] = set()
+        streamed_any = False
+        for chunk in iterator:
+            streamed_any = self._emit_tool_calls(chunk, seen_calls) or streamed_any
+            addition, aggregated_text = self._extract_stream_addition(chunk, aggregated_text)
+            if addition:
+                self._emit_stream_chunk(addition)
+                collected_parts.append(addition)
+                streamed_any = True
+
+        raw_payload = "".join(collected_parts) or aggregated_text
+        if not raw_payload and hasattr(response, "text"):
+            raw_payload = getattr(response, "text") or ""
+
+        if streamed_any and raw_payload and not raw_payload.endswith("\n"):
+            self._emit_stream_chunk("\n")
+
+        payload = (raw_payload or "").strip()
+
+        return self._parse_plan_payload(payload)
+
+    def _emit_stream_chunk(self, chunk: str) -> None:
+        """Emit streaming output to the connected UI signal."""
+        if not chunk:
+            return
+        self.progress_update.emit(f"{config.STREAM_PREFIX}{chunk}")
+
+    @staticmethod
+    def _extract_stream_addition(
+        chunk: generation_types.GenerateContentResponse,
+        aggregated_text: str,
+    ) -> tuple[str, str]:
+        """Return the new text produced by this chunk."""
+        text = getattr(chunk, "text", "") or ""
+        if not text:
+            return "", aggregated_text
+
+        if aggregated_text and aggregated_text.startswith(text):
+            return "", aggregated_text
+
+        if text.startswith(aggregated_text):
+            addition = text[len(aggregated_text) :]
+            return addition, text
+
+        return text, aggregated_text + text
+
+    def _emit_tool_calls(
+        self,
+        chunk: generation_types.GenerateContentResponse,
+        seen_calls: Set[str],
+    ) -> bool:
+        """Emit notifications for newly observed tool calls while streaming."""
+        function_calls = getattr(chunk, "function_calls", None)
+        if not function_calls:
+            return False
+
+        emitted = False
+        for call in function_calls:
+            name = getattr(call, "name", "")
+            args_summary = self._summarize_args(getattr(call, "args", None))
+            signature = f"{name}:{args_summary}"
+            if signature in seen_calls:
+                continue
+            seen_calls.add(signature)
+            self.progress_update.emit(f"TOOL_CALL::{name}::{args_summary}")
+            emitted = True
+        return emitted
+
+    @staticmethod
+    def _summarize_args(args: object) -> str:
+        """Return a compact JSON summary of function call arguments."""
+        if not args:
+            return "{}"
+        try:
+            summary = json.dumps(args, ensure_ascii=False)
+        except TypeError:
+            summary = str(args)
+        if len(summary) > 160:
+            summary = f"{summary[:157]}..."
+        return summary
+
+    def _parse_plan_payload(self, payload: str) -> Mapping[str, object]:
+        """Parse the JSON payload returned by Gemini."""
         if not payload:
             LOGGER.error("Gemini returned empty response")
             raise PlanParseError("Empty response from Gemini.")

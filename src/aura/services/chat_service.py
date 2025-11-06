@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
+from typing import Callable, Optional, Set
 
 from google import genai
 from google.genai import types
 
+from src.aura import config
 from src.aura.agents import PythonCoderAgent, SessionContext
 from src.aura.tools.file_system_tools import (
     list_project_files,
@@ -340,11 +343,15 @@ class ChatService:
         self._client = genai.Client(api_key=self.api_key)
 
 
-    def send_message(self, user_message: str) -> str:
-        """Send a message and get response with automatic tool usage."""
+    def send_message(
+        self,
+        user_message: str,
+        on_chunk: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        """Send a message and stream the response with automatic tool usage."""
         try:
             # Create config with Python functions as tools
-            config = types.GenerateContentConfig(
+            request_config = types.GenerateContentConfig(
                 tools=[
                     list_project_files,
                     search_in_files,
@@ -374,18 +381,116 @@ class ChatService:
             # - Sends results back to model
             # - Repeats until model returns text
             LOGGER.info("🤖 Sending message to Gemini with 18 tools available")
-            response = self._client.models.generate_content(
+            stream = self._client.models.generate_content_stream(
                 model=self.model_name,
                 contents=user_message,
-                config=config,
+                config=request_config,
             )
+
+            try:
+                iterator = iter(stream)
+            except TypeError:
+                LOGGER.debug("Streaming unavailable; falling back to blocking response")
+                fallback_response = self._client.models.generate_content(
+                    model=self.model_name,
+                    contents=user_message,
+                    config=request_config,
+                )
+                final_text = fallback_response.text or ""
+                if final_text and on_chunk:
+                    on_chunk(f"{config.STREAM_PREFIX}{final_text}")
+                    on_chunk(f"{config.STREAM_PREFIX}\n")
+                LOGGER.info("✅ Received response from Gemini")
+                return final_text
+
+            aggregated_text = ""
+            collected_parts: list[str] = []
+            seen_calls: Set[str] = set()
+            streamed_any = False
+
+            for chunk in iterator:
+                streamed_any = (
+                    self._emit_function_calls(chunk, on_chunk, seen_calls) or streamed_any
+                )
+                addition, aggregated_text = self._extract_stream_addition(chunk, aggregated_text)
+                if addition:
+                    collected_parts.append(addition)
+                    if on_chunk:
+                        on_chunk(f"{config.STREAM_PREFIX}{addition}")
+                    streamed_any = True
+
+            final_text = "".join(collected_parts) or aggregated_text
+            if not final_text and hasattr(stream, "text"):
+                final_text = getattr(stream, "text") or ""
+
+            if streamed_any and on_chunk:
+                on_chunk(f"{config.STREAM_PREFIX}\n")
+
             LOGGER.info("✅ Received response from Gemini")
 
-            return response.text
+            return final_text
 
         except Exception as e:
             LOGGER.exception("Failed to generate content with automatic function calling")
             return f"Error: {str(e)}"
+
+    @staticmethod
+    def _extract_stream_addition(
+        chunk: types.GenerateContentResponse,
+        aggregated_text: str,
+    ) -> tuple[str, str]:
+        """Return the new text produced by this chunk."""
+        text = getattr(chunk, "text", "") or ""
+        if not text:
+            return "", aggregated_text
+
+        if aggregated_text and aggregated_text.startswith(text):
+            # Received a shorter chunk that is already included in the aggregate.
+            return "", aggregated_text
+
+        if text.startswith(aggregated_text):
+            addition = text[len(aggregated_text) :]
+            return addition, text
+
+        # Fallback: assume chunk.text itself is the new addition
+        return text, aggregated_text + text
+
+    def _emit_function_calls(
+        self,
+        chunk: types.GenerateContentResponse,
+        on_chunk: Optional[Callable[[str], None]],
+        seen_calls: Set[str],
+    ) -> bool:
+        """Emit tool call notifications for newly observed function calls."""
+        function_calls = getattr(chunk, "function_calls", None)
+        if not function_calls:
+            return False
+
+        emitted = False
+        for call in function_calls:
+            name = getattr(call, "name", "")
+            args_summary = self._summarize_args(getattr(call, "args", None))
+            signature = f"{name}:{args_summary}"
+            if signature in seen_calls:
+                continue
+            seen_calls.add(signature)
+            if on_chunk:
+                on_chunk(f"TOOL_CALL::{name}::{args_summary}")
+            emitted = True
+        return emitted
+
+    @staticmethod
+    def _summarize_args(args: object) -> str:
+        """Return a compact JSON summary of function call arguments."""
+        if not args:
+            return "{}"
+        try:
+            summary = json.dumps(args, ensure_ascii=False)
+        except TypeError:
+            summary = str(args)
+        if len(summary) > 160:
+            summary = f"{summary[:157]}..."
+        return summary
 
     def clear_history(self) -> None:
         """Clear the conversation history (no-op with stateless client)."""

@@ -39,18 +39,23 @@ class OutputPanel(QWidget):
         """Expose the internal text edit widget for styling or testing."""
         return self._text_edit
 
-    def display_output(self, text: str, color: Optional[str] = None, font_size: Optional[int] = None) -> None:
-        """Append output to the transcript."""
+    def display_output(
+        self,
+        text: str,
+        color: Optional[str] = None,
+        font_size: Optional[int] = None,
+    ) -> None:
+        """Append output to the transcript with an automatic newline."""
         chosen_color = color or self._resolve_line_color(text)
-        escaped_text = html.escape(text)
+        normalized = text if text.endswith("\n") else f"{text}\n"
+        self._append_text(normalized, chosen_color, font_size)
 
-        # Build style string with optional font-size
-        style = f"color: {chosen_color};"
-        if font_size is not None:
-            style += f" font-size: {font_size}px; font-weight: 500;"
-
-        payload = f'<span style="{style}">{escaped_text}</span><br>'
-        self._append_html(payload)
+    def display_stream_chunk(self, text: str, color: Optional[str] = None) -> None:
+        """Append a streaming chunk without forcing a newline."""
+        if not text:
+            return
+        chosen_color = color or config.COLORS.agent_output
+        self._append_text(text, chosen_color, None)
 
     def display_thinking(self, text: str) -> None:
         """Render thinking/reasoning steps with a purple ellipsis."""
@@ -78,9 +83,8 @@ class OutputPanel(QWidget):
         if not text:
             return
         chosen_color = color or config.COLORS.agent_output
-        escaped_text = html.escape(text)
-        payload = f'<span style="color: {chosen_color};">{escaped_text}</span><br>'
-        self._append_html(payload)
+        normalized = text if text.endswith("\n") else f"{text}\n"
+        self._append_text(normalized, chosen_color, None)
 
     def display_startup_header(self) -> None:
         """Render the startup ASCII art header."""
@@ -104,6 +108,22 @@ AI-Powered Development Assistant
     def clear(self) -> None:
         """Remove all text from the panel."""
         self._text_edit.clear()
+
+    def _append_text(
+        self,
+        text: str,
+        color: str,
+        font_size: Optional[int] = None,
+    ) -> None:
+        """Append raw text to the panel, preserving streaming continuity."""
+        if not text:
+            return
+        escaped_text = html.escape(text).replace("\n", "<br>")
+        style = f"color: {color};"
+        if font_size is not None:
+            style += f" font-size: {font_size}px; font-weight: 500;"
+        payload = f'<span style="{style}">{escaped_text}</span>'
+        self._append_html(payload)
 
     def _append_html(self, html_content: str) -> None:
         """Append HTML content to the underlying text edit."""
