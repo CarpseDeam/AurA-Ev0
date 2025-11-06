@@ -263,7 +263,6 @@ class _ExecutionWorker(QObject):
 
         self.progress_update.emit("Generating session plan...")
         self.planning_started.emit()
-        self._event_bus.publish(EventType.PLANNING_STARTED)
         self.session_output.emit("Analyzing request...")
 
         # NEW: Intelligent discovery phase using ChatService with tools
@@ -280,7 +279,6 @@ class _ExecutionWorker(QObject):
 
         self.progress_update.emit("Session plan ready")
         self.plan_ready.emit(plan)
-        self._event_bus.publish(EventType.PLAN_READY, plan=plan)
 
         session_count = len(plan.sessions)
         estimated_minutes = getattr(plan, "total_estimated_minutes", 0)
@@ -293,12 +291,10 @@ class _ExecutionWorker(QObject):
             self.session_output.emit("")
             self.session_output.emit(f"Executing Session {index + 1}/{session_count}: {session.name}")
             self.session_started.emit(index, session)
-            self._event_bus.publish(EventType.SESSION_STARTED, index=index, session=session)
 
             LOGGER.info("Executing session %d/%d: %s", index + 1, session_count, session.name)
             result = self._run_session(index, session)
             self.session_complete.emit(index, result)
-            self._event_bus.publish(EventType.SESSION_COMPLETE, index=index, result=result)
             self._update_context(index, session, result)
             all_results.append(result)
             if config.AUTO_COMMIT_SESSIONS:
@@ -326,7 +322,6 @@ class _ExecutionWorker(QObject):
         self._install_dependencies()
         self.progress_update.emit("All sessions complete")
         self.all_sessions_complete.emit()
-        self._event_bus.publish(EventType.ALL_COMPLETE)
         self.session_output.emit("")
         self.session_output.emit("All sessions complete")
 
