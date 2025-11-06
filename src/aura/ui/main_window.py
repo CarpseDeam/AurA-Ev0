@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from PySide6.QtCore import Signal
@@ -20,6 +21,12 @@ from PySide6.QtWidgets import (
 
 from aura import config
 from aura.events import Event, EventType, get_event_bus
+from aura.exceptions import (
+    AuraConfigurationError,
+    AuraError,
+    AuraExecutionError,
+    AuraValidationError,
+)
 from aura.orchestrator import Orchestrator
 from aura.services import AgentRunner
 from aura.state import AppState
@@ -50,7 +57,9 @@ class MainWindow(QMainWindow):
         self.output_panel = OutputPanel(self)
         self.input_field = QLineEdit(self); self.clear_button = QPushButton("Clear", self)
         self.toolbar = self.addToolBar("Project")
-        self.current_runner: Optional[AgentRunner] = None; self._event_bus = get_event_bus()
+        self.current_runner: Optional[AgentRunner] = None
+        self._event_bus = get_event_bus()
+        self._prompting_for_directory = False
 
         status_bar = QStatusBar(self); self.status_bar_manager = StatusBarManager(status_bar, self.app_state, self)
         self.setStatusBar(self.status_bar_manager.status_bar)
@@ -178,33 +187,93 @@ class MainWindow(QMainWindow):
         if self.current_runner and self.current_runner.isRunning():
             self.output_panel.display_output("An agent run is already in progress.", "#FF6B6B")
             return
-        self.input_field.clear(); self.output_panel.display_output(f"> {prompt}", config.COLORS.accent)
+
+        self.input_field.clear()
+        self.output_panel.display_output(f"> {prompt}", config.COLORS.accent)
         self._set_input_enabled(False)
-        if not self.orchestrator:
-            self.execute_command(prompt); return
-        if self._should_orchestrate(prompt):
-            import threading
-            LOGGER.info("EXECUTION_REQUESTED: Emitting execution_requested signal (thread: %s, goal: %s)",
-                       threading.current_thread().name, prompt[:50])
-            self.execution_requested.emit(prompt)
-        else:
-            self.execute_command(prompt)
+
+        try:
+            if not self.orchestrator:
+                self.execute_command(prompt)
+                return
+            if self._should_orchestrate(prompt):
+                import threading
+
+                LOGGER.info(
+                    "EXECUTION_REQUESTED: Emitting execution_requested signal (thread: %s, goal: %s)",
+                    threading.current_thread().name,
+                    prompt[:50],
+                )
+                self.execution_requested.emit(prompt)
+            else:
+                self.execute_command(prompt)
+        except AuraConfigurationError as exc:
+            LOGGER.warning("Configuration issue while submitting prompt: %s", exc)
+            self._handle_configuration_issue(exc)
+            self._recover_input_after_error()
+        except (AuraValidationError, AuraExecutionError) as exc:
+            LOGGER.warning("Validation/execution error while submitting prompt: %s", exc)
+            self._display_user_error(str(exc))
+            self._recover_input_after_error()
+        except AuraError as exc:
+            LOGGER.warning("Aura error during submission: %s", exc)
+            self._display_user_error(str(exc))
+            self._recover_input_after_error()
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Unexpected error handling submit")
+            self._display_user_error("Something went wrong while starting your request. Please try again.")
+            self._recover_input_after_error()
 
     def execute_command(self, prompt: str) -> None:
-        if not prompt or not self.agent_manager.validate_environment():
-            self._set_input_enabled(True); self.input_field.setFocus(); return
-        command_prompt = self.agent_manager.compose_prompt(prompt)
-        agent_executable = self.app_state.agent_path or self.app_state.selected_agent
+        try:
+            self.agent_manager.validate_environment()
+            command_prompt = self.agent_manager.compose_prompt(prompt)
+        except AuraConfigurationError as exc:
+            self._handle_configuration_issue(exc)
+            self._recover_input_after_error()
+            return
+        except AuraValidationError as exc:
+            self._display_user_error(str(exc))
+            self._recover_input_after_error()
+            return
+
+        agent_executable = self.app_state.agent_path
+        if not agent_executable:
+            error = AuraConfigurationError(
+                "No CLI agent is configured. Please open Agent Settings to choose one.",
+                context={"issue": "agent_missing"},
+            )
+            self._handle_configuration_issue(error)
+            self._recover_input_after_error()
+            return
+
         command = [agent_executable, "-p", command_prompt, "--yolo"]
         try:
-            runner = AgentRunner(command=command, working_directory=self.app_state.working_directory, parent=self)
+            runner = AgentRunner(
+                command=command,
+                working_directory=self.app_state.working_directory,
+                parent=self,
+            )
         except ValueError as exc:
-            self.output_panel.display_output(f"Unable to start agent: {exc}", "#FF6B6B")
-            self._set_input_enabled(True); self.input_field.setFocus(); return
+            self._display_user_error(f"Unable to start agent: {exc}")
+            self._recover_input_after_error()
+            return
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to initialize agent runner")
+            self._display_user_error("Unable to start the CLI agent. Check logs for details.")
+            self._recover_input_after_error()
+            return
+
         runner.output_line.connect(self.output_panel.display_output)
-        runner.process_finished.connect(self.handle_process_finished); runner.process_error.connect(self.handle_process_error)
+        runner.process_finished.connect(self.handle_process_finished)
+        runner.process_error.connect(self.handle_process_error)
         self.current_runner = runner
         self.status_bar_manager.update_status("Running...", config.COLORS.accent, persist=True)
+        LOGGER.info(
+            "Starting CLI agent run | agent=%s | cwd=%s",
+            os.path.basename(agent_executable),
+            self.app_state.working_directory,
+        )
         runner.start()
 
     def _should_orchestrate(self, prompt: str) -> bool:
@@ -224,16 +293,52 @@ class MainWindow(QMainWindow):
             self.output_panel.display_output(f"Agent exited with code {exit_code}", "#FF6B6B")
             self.status_bar_manager.update_status("Error", "#FF6B6B", persist=True)
 
+        LOGGER.info("CLI agent finished | exit_code=%s", exit_code)
         self._set_input_enabled(True); self.input_field.setFocus()
         self.current_runner = None
 
     def handle_process_error(self, error: str) -> None:
-        self.output_panel.display_output(error, "#FF6B6B")
-        self.status_bar_manager.update_status("Error", "#FF6B6B", persist=True)
-        self._set_input_enabled(True); self.input_field.setFocus()
+        LOGGER.error("CLI agent reported error: %s", error)
+        self._display_user_error(error or "Agent reported an unknown error.")
+        self._recover_input_after_error()
 
     def clear_output(self) -> None:
         self.output_panel.clear()
+
+    def _display_user_error(self, message: str) -> None:
+        """Show a user-facing error and update status bar."""
+        if not message:
+            message = "Something went wrong. Check the logs for more details."
+        self.output_panel.display_error(message)
+        self.status_bar_manager.update_status("Error", config.COLORS.error, persist=True)
+
+    def _recover_input_after_error(self) -> None:
+        """Re-enable input controls after a failure."""
+        self._set_input_enabled(True)
+        self.input_field.setFocus()
+
+    def _handle_configuration_issue(self, error: AuraConfigurationError) -> None:
+        """Display configuration issues and guide the user to resolve them."""
+        self._display_user_error(str(error))
+        issue = (error.context or {}).get("issue") if isinstance(error.context, dict) else None
+        if issue in {"working_directory_missing", "working_directory_invalid"}:
+            self._prompt_for_working_directory()
+        elif issue in {"agent_missing", "agent_not_executable"}:
+            self._open_agent_settings()
+
+    def _prompt_for_working_directory(self) -> None:
+        """Prompt the user to choose a new working directory."""
+        if self._prompting_for_directory:
+            return
+        self._prompting_for_directory = True
+        try:
+            self.output_panel.display_output(
+                "Please select a valid working directory to continue.",
+                config.COLORS.accent,
+            )
+            self._select_working_directory()
+        finally:
+            self._prompting_for_directory = False
 
     def _select_working_directory(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Working Directory", self.app_state.working_directory)
@@ -241,8 +346,8 @@ class MainWindow(QMainWindow):
             return
         try:
             self.agent_manager.set_working_directory(path)
-        except (ValueError, FileNotFoundError) as exc:
-            self.output_panel.display_output(str(exc), "#FF6B6B")
+        except AuraConfigurationError as exc:
+            self._display_user_error(str(exc))
 
     def _open_agent_settings(self) -> None:
         dialog = AgentSettingsDialog(self)

@@ -4,31 +4,70 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from aura import config
+from aura.exceptions import AuraConfigurationError
 from aura.orchestrator import Orchestrator
 from aura.services import ChatService
 from aura.state import AppState
 from aura.ui.main_window import MainWindow
 
 
-# Suppress SDK spam
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
-for sdk_logger in [
-    "google.genai",
-    "google_genai",
-    "google.generativeai",
-    "google.ai.generativelanguage",
-]:
-    logging.getLogger(sdk_logger).setLevel(logging.WARNING)
+LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(funcName)s:%(lineno)d | %(message)s"
+LOGGER = logging.getLogger(__name__)
+
+
+def configure_logging() -> None:
+    """Configure application-wide structured logging outputs."""
+    logs_root = Path(__file__).resolve().parents[2] / "logs"
+    logs_root.mkdir(parents=True, exist_ok=True)
+    log_path = logs_root / "aura.log"
+
+    root_logger = logging.getLogger()
+    if getattr(configure_logging, "_configured", False):
+        return
+
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+
+    root_logger.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter(LOG_FORMAT)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+
+    file_handler = RotatingFileHandler(
+        log_path,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+
+    for sdk_logger in [
+        "google.genai",
+        "google_genai",
+        "google.generativeai",
+        "google.ai.generativelanguage",
+    ]:
+        logging.getLogger(sdk_logger).setLevel(logging.WARNING)
+
+    configure_logging._configured = True  # type: ignore[attr-defined]
+
+
+configure_logging()
 
 
 class ApplicationController:
@@ -61,15 +100,24 @@ class ApplicationController:
         self.app_state.set_working_directory(str(workspace_path))
         self.app_state.set_selected_agent(config.DEFAULT_AGENT)
 
-        # Initialize services if API key is available
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if api_key:
-            self.chat_service = ChatService(api_key=api_key)
-            self.orchestrator = Orchestrator(
-                self.chat_service,
-                self.app_state.working_directory,
-                self.app_state.agent_path or "",
-            )
+        orchestrator_warning: str | None = None
+
+        try:
+            self.chat_service = self._create_chat_service()
+        except AuraConfigurationError as exc:
+            orchestrator_warning = str(exc)
+            LOGGER.warning("Chat service unavailable: %s", exc)
+
+        if self.chat_service:
+            try:
+                self.orchestrator = Orchestrator(
+                    self.chat_service,
+                    self.app_state.working_directory,
+                    self.app_state.agent_path or "",
+                )
+            except AuraConfigurationError as exc:
+                orchestrator_warning = str(exc)
+                LOGGER.error("Failed to initialize orchestrator: %s", exc)
 
         # Create main window with dependencies
         self.main_window = MainWindow(
@@ -79,6 +127,9 @@ class ApplicationController:
 
         # Wire signals and slots
         self._connect_signals()
+
+        if orchestrator_warning:
+            self.main_window.output_panel.display_error(orchestrator_warning)
 
         return self.main_window
 
@@ -118,6 +169,16 @@ class ApplicationController:
         except FileNotFoundError as exc:
             logging.getLogger("aura").error("Failed to update working directory: %s", exc)
             self.main_window._on_progress_update("Invalid working directory")
+
+    def _create_chat_service(self) -> ChatService:
+        """Create a chat service instance with validation."""
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not api_key:
+            raise AuraConfigurationError(
+                "Gemini API key is missing. Set GEMINI_API_KEY and restart Aura.",
+                context={"env_var": "GEMINI_API_KEY"},
+            )
+        return ChatService(api_key=api_key)
 
 
 def _create_application() -> QApplication:

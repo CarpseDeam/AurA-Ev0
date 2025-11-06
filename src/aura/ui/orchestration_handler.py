@@ -54,129 +54,171 @@ class OrchestrationHandler(QObject):
 
     def handle_planning_started(self) -> None:
         """Reset state and display planning message."""
-        self._set_running_state()
-        self.request_input_enabled.emit(False)
-        self._output_panel.display_thinking("Analyzing request...")
+        try:
+            self._set_running_state()
+            self.request_input_enabled.emit(False)
+            self._output_panel.display_thinking("Analyzing request...")
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to handle planning start")
+            self._output_panel.display_error("Unable to display planning status. Check logs for details.")
 
     def handle_session_started(self, index: int, session) -> None:
         """Display headers for a new session."""
-        self._set_running_state()
-        name = getattr(session, "name", "Conversation")
+        try:
+            self._set_running_state()
+            name = getattr(session, "name", "Conversation")
 
-        self._output_panel.display_output("")  # Spacer
-        self._output_panel.display_output(
-            f"▶ {name}",
-            config.COLORS.accent,
-        )
+            self._output_panel.display_output("")  # Spacer
+            self._output_panel.display_output(
+                f"▶ {name}",
+                config.COLORS.accent,
+            )
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to handle session_started")
+            self._output_panel.display_error("Unable to start the session. See aura.log for details.")
 
     def handle_session_output(self, text: str) -> None:
         """Relay streaming session output to the transcript."""
-        if text is None:
-            return
-
-        raw_text = text if isinstance(text, str) else str(text)
-
-        # Log message receipt for debugging duplicates
-        _log_handler_recv(raw_text)
-
-        if raw_text.startswith(config.STREAM_PREFIX):
-            chunk = raw_text[len(config.STREAM_PREFIX) :]
-            self._output_panel.display_stream_chunk(chunk, config.COLORS.agent_output)
-            return
-
-        if not raw_text:
-            return
-
-        stripped_text = raw_text.strip()
-
-        if stripped_text.startswith("TOOL_CALL::"):
-            try:
-                _, tool_name, args_summary = stripped_text.split("::", 2)
-                self._output_panel.display_tool_call(tool_name, args_summary)
-            except ValueError:
-                self._output_panel.display_output(raw_text)  # Fallback
-        elif stripped_text.startswith("⋯"):
-            self._output_panel.display_thinking(stripped_text[1:].strip())
-        elif stripped_text.startswith("▶"):
-            self._output_panel.display_output(stripped_text, config.COLORS.accent)
-        elif stripped_text.startswith("✓"):
-            self._output_panel.display_success(stripped_text[1:].strip())
-        elif stripped_text.startswith("+"):
-            action, path = stripped_text[1:].strip().split(maxsplit=1)
-            self._output_panel.display_file_operation(action, path)
-        elif stripped_text.startswith("~"):
-            action, path = stripped_text[1:].strip().split(maxsplit=1)
-            self._output_panel.display_file_operation(action, path)
-        else:
-            self._output_panel.display_output(raw_text)
-
-    def handle_session_complete(self, index: int, result: SessionResult) -> None:
-        """Summarize the result of a completed session."""
-        if result is None:
-            return
-
-        duration = getattr(result, "duration_seconds", 0.0)
-        success = getattr(result, "success", False)
-
-        if success:
-            self._output_panel.display_success(f"Response complete in {duration:.1f}s")
-        else:
-            self._output_panel.display_error(f"Response failed in {duration:.1f}s")
-
-    def handle_all_complete(self) -> None:
-        """Mark orchestration as complete."""
-        self._set_completed_state()
-        self._output_panel.display_output("")  # Spacer
-        self._output_panel.display_success("Conversation finished")
-        self.request_input_enabled.emit(True)
-        self.request_input_focus.emit()
-
-    def handle_error(self, error: str) -> None:
-        """Surface orchestration errors."""
-        self._last_error_message = error
-        self._set_error_state()
-        self._output_panel.display_error(error)
-        self.request_input_enabled.emit(True)
-        self.request_input_focus.emit()
-
-    def handle_background_event(self, event: Event) -> None:
-        """Process events forwarded from the background event bus."""
-        if not isinstance(event, Event):
-            return
-
-        if event.type is EventType.SESSION_OUTPUT:
-            text = str(event.data.get("text", ""))
-            if not text:
+        try:
+            if text is None:
                 return
 
-            # Strip STREAM prefix if present (for streaming output)
-            if text.startswith(config.STREAM_PREFIX):
-                chunk = text[len(config.STREAM_PREFIX):]
+            raw_text = text if isinstance(text, str) else str(text)
+
+            # Log message receipt for debugging duplicates
+            _log_handler_recv(raw_text)
+
+            if raw_text.startswith(config.STREAM_PREFIX):
+                chunk = raw_text[len(config.STREAM_PREFIX) :]
                 self._output_panel.display_stream_chunk(chunk, config.COLORS.agent_output)
                 return
 
-            stripped_text = text.strip()
-            if not stripped_text:
+            if not raw_text:
                 return
+
+            stripped_text = raw_text.strip()
 
             if stripped_text.startswith("TOOL_CALL::"):
                 try:
                     _, tool_name, args_summary = stripped_text.split("::", 2)
                     self._output_panel.display_tool_call(tool_name, args_summary)
                 except ValueError:
-                    self._output_panel.display_output(stripped_text)  # Fallback
+                    self._output_panel.display_output(raw_text)  # Fallback
+            elif stripped_text.startswith("⋯"):
+                self._output_panel.display_thinking(stripped_text[1:].strip())
+            elif stripped_text.startswith("▶"):
+                self._output_panel.display_output(stripped_text, config.COLORS.accent)
+            elif stripped_text.startswith("✓"):
+                self._output_panel.display_success(stripped_text[1:].strip())
+            elif stripped_text.startswith("+"):
+                action, path = stripped_text[1:].strip().split(maxsplit=1)
+                self._output_panel.display_file_operation(action, path)
+            elif stripped_text.startswith("~"):
+                action, path = stripped_text[1:].strip().split(maxsplit=1)
+                self._output_panel.display_file_operation(action, path)
             else:
-                self._output_panel.display_output(stripped_text)
+                self._output_panel.display_output(raw_text)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to render session output")
+            self._output_panel.display_error("Unable to display part of the response. See logs for details.")
 
-        elif event.type is EventType.ERROR:
-            error = str(event.data.get("error", "")).strip()
-            if not error:
+    def handle_session_complete(self, index: int, result: SessionResult) -> None:
+        """Summarize the result of a completed session."""
+        try:
+            if result is None:
                 return
-            if error == self._last_error_message:
+
+            duration = getattr(result, "duration_seconds", 0.0)
+            success = getattr(result, "success", False)
+
+            if success:
+                self._output_panel.display_success(f"Response complete in {duration:.1f}s")
+            else:
+                self._output_panel.display_error(f"Response failed in {duration:.1f}s")
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to summarize session result")
+            self._output_panel.display_error("Unable to summarize the session outcome. See logs for details.")
+
+    def handle_all_complete(self) -> None:
+        """Mark orchestration as complete."""
+        try:
+            self._set_completed_state()
+            self._output_panel.display_output("")  # Spacer
+            self._output_panel.display_success("Conversation finished")
+            self.request_input_enabled.emit(True)
+            self.request_input_focus.emit()
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to finalize conversation")
+            self._output_panel.display_error("Conversation finished with issues. See logs for details.")
+
+    def handle_error(self, error: str) -> None:
+        """Surface orchestration errors."""
+        try:
+            self._last_error_message = error
+            self._set_error_state()
+            user_message = self._format_user_error(error)
+            self._output_panel.display_error(user_message)
+            self.request_input_enabled.emit(True)
+            self.request_input_focus.emit()
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to handle orchestration error")
+            self._output_panel.display_error("An unexpected error occurred. See aura.log for details.")
+            self.request_input_enabled.emit(True)
+            self.request_input_focus.emit()
+
+    def handle_background_event(self, event: Event) -> None:
+        """Process events forwarded from the background event bus."""
+        try:
+            if not isinstance(event, Event):
+                return
+
+            if event.type is EventType.SESSION_OUTPUT:
+                text = str(event.data.get("text", ""))
+                if not text:
+                    return
+
+                # Strip STREAM prefix if present (for streaming output)
+                if text.startswith(config.STREAM_PREFIX):
+                    chunk = text[len(config.STREAM_PREFIX):]
+                    self._output_panel.display_stream_chunk(chunk, config.COLORS.agent_output)
+                    return
+
+                stripped_text = text.strip()
+                if not stripped_text:
+                    return
+
+                if stripped_text.startswith("TOOL_CALL::"):
+                    try:
+                        _, tool_name, args_summary = stripped_text.split("::", 2)
+                        self._output_panel.display_tool_call(tool_name, args_summary)
+                    except ValueError:
+                        self._output_panel.display_output(stripped_text)  # Fallback
+                else:
+                    self._output_panel.display_output(stripped_text)
+
+            elif event.type is EventType.ERROR:
+                error = str(event.data.get("error", "")).strip()
+                if not error:
+                    return
+                if error == self._last_error_message:
+                    self._last_error_message = None
+                    return
+                self._output_panel.display_error(self._format_user_error(error))
                 self._last_error_message = None
-                return
-            self._output_panel.display_error(error)
-            self._last_error_message = None
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to handle background event")
+            self._output_panel.display_error("Background event processing failed. See aura.log for details.")
+
+    def _format_user_error(self, error: str) -> str:
+        """Return a user-friendly error message with actionable guidance."""
+        if not error:
+            return "Something went wrong. Check aura.log for details."
+        lowered = error.lower()
+        if "gemini" in lowered or "api key" in lowered:
+            return f"{error} Please verify that GEMINI_API_KEY is set."
+        if "workspace" in lowered or "working directory" in lowered:
+            return f"{error} Choose a valid working directory and retry."
+        return error
 
     def _set_ready_state(self) -> None:
         """Set the ready state through the status manager."""

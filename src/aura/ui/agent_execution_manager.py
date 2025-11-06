@@ -6,7 +6,10 @@ import logging
 import os
 from typing import TYPE_CHECKING, Optional
 
+from pathlib import Path
+
 from aura import config
+from aura.exceptions import AuraConfigurationError, AuraValidationError
 from aura.state import AppState
 from aura.ui.output_panel import OutputPanel
 from aura.ui.status_bar_manager import StatusBarManager
@@ -33,26 +36,38 @@ class AgentExecutionManager:
         self._status_manager = status_manager
         self._orchestrator = orchestrator
 
-    def validate_environment(self) -> bool:
+    def validate_environment(self) -> None:
         """Ensure prerequisites are met before starting the agent."""
-        if not os.path.isdir(self._app_state.working_directory):
-            self._output_panel.display_output("Working directory does not exist.", "#FF6B6B")
-            self._status_manager.update_status("Error", "#FF6B6B", persist=True)
-            return False
+        working_dir = self._app_state.working_directory
+        if not working_dir or not os.path.isdir(working_dir):
+            raise AuraConfigurationError(
+                "Workspace is unavailable. Please choose a valid working directory.",
+                context={"issue": "working_directory_missing", "path": working_dir},
+            )
 
-        if not self._app_state.agent_path:
+        agent_path = self._app_state.agent_path
+        if not agent_path:
             agent_display = config.AGENT_DISPLAY_NAMES.get(
                 self._app_state.selected_agent,
                 self._app_state.selected_agent,
             )
-            self._output_panel.display_output(
-                f"{agent_display} not found. Use 'Agent Settings...' to configure.",
-                "#FF6B6B",
+            raise AuraConfigurationError(
+                f"{agent_display} is not configured. Open Agent Settings to select an agent.",
+                context={"issue": "agent_missing", "agent": agent_display},
             )
-            self._status_manager.update_status("Error", "#FF6B6B", persist=True)
-            return False
 
-        return True
+        executable = Path(agent_path)
+        if not executable.exists():
+            raise AuraConfigurationError(
+                "The configured agent executable was not found. Please update Agent Settings.",
+                context={"issue": "agent_missing", "path": agent_path},
+            )
+
+        if not os.access(executable, os.X_OK):
+            raise AuraConfigurationError(
+                "Aura cannot run the configured agent. Ensure the executable has run permissions.",
+                context={"issue": "agent_not_executable", "path": agent_path},
+            )
 
     def detect_default_agent(self) -> None:
         """Identify an available agent and update state accordingly."""
@@ -79,13 +94,28 @@ class AgentExecutionManager:
 
     def set_working_directory(self, path: str) -> None:
         """Update the working directory in AppState."""
-        self._app_state.set_working_directory(path)
-        LOGGER.info("Working directory changed: %s", path)
-        self._output_panel.display_output(f"Working directory set to {path}", config.COLORS.accent)
+        try:
+            self._app_state.set_working_directory(path)
+        except (ValueError, FileNotFoundError) as exc:
+            raise AuraConfigurationError(
+                "Please select a valid working directory that exists on disk.",
+                context={"issue": "working_directory_invalid", "path": path},
+            ) from exc
+        LOGGER.info("Working directory changed: %s", self._app_state.working_directory)
+        self._output_panel.display_output(
+            f"Working directory set to {self._app_state.working_directory}",
+            config.COLORS.accent,
+        )
 
     def compose_prompt(self, prompt: str) -> str:
         """Combine workspace context with the user's prompt."""
-        return f"{self.describe_workspace()}\n\nTask: {prompt}"
+        normalized = (prompt or "").strip()
+        if not normalized:
+            raise AuraValidationError(
+                "Please enter a request before running the agent.",
+                context={"issue": "empty_prompt"},
+            )
+        return f"{self.describe_workspace()}\n\nTask: {normalized}"
 
     def describe_workspace(self) -> str:
         """Return a concise description of the workspace."""

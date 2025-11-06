@@ -8,6 +8,7 @@ directly to the UI.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import List, Tuple
 from PySide6.QtCore import QObject, QThread, Signal
 
 from aura import config
+from aura.exceptions import AuraConfigurationError, AuraExecutionError
 from aura.services.chat_service import ChatService
 
 LOGGER = logging.getLogger(__name__)
@@ -112,11 +114,14 @@ class Orchestrator(QObject):
     ) -> None:
         super().__init__(parent)
         if not chat_service:
-            raise ValueError("Chat service is required.")
+            raise AuraConfigurationError("Chat service is required for orchestration.")
 
         resolved = Path(working_dir).resolve()
         if not resolved.is_dir():
-            raise FileNotFoundError(f"Working directory does not exist: {resolved}")
+            raise AuraConfigurationError(
+                "Working directory does not exist.",
+                context={"path": str(resolved)},
+            )
 
         self._chat_service = chat_service
         self._working_dir = resolved
@@ -131,6 +136,13 @@ class Orchestrator(QObject):
     # ------------------------------------------------------------------
     def execute_goal(self, goal: str) -> None:
         """Execute a single conversational turn for the provided goal."""
+        try:
+            self._validate_environment()
+        except AuraConfigurationError as exc:
+            LOGGER.error("Cannot execute goal: %s", exc)
+            self.error_occurred.emit(str(exc))
+            return
+
         sanitized = (goal or "").strip()
         if not sanitized:
             self.error_occurred.emit("Goal must be provided.")
@@ -141,6 +153,11 @@ class Orchestrator(QObject):
             return
 
         session = ConversationSession(name="Conversation", prompt=sanitized)
+        LOGGER.info(
+            "Conversation started | goal_preview=%s | working_dir=%s",
+            sanitized[:80],
+            self._working_dir,
+        )
         self.planning_started.emit()
         self.progress_update.emit("Starting conversation...")
         self.session_started.emit(0, session)
@@ -159,7 +176,10 @@ class Orchestrator(QObject):
         """Update the working directory used when building prompts."""
         resolved = Path(path).resolve()
         if not resolved.is_dir():
-            raise FileNotFoundError(f"Working directory does not exist: {resolved}")
+            raise AuraConfigurationError(
+                "Working directory does not exist.",
+                context={"path": str(resolved)},
+            )
         self._working_dir = resolved
 
     def reset_history(self) -> None:
@@ -222,8 +242,12 @@ class Orchestrator(QObject):
             )
             self._finalize_conversation(session, outcome)
         except Exception as exc:  # noqa: BLE001
+            error = AuraExecutionError(
+                "Unable to contact Gemini. Verify GEMINI_API_KEY and your connection, then try again.",
+                context={"detail": str(exc)},
+            )
             LOGGER.exception("Conversation execution failed")
-            self.error_occurred.emit(str(exc))
+            self.error_occurred.emit(str(error))
 
     def _finalize_conversation(
         self,
@@ -251,13 +275,22 @@ class Orchestrator(QObject):
         self.all_sessions_complete.emit()
         status_message = "Conversation complete" if outcome.success else "Conversation failed"
         self.progress_update.emit(status_message)
+        LOGGER.info(
+            "Conversation finished | success=%s | duration=%.2fs",
+            outcome.success,
+            outcome.duration_seconds,
+        )
 
         if self._thread and self._thread.isRunning():
             self._thread.quit()
 
     def _handle_worker_error(self, message: str) -> None:
         """Handle errors raised by the background worker."""
-        self.error_occurred.emit(message)
+        LOGGER.error("Conversation worker failed: %s", message)
+        self.error_occurred.emit(
+            message
+            or "Unable to contact Gemini. Verify GEMINI_API_KEY and your connection, then try again."
+        )
         self.all_sessions_complete.emit()
         self.progress_update.emit("Conversation failed")
         if self._thread and self._thread.isRunning():
@@ -283,3 +316,23 @@ class Orchestrator(QObject):
             lines.append(f"{prefix}: {text}")
         lines.append(f"User: {goal}")
         return "\n\n".join(lines)
+
+    def _validate_environment(self) -> None:
+        """Ensure the working directory remains valid."""
+        if not self._working_dir.is_dir():
+            raise AuraConfigurationError(
+                "Workspace no longer exists. Select a valid working directory to continue.",
+                context={"issue": "working_directory_missing", "path": str(self._working_dir)},
+            )
+        if self._agent_path:
+            agent = Path(self._agent_path)
+            if not agent.exists():
+                raise AuraConfigurationError(
+                    "Configured agent executable cannot be found. Please update your agent settings.",
+                    context={"issue": "agent_missing", "path": str(agent)},
+                )
+            if not os.access(agent, os.X_OK):
+                raise AuraConfigurationError(
+                    "Configured agent is not executable. Please reconfigure the agent path.",
+                    context={"issue": "agent_not_executable", "path": str(agent)},
+                )

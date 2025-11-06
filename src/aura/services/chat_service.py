@@ -6,7 +6,9 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional, Set
+import time
 
 from google import genai
 from google.genai import types
@@ -36,20 +38,57 @@ LOGGER = logging.getLogger(__name__)
 def execute_cli_agent(prompt: str, working_directory: Optional[str] = None) -> dict[str, object]:
     """Synchronously execute the Gemini CLI agent and return structured results."""
     cwd = working_directory or os.getcwd()
+    resolved_cwd = Path(cwd).resolve()
+    if not resolved_cwd.exists():
+        message = (
+            "Cannot execute CLI agent because the workspace no longer exists. "
+            "Select a new working directory and retry."
+        )
+        LOGGER.error("CLI agent execution aborted: workspace missing | cwd=%s", resolved_cwd)
+        return {"success": False, "output": message, "exit_code": 1}
+
     prompt_text = "" if prompt is None else str(prompt)
     command = ["gemini", "-p", prompt_text, "--yolo"]
+    LOGGER.info(
+        "execute_cli_agent start | cwd=%s | prompt_chars=%d",
+        resolved_cwd,
+        len(prompt_text),
+    )
 
     try:
-        runner = AgentRunner(command=command, working_directory=cwd, parent=None)
+        runner = AgentRunner(command=command, working_directory=str(resolved_cwd), parent=None)
         exit_code, output = run_agent_command_sync(runner)
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("Failed to execute CLI agent")
         return {
             "success": False,
-            "output": f"Failed to execute CLI agent: {exc}",
+            "output": (
+                "Unable to execute the Gemini CLI agent. "
+                "Verify your CLI installation and try again."
+            ),
             "exit_code": 1,
         }
 
+    if exit_code != 0:
+        LOGGER.error(
+            "CLI agent finished with errors | exit_code=%s | cwd=%s",
+            exit_code,
+            resolved_cwd,
+        )
+        return {
+            "success": False,
+            "output": (
+                "The Gemini CLI agent reported an error. "
+                "Review the output above and retry once the issue is resolved."
+            ),
+            "exit_code": 1,
+        }
+
+    LOGGER.info(
+        "execute_cli_agent complete | cwd=%s | exit_code=%s",
+        resolved_cwd,
+        exit_code,
+    )
     return {
         "success": exit_code == 0,
         "output": output,
@@ -210,6 +249,14 @@ class ChatService:
         on_chunk: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Send a message and stream the response with automatic tool usage."""
+        started = time.perf_counter()
+        prompt_length = len(user_message or "")
+        LOGGER.info(
+            "Gemini request started | model=%s | prompt_chars=%d | streaming=%s",
+            self.model_name,
+            prompt_length,
+            bool(on_chunk),
+        )
         try:
             # Create config with Python functions as tools
             request_config = types.GenerateContentConfig(
@@ -240,7 +287,6 @@ class ChatService:
             # - Executes the functions
             # - Sends results back to model
             # - Repeats until model returns text
-            LOGGER.info("Sending message to Gemini with 17 tools available")
             stream = self._client.models.generate_content_stream(
                 model=self.model_name,
                 contents=user_message,
@@ -260,7 +306,12 @@ class ChatService:
                 if final_text and on_chunk:
                     on_chunk(f"{config.STREAM_PREFIX}{final_text}")
                     on_chunk(f"{config.STREAM_PREFIX}\n")
-                LOGGER.info("✅ Received response from Gemini")
+                duration = time.perf_counter() - started
+                LOGGER.info(
+                    "Gemini request completed (fallback) | duration=%.2fs | streamed=%s",
+                    duration,
+                    bool(final_text),
+                )
                 return final_text
 
             aggregated_text = ""
@@ -286,13 +337,22 @@ class ChatService:
             if streamed_any and on_chunk:
                 on_chunk(f"{config.STREAM_PREFIX}\n")
 
-            LOGGER.info("✅ Received response from Gemini")
-
+            duration = time.perf_counter() - started
+            LOGGER.info(
+                "Gemini request completed | duration=%.2fs | streamed=%s",
+                duration,
+                streamed_any,
+            )
             return final_text
 
-        except Exception as e:
-            LOGGER.exception("Failed to generate content with automatic function calling")
-            return f"Error: {str(e)}"
+        except Exception as exc:  # noqa: BLE001
+            duration = time.perf_counter() - started
+            LOGGER.exception(
+                "Gemini request failed | duration=%.2fs | prompt_preview=%s",
+                duration,
+                (user_message or "")[:80],
+            )
+            return "Error: Unable to reach Gemini. Please verify GEMINI_API_KEY and network connectivity."
 
     @staticmethod
     def _extract_stream_addition(
@@ -334,6 +394,11 @@ class ChatService:
             if signature in seen_calls:
                 continue
             seen_calls.add(signature)
+            LOGGER.debug(
+                "Gemini tool call | name=%s | args=%s",
+                name,
+                args_summary,
+            )
             if on_chunk:
                 on_chunk(f"TOOL_CALL::{name}::{args_summary}")
             emitted = True
