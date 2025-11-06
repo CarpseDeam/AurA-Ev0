@@ -4,6 +4,7 @@ This package organizes tool functions by category:
 - file_system_tools: File reading, listing, and searching
 - git_tools: Version control operations
 - python_tools: Testing, linting, formatting, and code analysis
+- symbol_tools: Code structure analysis using AST parsing
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from .python_tools import (
     lint_code,
     run_tests,
 )
+from .symbol_tools import find_definition, find_usages, get_imports
 
 __all__ = [
     # File system tools
@@ -42,4 +44,8 @@ __all__ = [
     "install_package",
     "format_code",
     "get_function_definitions",
+    # Symbol tools
+    "find_definition",
+    "find_usages",
+    "get_imports",
 ]

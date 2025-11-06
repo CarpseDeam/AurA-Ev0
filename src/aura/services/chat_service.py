@@ -26,6 +26,8 @@ from src.aura.tools.python_tools import (
     lint_code,
     run_tests,
 )
+# Symbol resolution tools for understanding code structure
+from src.aura.tools.symbol_tools import find_definition, find_usages, get_imports
 
 LOGGER = logging.getLogger(__name__)
 
@@ -151,16 +153,27 @@ REQUIRED WORKFLOW - Follow this EXACT order every single time:
    - If you skip this step, you are FAILING
 
 2. UNDERSTANDING PHASE (MANDATORY - Do this SECOND):
-   - ALWAYS call get_function_definitions() for ANY file you will modify or call
-   - ALWAYS call read_project_file() to see implementation details
-   - NEVER guess at function signatures - ALWAYS verify with tools
-   - If you guess instead of checking, you are FAILING
+   - ALWAYS call find_definition() for ANY class or function you will use or extend
+   - ALWAYS call get_imports() on files you will modify to see what's available
+   - ALWAYS call find_usages() before modifying existing functions to understand impact
+   - NEVER guess at class fields or function signatures - ALWAYS verify with find_definition()
+   - If you skip this step, you WILL create bugs (wrong parameters, missing fields, bad imports)
 
-3. PLANNING PHASE (Do this THIRD):
+3. SYMBOL VERIFICATION (CRITICAL):
+   - Before calling User(), call find_definition("User") to see its __init__ signature
+   - Before importing from app.extensions, call get_imports("app/extensions.py") to verify it exists
+   - Before changing a function, call find_usages() to see who depends on it
+
+   Example of GOOD workflow:
+   1. find_definition("User") → sees it has username, email, password_hash fields
+   2. Now create auth route that uses those EXACT fields
+   3. Result: No field mismatch bugs!
+
+4. PLANNING PHASE (Do this FOURTH):
    - Based on what you discovered with tools, plan your sessions
    - Reference actual files and functions you found
    
-4. EXECUTION PHASE (Do this LAST):
+5. EXECUTION PHASE (Do this LAST):
    - Call execute_python_session() to generate code
    - Use the exact function signatures you discovered in step 2
 
@@ -208,6 +221,9 @@ Available tools:
 - search_in_files: Search for patterns
 - read_multiple_files: Read multiple files efficiently
 - get_function_definitions: Extract function signatures from files
+- find_definition: Find where symbols (classes/functions) are defined
+- find_usages: Find all places a symbol is referenced
+- get_imports: Extract imports from a Python file
 - run_tests: Execute test suite
 - lint_code: Check code quality
 - format_code: Auto-format code
@@ -277,6 +293,9 @@ class ChatService:
                     git_commit,
                     git_push,
                     git_diff,
+                    find_definition,
+                    find_usages,
+                    get_imports,
                     clear_session_context,
                     execute_python_session,
                 ],
@@ -288,7 +307,7 @@ class ChatService:
             # - Executes the functions
             # - Sends results back to model
             # - Repeats until model returns text
-            LOGGER.info("🤖 Sending message to Gemini with 15 tools available")
+            LOGGER.info("🤖 Sending message to Gemini with 18 tools available")
             response = self._client.models.generate_content(
                 model=self.model_name,
                 contents=user_message,
