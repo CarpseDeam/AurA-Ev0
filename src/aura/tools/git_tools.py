@@ -18,6 +18,7 @@ def get_git_status() -> str:
     Returns:
         Git status output or "clean" if no changes, or error message
     """
+    LOGGER.info("🔧 TOOL CALLED: get_git_status")
     result = subprocess.run(
         ["git", "status", "--short"],
         cwd=os.getcwd(),
@@ -41,6 +42,7 @@ def git_commit(message: str) -> str:
     Returns:
         Success message or error message
     """
+    LOGGER.info("🔧 TOOL CALLED: git_commit(%s)", message)
     if not message or not message.strip():
         return "Error: commit message cannot be empty"
 
@@ -87,6 +89,7 @@ def git_push(remote: str = "origin", branch: str = "main") -> str:
     Returns:
         Success message or error message
     """
+    LOGGER.info("🔧 TOOL CALLED: git_push(%s/%s)", remote, branch)
     result = subprocess.run(
         ["git", "push", remote, branch],
         cwd=os.getcwd(),
@@ -114,6 +117,7 @@ def git_diff(file_path: str = "", staged: bool = False) -> str:
     Returns:
         String containing the diff output, or empty string if no changes
     """
+    LOGGER.info("🔧 TOOL CALLED: git_diff(%s)", file_path)
     try:
         cmd = ["git", "diff"]
         if staged:

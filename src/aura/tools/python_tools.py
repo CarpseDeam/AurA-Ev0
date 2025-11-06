@@ -24,6 +24,7 @@ def run_tests(test_path: str = "tests/", verbose: bool = False) -> dict[str, obj
     Returns:
         Dictionary with keys: passed, failed, duration, output
     """
+    LOGGER.info("🔧 TOOL CALLED: run_tests(%s)", test_path)
     try:
         cmd = ["pytest", test_path]
         if verbose:
@@ -101,6 +102,7 @@ def lint_code(file_paths: list[str] | None = None, directory: str = ".") -> dict
     Returns:
         Dictionary with keys: errors (list), warnings (list), score (float), output (str)
     """
+    LOGGER.info("🔧 TOOL CALLED: lint_code(%s)", file_paths or directory)
     try:
         cmd = ["pylint"]
 
@@ -206,6 +208,7 @@ def install_package(package: str, version: str = "") -> str:
     Returns:
         Success or error message as a string
     """
+    LOGGER.info("🔧 TOOL CALLED: install_package(%s)", package)
     if not package or not package.strip():
         return "Error: package name cannot be empty"
 
@@ -252,6 +255,7 @@ def format_code(
     Returns:
         Dictionary with keys: formatted (count), errors (list), message (summary)
     """
+    LOGGER.info("🔧 TOOL CALLED: format_code(%s)", file_paths or directory)
     try:
         cmd = ["black"]
 
@@ -320,6 +324,7 @@ def get_function_definitions(file_path: str) -> list[dict[str, object]]:
         List of dictionaries with keys: name, params, line, docstring
         Example: [{"name": "generate_password", "params": ["length", "use_numbers"], "line": 5}]
     """
+    LOGGER.info("🔧 TOOL CALLED: get_function_definitions(%s)", file_path)
     try:
         target = Path(file_path)
         if not target.is_absolute():

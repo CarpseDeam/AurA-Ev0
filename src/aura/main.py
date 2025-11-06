@@ -17,6 +17,20 @@ from aura.state import AppState
 from aura.ui.main_window import MainWindow
 
 
+# Suppress SDK spam
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+for sdk_logger in [
+    "google.genai",
+    "google_genai",
+    "google.generativeai",
+    "google.ai.generativelanguage",
+]:
+    logging.getLogger(sdk_logger).setLevel(logging.WARNING)
+
+
 class ApplicationController:
     """Coordinates application components and wires them together.
 
@@ -166,10 +180,6 @@ def run() -> int:
 
 def main() -> None:
     """Launch the Aura application."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    )
     try:
         exit_code = run()
     except Exception:  # noqa: BLE001

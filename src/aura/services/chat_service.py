@@ -69,7 +69,7 @@ def get_session_context_manager() -> SessionContextManager:
 
 def execute_python_session(session_prompt: str, working_directory: str) -> dict[str, object]:
     """Execute a Python coding session using PythonCoderAgent."""
-    LOGGER.warning("🔧 TOOL CALLED: execute_python_session")
+    LOGGER.info("🔧 TOOL CALLED: execute_python_session(%s)", session_prompt)
 
     context_manager = get_session_context_manager()
 
@@ -130,7 +130,7 @@ def execute_python_session(session_prompt: str, working_directory: str) -> dict[
 
 def clear_session_context() -> dict[str, str]:
     """Clear all session context to start fresh."""
-    LOGGER.warning("🔧 TOOL CALLED: clear_session_context")
+    LOGGER.info("🔧 TOOL CALLED: clear_session_context")
     context_manager = get_session_context_manager()
     context_manager.clear()
     return {"status": "Session context cleared successfully"}
@@ -288,11 +288,13 @@ class ChatService:
             # - Executes the functions
             # - Sends results back to model
             # - Repeats until model returns text
+            LOGGER.info("🤖 Sending message to Gemini with 15 tools available")
             response = self._client.models.generate_content(
                 model=self.model_name,
                 contents=user_message,
                 config=config,
             )
+            LOGGER.info("✅ Received response from Gemini")
 
             return response.text
 

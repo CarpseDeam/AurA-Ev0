@@ -20,6 +20,7 @@ def read_project_file(path: str) -> str:
     Returns:
         File contents as string, or error message
     """
+    LOGGER.info("🔧 TOOL CALLED: read_project_file(%s)", path)
     try:
         target = Path(path)
         if not target.is_absolute():
@@ -42,6 +43,7 @@ def list_project_files(directory: str = ".", extension: str = ".py") -> list[str
     Returns:
         Sorted list of relative file paths
     """
+    LOGGER.info("🔧 TOOL CALLED: list_project_files(%s)", directory)
     try:
         base = Path(directory)
         if not base.is_absolute():
@@ -79,6 +81,7 @@ def search_in_files(
         Dictionary with "matches" key containing list of matches.
         Each match has: file, line_number, content
     """
+    LOGGER.info("🔧 TOOL CALLED: search_in_files(%s)", pattern)
     try:
         base = Path(directory)
         if not base.is_absolute():
@@ -133,6 +136,7 @@ def read_multiple_files(file_paths: list[str]) -> dict[str, str]:
         Dictionary mapping file paths to their contents
         Example: {"file1.py": "content...", "file2.py": "content..."}
     """
+    LOGGER.info("🔧 TOOL CALLED: read_multiple_files(%s)", file_paths)
     if not file_paths:
         return {}
 
