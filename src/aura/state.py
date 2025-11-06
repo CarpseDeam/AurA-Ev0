@@ -11,8 +11,6 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from aura.services.planning_service import SessionPlan
-
 
 class AppState(QObject):
     """Centralized application state with signal-based notifications.
@@ -26,7 +24,6 @@ class AppState(QObject):
     selected_agent_changed = Signal(str)
     agent_path_changed = Signal(str)
     status_changed = Signal(str, str)  # message, color
-    current_plan_changed = Signal(object)  # SessionPlan or None
 
     def __init__(self, parent: QObject | None = None) -> None:
         """Initialize application state with default values."""
@@ -36,7 +33,6 @@ class AppState(QObject):
         self._agent_path: str = ""
         self._status_message: str = "Ready"
         self._status_color: str = "#ffffff"
-        self._current_plan: Optional[SessionPlan] = None
 
     @property
     def working_directory(self) -> str:
@@ -114,18 +110,3 @@ class AppState(QObject):
             self._status_message = message
             self._status_color = color
             self.status_changed.emit(message, color)
-
-    @property
-    def current_plan(self) -> Optional[SessionPlan]:
-        """Get the current session plan."""
-        return self._current_plan
-
-    def set_current_plan(self, plan: Optional[SessionPlan]) -> None:
-        """Set the current plan and emit change signal.
-
-        Args:
-            plan: SessionPlan instance or None to clear
-        """
-        if self._current_plan != plan:
-            self._current_plan = plan
-            self.current_plan_changed.emit(plan)

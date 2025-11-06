@@ -7,7 +7,6 @@ import os
 from typing import TYPE_CHECKING, Optional
 
 from aura import config
-from aura.services.chat_service import get_session_context_manager
 from aura.state import AppState
 from aura.ui.output_panel import OutputPanel
 from aura.ui.status_bar_manager import StatusBarManager
@@ -79,10 +78,9 @@ class AgentExecutionManager:
         )
 
     def set_working_directory(self, path: str) -> None:
-        """Update the working directory in AppState and clear session context."""
+        """Update the working directory in AppState."""
         self._app_state.set_working_directory(path)
-        get_session_context_manager().clear()
-        LOGGER.info("Cleared session context due to working directory change: %s", path)
+        LOGGER.info("Working directory changed: %s", path)
         self._output_panel.display_output(f"Working directory set to {path}", config.COLORS.accent)
 
     def compose_prompt(self, prompt: str) -> str:

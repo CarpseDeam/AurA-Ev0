@@ -150,10 +150,6 @@ class MainWindow(QMainWindow):
             self.orchestration_handler.handle_planning_started,
             Qt.ConnectionType.UniqueConnection
         )
-        self.orchestrator.plan_ready.connect(
-            self.orchestration_handler.handle_plan_ready,
-            Qt.ConnectionType.UniqueConnection
-        )
         self.orchestrator.session_started.connect(
             self.orchestration_handler.handle_session_started,
             Qt.ConnectionType.UniqueConnection
@@ -186,10 +182,6 @@ class MainWindow(QMainWindow):
         self._set_input_enabled(False)
         if not self.orchestrator:
             self.execute_command(prompt); return
-        normalized = prompt.lower()
-        approval_keywords = {"start", "yes", "go", "build it", "lets do it", "let's do it"}
-        if self.app_state.current_plan and normalized in approval_keywords:
-            return
         if self._should_orchestrate(prompt):
             import threading
             LOGGER.info("EXECUTION_REQUESTED: Emitting execution_requested signal (thread: %s, goal: %s)",

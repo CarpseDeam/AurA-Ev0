@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import List, Optional
+from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
 from aura import config
 from aura.events import Event, EventType
 from aura.orchestrator import SessionResult
-from aura.services.planning_service import Session, SessionPlan
 from aura.state import AppState
 from aura.ui.output_panel import OutputPanel
 from aura.ui.status_bar_manager import StatusBarManager
@@ -55,33 +54,18 @@ class OrchestrationHandler(QObject):
 
     def handle_planning_started(self) -> None:
         """Reset state and display planning message."""
-        self._app_state.set_current_plan(None)
         self._set_running_state()
         self.request_input_enabled.emit(False)
         self._output_panel.display_thinking("Analyzing request...")
 
-    def handle_plan_ready(self, plan: SessionPlan) -> None:
-        """Render the plan details and re-enable input."""
-        # Use duck typing instead of isinstance check since Qt signals may not preserve exact type
-        if plan is not None and hasattr(plan, 'sessions') and hasattr(plan, 'total_estimated_minutes'):
-            self._app_state.set_current_plan(plan)
-            self._display_plan(plan)
-        else:
-            self._app_state.set_current_plan(None)
-            self._output_panel.display_error("Received invalid plan data.")
-
-        self.request_input_enabled.emit(True)
-        self.request_input_focus.emit()
-
-    def handle_session_started(self, index: int, session: Session) -> None:
+    def handle_session_started(self, index: int, session) -> None:
         """Display headers for a new session."""
         self._set_running_state()
-        total = len(self._app_state.current_plan.sessions) if self._app_state.current_plan else 1
         name = getattr(session, "name", "Conversation")
 
         self._output_panel.display_output("")  # Spacer
         self._output_panel.display_output(
-            f"▶ Session {index + 1}/{total}: {name}",
+            f"▶ {name}",
             config.COLORS.accent,
         )
 
@@ -141,7 +125,6 @@ class OrchestrationHandler(QObject):
 
     def handle_all_complete(self) -> None:
         """Mark orchestration as complete."""
-        self._app_state.set_current_plan(None)
         self._set_completed_state()
         self._output_panel.display_output("")  # Spacer
         self._output_panel.display_success("Conversation finished")
@@ -155,7 +138,6 @@ class OrchestrationHandler(QObject):
         self._output_panel.display_error(error)
         self.request_input_enabled.emit(True)
         self.request_input_focus.emit()
-        self._app_state.set_current_plan(None)
 
     def handle_background_event(self, event: Event) -> None:
         """Process events forwarded from the background event bus."""
@@ -195,44 +177,6 @@ class OrchestrationHandler(QObject):
                 return
             self._output_panel.display_error(error)
             self._last_error_message = None
-
-    def format_plan(self, plan: SessionPlan) -> List[str]:
-        """Return a formatted plan summary for logging or testing."""
-        lines: List[str] = [
-            "Session Plan",
-            f"Total estimate: {plan.total_estimated_minutes} minutes",
-        ]
-        for idx, session in enumerate(plan.sessions, start=1):
-            deps = ", ".join(session.dependencies) if session.dependencies else "None"
-            lines.append(f"{idx}. {session.name} ({session.estimated_minutes} min)")
-            lines.append(f"   Dependencies: {deps}")
-        if plan.reasoning:
-            lines.append(f"Reasoning: {plan.reasoning}")
-        return lines
-
-    def _display_plan(self, plan: SessionPlan) -> None:
-        """Display the structured plan in the output panel."""
-        self._output_panel.display_output("")  # Spacer
-        self._output_panel.display_output(
-            "┌ Session Plan",
-            config.COLORS.accent,
-        )
-
-        if plan.reasoning:
-            self._output_panel.display_output(
-                f"├─ Reasoning: {plan.reasoning}", config.COLORS.agent_output
-            )
-
-        self._output_panel.display_output(
-            f"├─ Sessions: {len(plan.sessions)}", config.COLORS.agent_output
-        )
-        self._output_panel.display_output(
-            f"└─ Estimated time: ~{plan.total_estimated_minutes} minutes",
-            config.COLORS.agent_output,
-        )
-
-        self._output_panel.display_output("")  # Spacer
-        self._output_panel.display_success("Type 'start' when ready to begin building.")
 
     def _set_ready_state(self) -> None:
         """Set the ready state through the status manager."""

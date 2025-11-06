@@ -56,10 +56,6 @@ AGENT_DISPLAY_NAMES: dict[str, str] = {
     "codex": "Codex",
 }
 
-# PythonCoderAgent Configuration
-# Set to True to use the native PythonCoderAgent (recommended for better performance)
-# Set to False to use the CLI wrapper (fallback for compatibility)
-USE_NATIVE_PYTHON_AGENT: bool = True
 AUTO_COMMIT_SESSIONS: bool = False
 AUTO_PUSH_ON_COMPLETE: bool = False
 
@@ -76,7 +72,6 @@ __all__ = [
     "STREAM_PREFIX",
     "AGENT_SEARCH_PATHS",
     "AGENT_DISPLAY_NAMES",
-    "USE_NATIVE_PYTHON_AGENT",
     "AUTO_COMMIT_SESSIONS",
     "AUTO_PUSH_ON_COMPLETE",
 ]
