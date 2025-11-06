@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QEventLoop, QObject, Signal
 
-from src.aura.agents import PythonCoderAgent, SessionContext
+from src.aura.agents import AgentResult, PythonCoderAgent, SessionContext
 from src.aura.services import AgentRunner
 from src.aura.utils import scan_directory
 
@@ -121,6 +121,7 @@ class NativeAgentExecutor(SessionExecutor):
 
         Raises:
             KeyError: If required context parameters are missing
+            RuntimeError: If mandatory context gathering validation fails
         """
         working_dir = context["working_dir"]
         context_notes = context.get("context_notes", [])
@@ -150,6 +151,9 @@ class NativeAgentExecutor(SessionExecutor):
 
         agent_result = agent.execute_session(session_context)
 
+        # MANDATORY: Validate that context gathering was performed if required
+        self._validate_context_gathering(session_context, agent_result)
+
         # Output is already emitted in real-time via progress_update signal connection
         # No need to emit output_lines again here to avoid duplicates
 
@@ -162,6 +166,37 @@ class NativeAgentExecutor(SessionExecutor):
             files_created=all_files,
             success=agent_result.success,
         )
+
+    def _validate_context_gathering(
+        self,
+        session_context: SessionContext,
+        agent_result: "AgentResult",
+    ) -> None:
+        """Validate that mandatory context gathering tools were called."""
+        # No validation needed for the first session (no previous work)
+        if not session_context.previous_work:
+            LOGGER.info("Validation skipped: No previous work for this session.")
+            return
+
+        tool_calls = agent_result.tool_calls or []
+        tool_names = [call.get("name") for call in tool_calls]
+
+        LOGGER.info(
+            "VALIDATION: previous_work_count=%d, tools_called=%s",
+            len(session_context.previous_work),
+            tool_names,
+        )
+
+        if "get_function_definitions" not in tool_names:
+            error_message = (
+                "CRITICAL: Mandatory context gathering was skipped. "
+                "The agent failed to call 'get_function_definitions' before generating code, "
+                "violating the Layered-CoT protocol. This can lead to fatal TypeError bugs."
+            )
+            LOGGER.error(error_message)
+            raise RuntimeError(error_message)
+
+        LOGGER.info("Validation passed: Mandatory context gathering was performed.")
 
 
 class CliAgentExecutor(SessionExecutor):
