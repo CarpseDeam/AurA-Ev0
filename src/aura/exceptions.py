@@ -19,7 +19,7 @@ class AuraError(Exception):
             self.context = {"detail": str(self.context)}
         else:
             self.context = dict(self.context)
-        super().__init__(self.__str__())
+        Exception.__init__(self, self.__str__())
 
     def __str__(self) -> str:
         """Include context metadata in the string representation."""
