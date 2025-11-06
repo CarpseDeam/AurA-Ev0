@@ -158,3 +158,4 @@ desktop.ini
 # (These patterns are also checked by file_filter.py)
 # Note: .venv, venv, __pycache__ already covered above
 /aura-workspace/
+/nul
