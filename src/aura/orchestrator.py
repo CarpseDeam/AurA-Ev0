@@ -305,9 +305,7 @@ class _ExecutionWorker(QObject):
             return (
                 f"{basic_context}\n\n"
                 f"AI Discovery Analysis:\n"
-                f"{combined_discovery}\n\n"
-                f"Tools Used: {len(tool_calls_made)}\n"
-                f"{chr(10).join(tool_calls_made) if tool_calls_made else '- None (DISCOVERY FAILED)'}"
+                f"{combined_discovery}"
             )
 
         except Exception as exc:  # noqa: BLE001
