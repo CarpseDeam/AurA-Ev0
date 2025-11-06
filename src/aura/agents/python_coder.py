@@ -221,7 +221,74 @@ def calculate_discount(price: float, user_tier: str) -> float:
         raise ValueError(f"Invalid tier: {user_tier}")
     return price * (1 - discount_rates[user_tier])
 
-7. THINKING AND REASONING
+7. CONTEXT PASSING BETWEEN SESSIONS (CRITICAL FOR MULTI-SESSION TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️ WARNING: Failure to read existing function signatures causes TypeError crashes!
+
+MANDATORY REQUIREMENTS:
+✓ If previous work context is provided (previous sessions created files), you MUST:
+  1. Use get_function_definitions tool to read EXACT function signatures
+  2. Read ALL files you will import from or call functions from
+  3. Match parameter names EXACTLY when calling existing functions
+  4. NEVER GUESS at parameter names or function signatures
+
+WHY THIS MATTERS:
+Previous sessions created working code. If you guess at how to call their functions,
+you will create parameter mismatch bugs like:
+  ❌ Session 1 creates: generate_password(use_uppercase, use_numbers, use_symbols)
+  ❌ Session 2 guesses: generate_password(include_uppercase, include_numbers, include_symbols)
+  ❌ Result: TypeError - code crashes in production
+
+THE MANDATORY WORKFLOW:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+IF you see "Previous work:" in your prompt:
+  STEP 1: Call get_function_definitions on EVERY file from previous sessions
+  STEP 2: Read the exact parameter names, types, and return values
+  STEP 3: Use those EXACT signatures when calling functions
+  STEP 4: Proceed with your implementation
+
+EXAMPLE - THE RIGHT WAY:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Scenario: Session 2 needs to call Session 1's function
+
+Previous work shows: generator.py created
+
+✅ STEP 1 - Call tool:
+get_function_definitions(file_path="generator.py")
+
+✅ STEP 2 - Read result:
+def generate_password(length: int = 12, use_uppercase: bool = True,
+                     use_numbers: bool = True, use_symbols: bool = True) -> str:
+    ...
+
+✅ STEP 3 - Call with EXACT parameters:
+password = generate_password(
+    length=16,
+    use_uppercase=True,
+    use_numbers=True,
+    use_symbols=False
+)
+
+❌ WRONG - Guessing at parameters:
+password = generate_password(
+    length=16,
+    include_uppercase=True,    # WRONG! Parameter is use_uppercase, not include_uppercase
+    include_numbers=True,      # WRONG! Parameter is use_numbers
+    include_symbols=False      # WRONG! Parameter is use_symbols
+)
+# Result: TypeError: got unexpected keyword argument 'include_uppercase'
+
+THIS IS NON-NEGOTIABLE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You CANNOT proceed with Session 2+ without first reading Session 1's function signatures.
+If you skip get_function_definitions when previous work exists, your code WILL crash.
+This is a HARD REQUIREMENT - not optional, not a suggestion.
+
+8. THINKING AND REASONING
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 For complex problems:
@@ -337,6 +404,8 @@ Before returning your response, verify:
 ✓ No emojis in code
 ✓ Consistent naming conventions
 ✓ Secure practices (validated inputs, hashed passwords)
+✓ IF previous work exists: get_function_definitions was called to read exact signatures
+✓ IF calling functions from previous sessions: parameter names match EXACTLY
 
 If any check fails, your code is UNACCEPTABLE.
 
@@ -424,7 +493,28 @@ Code that violates these principles WILL BE REJECTED.
     def _build_prompt(self, context: SessionContext) -> str:
         sections = [context.session_prompt.strip()]
         if context.previous_work:
-            sections.append("Previous work:\n" + "\n".join(context.previous_work))
+            # Extract file names from previous work context
+            files_created = []
+            for work_item in context.previous_work:
+                # Parse "Session N (name) created: file1.py, file2.py" format
+                if "created:" in work_item:
+                    files_part = work_item.split("created:", 1)[1].strip()
+                    files_created.extend(f.strip() for f in files_part.split(","))
+
+            previous_work_section = "Previous work:\n" + "\n".join(context.previous_work)
+
+            if files_created:
+                previous_work_section += (
+                    "\n\n⚠️ CRITICAL REQUIREMENT - READ THIS:\n"
+                    "Previous sessions created files that you may need to call or import.\n"
+                    "Files created: " + ", ".join(files_created) + "\n\n"
+                    "MANDATORY: Before writing code that imports from or calls functions in these files,\n"
+                    "you MUST use the get_function_definitions tool to read their EXACT signatures.\n"
+                    "DO NOT GUESS at parameter names. READ them first using get_function_definitions.\n"
+                    "Failure to do this will cause TypeError crashes due to parameter name mismatches.\n"
+                )
+
+            sections.append(previous_work_section)
         if context.project_files:
             sections.append("Relevant project files:\n" + "\n".join(context.project_files))
         sections.append(
