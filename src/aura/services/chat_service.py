@@ -423,8 +423,51 @@ class ChatService:
 
             first_part = response.candidates[0].content.parts[0]
 
+            # DEBUG: Comprehensive function call detection logging
+            LOGGER.warning("=" * 80)
+            LOGGER.warning("🔍 DEBUGGING FUNCTION CALL DETECTION")
+            LOGGER.warning("=" * 80)
+            LOGGER.warning(f"1. Type of first_part: {type(first_part)}")
+            LOGGER.warning(f"2. Has 'function_call' attribute: {hasattr(first_part, 'function_call')}")
+
+            if hasattr(first_part, "function_call"):
+                func_call = first_part.function_call
+                LOGGER.warning(f"3. Type of function_call: {type(func_call)}")
+                LOGGER.warning(f"4. Boolean value of function_call (truthy?): {bool(func_call)}")
+                LOGGER.warning(f"5. repr() of function_call: {repr(func_call)}")
+
+                try:
+                    name = func_call.name
+                    LOGGER.warning(f"6. function_call.name: {name}")
+                except Exception as e:
+                    LOGGER.warning(f"6. Error accessing function_call.name: {e}")
+
+                try:
+                    dir_output = dir(func_call)
+                    LOGGER.warning(f"7. dir() of function_call: {dir_output}")
+                except Exception as e:
+                    LOGGER.warning(f"7. Error getting dir() of function_call: {e}")
+            else:
+                LOGGER.warning("3-7. Skipped: No function_call attribute found")
+
+            LOGGER.warning("=" * 80)
+            LOGGER.warning("🔍 CHECKING CONDITION NOW")
+            LOGGER.warning("=" * 80)
+
             # Check for function call FIRST
-            if hasattr(first_part, "function_call") and first_part.function_call:
+            LOGGER.warning(f"BEFORE CONDITION: hasattr(first_part, 'function_call') = {hasattr(first_part, 'function_call')}")
+            if hasattr(first_part, "function_call"):
+                LOGGER.warning(f"BEFORE CONDITION: first_part.function_call = {first_part.function_call}")
+                LOGGER.warning(f"BEFORE CONDITION: bool(first_part.function_call) = {bool(first_part.function_call)}")
+                try:
+                    LOGGER.warning(f"BEFORE CONDITION: first_part.function_call.name = {first_part.function_call.name}")
+                except Exception as e:
+                    LOGGER.warning(f"BEFORE CONDITION: Error accessing .name: {e}")
+
+            # FIX: Check for function_call.name, not just truthy value of function_call
+            # Empty function_call objects evaluate to False but still prevent .text access
+            if hasattr(first_part, "function_call") and first_part.function_call.name:
+                LOGGER.warning("✅ CONDITION PASSED: Entering function call handling block")
                 function_call = first_part.function_call
                 function_name = function_call.name
                 function_args = dict(function_call.args)
@@ -452,6 +495,12 @@ class ChatService:
 
                 # Continue loop
                 continue
+            else:
+                LOGGER.warning("❌ CONDITION FAILED: Function call NOT detected or condition not met")
+                if hasattr(first_part, "function_call"):
+                    LOGGER.warning(f"   - function_call exists but evaluated to False: {first_part.function_call}")
+                else:
+                    LOGGER.warning("   - function_call attribute does not exist")
 
             # No function call - try to get text
             try:
