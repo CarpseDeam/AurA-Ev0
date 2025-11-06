@@ -187,31 +187,25 @@ class NativeAgentExecutor(SessionExecutor):
         session_context: SessionContext,
         agent_result: "AgentResult",
     ) -> None:
-        """Validate that mandatory context gathering tools were called."""
+        """Validate that function signatures were auto-injected into the context."""
         # No validation needed for the first session (no previous work)
         if not session_context.previous_work:
             LOGGER.info("Validation skipped: No previous work for this session.")
             return
 
-        tool_calls = agent_result.tool_calls or []
-        tool_names = [call.get("name") for call in tool_calls]
+        signatures = session_context.function_signatures or {}
+        signature_count = sum(len(sigs) for sigs in signatures.values())
 
-        LOGGER.info(
-            "VALIDATION: previous_work_count=%d, tools_called=%s",
-            len(session_context.previous_work),
-            tool_names,
-        )
-
-        if "get_function_definitions" not in tool_names:
-            error_message = (
-                "CRITICAL: Mandatory context gathering was skipped. "
-                "The agent failed to call 'get_function_definitions' before generating code, "
-                "violating the Layered-CoT protocol. This can lead to fatal TypeError bugs."
+        if signature_count > 0:
+            LOGGER.info(
+                "Validation passed: %d function signatures were auto-injected into the session context.",
+                signature_count,
             )
-            LOGGER.error(error_message)
-            raise RuntimeError(error_message)
-
-        LOGGER.info("Validation passed: Mandatory context gathering was performed.")
+        else:
+            LOGGER.warning(
+                "Validation warning: No function signatures were found in the session context, "
+                "even though previous work exists. This may lead to context-related errors."
+            )
 
 
 class CliAgentExecutor(SessionExecutor):
