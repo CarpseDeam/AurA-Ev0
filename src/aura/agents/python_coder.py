@@ -269,6 +269,15 @@ class PythonCoderAgent(QObject):
 
         # Allowlist of safe command prefixes for local development
         safe_prefixes = ("python", "pip", "pytest", "git", "npm", "node", "poetry", "mkdir", "md")
+        blocked_dependency_prefixes = (
+            "pip install",
+            "pip install -r",
+            "python -m pip install",
+            "python3 -m pip install",
+            "py -m pip install",
+            "npm install",
+            "poetry install",
+        )
         dangerous_patterns = ("rm -rf", "sudo", "chmod", "chown", ">", ">>", "|", "&", ";")
 
         for command in commands or []:
@@ -281,6 +290,13 @@ class PythonCoderAgent(QObject):
             if not any(cmd_lower.startswith(prefix) for prefix in safe_prefixes):
                 LOGGER.warning("Skipping command with disallowed prefix: %s", cmd)
                 errors.append(f"Command '{cmd}' rejected: must start with allowed prefix")
+                continue
+
+            if any(cmd_lower.startswith(prefix) for prefix in blocked_dependency_prefixes):
+                skip_message = "⏭️ Skipping dependency installation (will run after all sessions)"
+                LOGGER.info("Deferred dependency command: %s", cmd)
+                self.progress_update.emit(skip_message)
+                outputs.append(skip_message)
                 continue
 
             if any(pattern in cmd for pattern in dangerous_patterns):

@@ -61,7 +61,9 @@ class OrchestrationHandler(QObject):
 
         self._output_panel.display_output("")  # Spacer
         self._output_panel.display_output(
-            f"▶ Session {index + 1}/{total}: {name}", config.COLORS.accent
+            f"▶ Session {index + 1}/{total}: {name}",
+            config.COLORS.accent,
+            font_size=config.FONT_SIZE_HEADER,
         )
 
     def handle_session_output(self, text: str) -> None:
@@ -169,7 +171,11 @@ class OrchestrationHandler(QObject):
     def _display_plan(self, plan: SessionPlan) -> None:
         """Display the structured plan in the output panel."""
         self._output_panel.display_output("")  # Spacer
-        self._output_panel.display_output("┌ Session Plan", config.COLORS.accent)
+        self._output_panel.display_output(
+            "┌ Session Plan",
+            config.COLORS.accent,
+            font_size=config.FONT_SIZE_HEADER,
+        )
 
         if plan.reasoning:
             self._output_panel.display_output(

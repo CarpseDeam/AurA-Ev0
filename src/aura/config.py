@@ -23,17 +23,19 @@ class ColorPalette:
 
 COLORS = ColorPalette(
     background="#000000",
-    text="#e0e0e0",
+    text="#e8e8e8",
     accent="#64B5F6",
     success="#66BB6A",
     error="#FF6B6B",
     agent_output="#FFD27F",
     thinking="#9370DB",
     tool_call="#FFD27F",
-    secondary="#888888",
+    secondary="#b0b0b0",
 )
 
 FONT_FAMILY: str = "JetBrains Mono"
+FONT_SIZE_OUTPUT: int = 13
+FONT_SIZE_HEADER: int = 16
 WINDOW_DIMENSIONS: tuple[int, int] = (900, 700)
 
 DEFAULT_AGENT: str = "gemini"
@@ -61,6 +63,8 @@ AUTO_PUSH_ON_COMPLETE: bool = False
 __all__ = [
     "COLORS",
     "FONT_FAMILY",
+    "FONT_SIZE_OUTPUT",
+    "FONT_SIZE_HEADER",
     "WINDOW_DIMENSIONS",
     "ColorPalette",
     "DEFAULT_AGENT",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -236,6 +237,7 @@ class _ExecutionWorker(QObject):
                 self.error_occurred.emit(error_message)
                 return
 
+        self._install_dependencies()
         self.progress_update.emit("All sessions complete")
         self.all_sessions_complete.emit()
         self._event_bus.publish(EventType.ALL_COMPLETE)
@@ -260,6 +262,63 @@ class _ExecutionWorker(QObject):
 
         self.session_output.emit(f"  └─ Total time: {total_duration:.1f}s")
         LOGGER.info("Orchestration complete: %d sessions, %.1fs total", session_count, total_duration)
+
+    def _install_dependencies(self) -> None:
+        """Install dependencies from requirements.txt once sessions complete."""
+        requirements_path = self._working_dir / "requirements.txt"
+        if not requirements_path.exists():
+            LOGGER.info("No requirements.txt detected; skipping dependency installation")
+            return
+        self.progress_update.emit("Installing dependencies...")
+        self.session_output.emit(" Installing dependencies...")
+        result = self._run_dependency_install()
+        if result is None:
+            self.session_output.emit(" ⚠️ Dependency installation failed to start. See logs for details.")
+            return
+        summary = self._summarize_pip_output(result.stdout, result.stderr, result.returncode)
+        if summary:
+            self.session_output.emit(f"  {summary}")
+        if result.returncode == 0:
+            self.session_output.emit(" ✅ Dependencies installed successfully")
+        else:
+            LOGGER.warning("Dependency installation exited with %d", result.returncode)
+            self.session_output.emit(" ⚠️ Dependency installation encountered issues; please review the logs.")
+
+    def _run_dependency_install(self) -> subprocess.CompletedProcess[str] | None:
+        """Run pip install to apply dependency changes once."""
+        try:
+            return subprocess.run(
+                ["pip", "install", "-r", "requirements.txt"],
+                cwd=self._working_dir,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to launch dependency installation: %s", exc)
+            return None
+
+    @staticmethod
+    def _summarize_pip_output(stdout: str | None, stderr: str | None, returncode: int) -> str:
+        """Return a concise summary line from pip output."""
+        success_lines = [
+            line.strip()
+            for line in (stdout or "").splitlines()
+            if "Successfully installed" in line
+        ]
+        if success_lines:
+            return success_lines[-1]
+        satisfied_lines = [
+            line.strip()
+            for line in (stdout or "").splitlines()
+            if "Requirement already satisfied" in line
+        ]
+        if satisfied_lines:
+            return satisfied_lines[0]
+        error_lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+        if error_lines and returncode != 0:
+            return error_lines[-1]
+        return ""
 
     def _discover_project_context(self, goal: str) -> str:
         """Use ChatService with tools to discover project context intelligently.
