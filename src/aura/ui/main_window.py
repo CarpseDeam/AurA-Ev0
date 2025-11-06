@@ -191,6 +191,9 @@ class MainWindow(QMainWindow):
         if self.app_state.current_plan and normalized in approval_keywords:
             return
         if self._should_orchestrate(prompt):
+            import threading
+            LOGGER.info("EXECUTION_REQUESTED: Emitting execution_requested signal (thread: %s, goal: %s)",
+                       threading.current_thread().name, prompt[:50])
             self.execution_requested.emit(prompt)
         else:
             self.execute_command(prompt)

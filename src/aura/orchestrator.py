@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import logging
 import os
 import re
@@ -23,6 +25,33 @@ from src.aura.tools import GitHelper
 from src.aura.utils import scan_directory
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _log_emit_trace(message: str, prefix: str = "EMIT_TRACE") -> None:
+    """Log message emission with unique ID and location for debugging duplicates.
+
+    Args:
+        message: The message being emitted
+        prefix: Log prefix (default: EMIT_TRACE)
+    """
+    # Create unique ID from message content
+    msg_id = hashlib.md5(message.encode()).hexdigest()[:8]
+
+    # Get caller's frame information
+    frame = inspect.currentframe()
+    if frame and frame.f_back:
+        caller_frame = frame.f_back
+        location = f"{caller_frame.f_code.co_filename}:{caller_frame.f_lineno}"
+        func_name = caller_frame.f_code.co_name
+    else:
+        location = "unknown"
+        func_name = "unknown"
+
+    # Truncate message for logging
+    msg_preview = message[:50].replace('\n', '\\n')
+
+    LOGGER.info(f"{prefix} [ID:{msg_id}] [{func_name}@{location}]: {msg_preview}")
+
 
 PROJECT_INDICATOR_DIRS = {"app", "src", "tests"}
 PROJECT_INDICATOR_FILES = {
@@ -162,6 +191,11 @@ class Orchestrator(QObject):
         if self._thread is not None and self._thread.isRunning():
             self.error_occurred.emit("An orchestration run is already in progress.")
             return
+
+        # Log worker thread creation for debugging
+        import threading
+        LOGGER.info("THREAD_CREATE: Creating new worker thread (current thread: %s)", threading.current_thread().name)
+
         self._thread = QThread(self)
         self._worker = _ExecutionWorker(
             self._planning_service,
@@ -172,6 +206,9 @@ class Orchestrator(QObject):
         )
         self._move_worker_to_thread()
         self._thread.start()
+
+        # Log thread start
+        LOGGER.info("THREAD_START: Worker thread started (thread ID: %s)", id(self._thread))
 
     def update_agent_path(self, agent_path: str) -> None:
         """Update the agent executable path for subsequent runs."""
@@ -263,14 +300,17 @@ class _ExecutionWorker(QObject):
 
         self.progress_update.emit("Generating session plan...")
         self.planning_started.emit()
+        _log_emit_trace("Analyzing request...")
         self.session_output.emit("Analyzing request...")
 
         # NEW: Intelligent discovery phase using ChatService with tools
         LOGGER.info("Starting intelligent project discovery phase")
+        _log_emit_trace("  ├─ Phase 1: Discovering project context...")
         self.session_output.emit("  ├─ Phase 1: Discovering project context...")
         project_context = self._discover_project_context(self._goal)
 
         LOGGER.info("Requesting session plan from planning service")
+        _log_emit_trace("  └─ Phase 2: Generating session plan...")
         self.session_output.emit("  └─ Phase 2: Generating session plan...")
         plan = self._planning_service.plan_sessions(self._goal, project_context)
 
@@ -282,13 +322,17 @@ class _ExecutionWorker(QObject):
 
         session_count = len(plan.sessions)
         estimated_minutes = getattr(plan, "total_estimated_minutes", 0)
+        _log_emit_trace(f"  ├─ Generated {session_count} sessions")
         self.session_output.emit(f"  ├─ Generated {session_count} sessions")
+        _log_emit_trace(f"  └─ Estimated {estimated_minutes} minutes")
         self.session_output.emit(f"  └─ Estimated {estimated_minutes} minutes")
 
         all_results: List[SessionResult] = []
         for index, session in enumerate(plan.sessions):
             self.progress_update.emit(f"Session {index + 1}/{session_count}: {session.name}")
+            _log_emit_trace("")
             self.session_output.emit("")
+            _log_emit_trace(f"Executing Session {index + 1}/{session_count}: {session.name}")
             self.session_output.emit(f"Executing Session {index + 1}/{session_count}: {session.name}")
             self.session_started.emit(index, session)
 
@@ -301,7 +345,9 @@ class _ExecutionWorker(QObject):
                 if result.success and result.files_created:
                     commit_msg = f"Session {index + 1}: {session.name}"
                     self.progress_update.emit("Committing changes...")
+                    _log_emit_trace("Committing changes...")
                     self.session_output.emit("Committing changes...")
+                    _log_emit_trace(f"  └─ {commit_msg}")
                     self.session_output.emit(f"  └─ {commit_msg}")
                     LOGGER.info("Committing changes: %s", commit_msg)
                     if not self._git.commit(commit_msg, result.files_created):
@@ -310,8 +356,10 @@ class _ExecutionWorker(QObject):
                             error=f"Failed to commit changes for {commit_msg}",
                         )
             if result.success:
+                _log_emit_trace(f"  └─ ✓ Complete in {result.duration_seconds:.1f}s")
                 self.session_output.emit(f"  └─ ✓ Complete in {result.duration_seconds:.1f}s")
             else:
+                _log_emit_trace("  └─ ✗ Failed")
                 self.session_output.emit("  └─ ✗ Failed")
             if not result.success:
                 error_message = f"Session '{session.name}' failed with exit code {result.exit_code}."
@@ -322,23 +370,30 @@ class _ExecutionWorker(QObject):
         self._install_dependencies()
         self.progress_update.emit("All sessions complete")
         self.all_sessions_complete.emit()
+        _log_emit_trace("")
         self.session_output.emit("")
+        _log_emit_trace("All sessions complete")
         self.session_output.emit("All sessions complete")
 
         total_files = sum(len(result.files_created) for result in all_results)
         total_duration = sum(result.duration_seconds for result in all_results)
+        _log_emit_trace(f"  ├─ Created {total_files} files")
         self.session_output.emit(f"  ├─ Created {total_files} files")
 
         if config.AUTO_PUSH_ON_COMPLETE:
             self.progress_update.emit("Pushing to GitHub...")
+            _log_emit_trace("Pushing to GitHub...")
             self.session_output.emit("Pushing to GitHub...")
             LOGGER.info("Pushing changes to GitHub")
             if self._git.push():
+                _log_emit_trace("  ├─ ✓ Pushed to GitHub")
                 self.session_output.emit("  ├─ ✓ Pushed to GitHub")
             else:
+                _log_emit_trace("  ├─ ✗ Push failed")
                 self.session_output.emit("  ├─ ✗ Push failed")
                 self._event_bus.publish(EventType.ERROR, error="Failed to push to GitHub")
 
+        _log_emit_trace(f"  └─ Total time: {total_duration:.1f}s")
         self.session_output.emit(f"  └─ Total time: {total_duration:.1f}s")
         LOGGER.info("Orchestration complete: %d sessions, %.1fs total", session_count, total_duration)
 
@@ -357,12 +412,17 @@ class _ExecutionWorker(QObject):
                 )
             else:
                 LOGGER.info("Existing project detected at %s", base_dir)
+            _log_emit_trace(f"📁 Using existing project: {base_dir.name}")
             self.session_output.emit(f"📁 Using existing project: {base_dir.name}")
+            _log_emit_trace(f"   ├─ Location: {base_dir}")
             self.session_output.emit(f"   ├─ Location: {base_dir}")
             if indicator_text:
+                _log_emit_trace(f"   └─ Indicators: {indicator_text}")
                 self.session_output.emit(f"   └─ Indicators: {indicator_text}")
             else:
+                _log_emit_trace("   └─ Indicators: project files detected")
                 self.session_output.emit("   └─ Indicators: project files detected")
+            _log_emit_trace("")
             self.session_output.emit("")
             return base_dir
 
@@ -374,11 +434,15 @@ class _ExecutionWorker(QObject):
 
         try:
             project_dir.mkdir(parents=True, exist_ok=False)
+            _log_emit_trace(f"📁 Creating project: {project_dir.name}")
             self.session_output.emit(f"📁 Creating project: {project_dir.name}")
         except FileExistsError:
             LOGGER.warning("Project directory already exists: %s", project_dir)
+            _log_emit_trace(f"📁 Using existing project: {project_dir.name}")
             self.session_output.emit(f"📁 Using existing project: {project_dir.name}")
+        _log_emit_trace(f"   └─ Location: {project_dir}")
         self.session_output.emit(f"   └─ Location: {project_dir}")
+        _log_emit_trace("")
         self.session_output.emit("")
         return project_dir
 
@@ -433,6 +497,7 @@ class _ExecutionWorker(QObject):
         """Relay streaming chunks from agents to the UI."""
         if not chunk:
             return
+        _log_emit_trace(chunk)
         self.session_output.emit(chunk)
 
     def _install_dependencies(self) -> None:
@@ -442,18 +507,23 @@ class _ExecutionWorker(QObject):
             LOGGER.info("No requirements.txt detected; skipping dependency installation")
             return
         self.progress_update.emit("Installing dependencies...")
+        _log_emit_trace(" Installing dependencies...")
         self.session_output.emit(" Installing dependencies...")
         result = self._run_dependency_install()
         if result is None:
+            _log_emit_trace(" ⚠️ Dependency installation failed to start. See logs for details.")
             self.session_output.emit(" ⚠️ Dependency installation failed to start. See logs for details.")
             return
         summary = self._summarize_pip_output(result.stdout, result.stderr, result.returncode)
         if summary:
+            _log_emit_trace(f"  {summary}")
             self.session_output.emit(f"  {summary}")
         if result.returncode == 0:
+            _log_emit_trace(" ✅ Dependencies installed successfully")
             self.session_output.emit(" ✅ Dependencies installed successfully")
         else:
             LOGGER.warning("Dependency installation exited with %d", result.returncode)
+            _log_emit_trace(" ⚠️ Dependency installation encountered issues; please review the logs.")
             self.session_output.emit(" ⚠️ Dependency installation encountered issues; please review the logs.")
 
     def _run_dependency_install(self) -> subprocess.CompletedProcess[str] | None:
@@ -550,6 +620,7 @@ class _ExecutionWorker(QObject):
         This method triggers the mandatory tool usage workflow defined in AURA_SYSTEM_PROMPT,
         causing ChatService to analyze the project using its 8 developer tools before planning.
         """
+        _log_emit_trace("  └─ Discovering project context with AI tools...")
         self.session_output.emit("  └─ Discovering project context with AI tools...")
         LOGGER.info("Starting intelligent project discovery with ChatService")
 
@@ -558,9 +629,11 @@ class _ExecutionWorker(QObject):
 
         if is_modification:
             LOGGER.info("Detected MODIFICATION request - will enhance discovery with symbol resolution")
+            _log_emit_trace("    ├─ Detected modification request - using enhanced context gathering...")
             self.session_output.emit("    ├─ Detected modification request - using enhanced context gathering...")
         else:
             LOGGER.info("Detected CREATION request - will use standard discovery")
+            _log_emit_trace("    ├─ Detected creation request - using standard discovery...")
             self.session_output.emit("    ├─ Detected creation request - using standard discovery...")
 
         api_key = self._api_key or os.getenv("GEMINI_API_KEY", "")
@@ -611,6 +684,7 @@ class _ExecutionWorker(QObject):
 
             # Get discovery response with automatic tool calling
             # The SDK will automatically execute all tool calls behind the scenes
+            _log_emit_trace("    └─ Running discovery phase with automatic tool calling...")
             self.session_output.emit("    └─ Running discovery phase with automatic tool calling...")
             combined_discovery = chat.send_message(
                 discovery_prompt,
@@ -632,6 +706,7 @@ class _ExecutionWorker(QObject):
 
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Discovery phase failed, falling back to basic context: %s", exc)
+            _log_emit_trace(f"  └─ Discovery failed: {exc}, using basic context")
             self.session_output.emit(f"  └─ Discovery failed: {exc}, using basic context")
             return self._build_project_context()
 
@@ -668,6 +743,7 @@ class _ExecutionWorker(QObject):
                 return result
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Native agent failed, falling back to CLI: %s", exc)
+                _log_emit_trace(f"⚠️ Native agent failed, using CLI fallback: {exc}")
                 self.session_output.emit(f"⚠️ Native agent failed, using CLI fallback: {exc}")
                 # Create CLI executor for fallback
                 executor = CliAgentExecutor(

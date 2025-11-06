@@ -6,7 +6,10 @@ following the Strategy design pattern to improve modularity.
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import logging
+import threading
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -23,6 +26,38 @@ if TYPE_CHECKING:
     from src.aura.services.planning_service import Session
 
 LOGGER = logging.getLogger(__name__)
+
+# Track relay calls for debugging duplicate messages
+_relay_counter = {}
+_relay_lock = threading.Lock()
+
+
+def _log_relay_trace(message: str) -> None:
+    """Log message relay with unique ID and call count for debugging duplicates.
+
+    Args:
+        message: The message being relayed
+    """
+    # Create unique ID from message content
+    msg_id = hashlib.md5(message.encode()).hexdigest()[:8]
+
+    # Track relay count for this message
+    with _relay_lock:
+        _relay_counter[msg_id] = _relay_counter.get(msg_id, 0) + 1
+        relay_count = _relay_counter[msg_id]
+
+    # Get caller's frame information
+    frame = inspect.currentframe()
+    if frame and frame.f_back:
+        caller_frame = frame.f_back
+        func_name = caller_frame.f_code.co_name
+    else:
+        func_name = "unknown"
+
+    # Truncate message for logging
+    msg_preview = message[:50].replace('\n', '\\n')
+
+    LOGGER.info(f"RELAY_TRACE [ID:{msg_id}] [COUNT:{relay_count}] [{func_name}]: Relaying from agent -> orchestrator: {msg_preview}")
 
 
 class SessionExecutor(ABC):
@@ -105,7 +140,13 @@ class NativeAgentExecutor(SessionExecutor):
         # Create and execute agent
         agent = PythonCoderAgent(api_key=self._api_key)
         if self._output_signal:
-            agent.progress_update.connect(self._output_signal)
+            LOGGER.info("RELAY_CONNECT: Connecting agent.progress_update -> orchestrator.session_output")
+            # Create a relay function to log all messages passing through
+            def _relay_with_logging(message: str) -> None:
+                _log_relay_trace(message)
+                self._output_signal.emit(message)
+
+            agent.progress_update.connect(_relay_with_logging)
 
         agent_result = agent.execute_session(session_context)
 

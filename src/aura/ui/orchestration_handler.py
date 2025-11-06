@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 from typing import List, Optional
 
 from PySide6.QtCore import QObject, Signal
@@ -13,6 +15,23 @@ from src.aura.services.planning_service import Session, SessionPlan
 from src.aura.state import AppState
 from src.aura.ui.output_panel import OutputPanel
 from src.aura.ui.status_bar_manager import StatusBarManager
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _log_handler_recv(message: str) -> None:
+    """Log message receipt at handler for debugging duplicates.
+
+    Args:
+        message: The message being received
+    """
+    # Create unique ID from message content
+    msg_id = hashlib.md5(message.encode()).hexdigest()[:8]
+
+    # Truncate message for logging
+    msg_preview = message[:50].replace('\n', '\\n')
+
+    LOGGER.info(f"HANDLER_RECV [ID:{msg_id}]: {msg_preview}")
 
 
 class OrchestrationHandler(QObject):
@@ -72,6 +91,9 @@ class OrchestrationHandler(QObject):
             return
 
         raw_text = text if isinstance(text, str) else str(text)
+
+        # Log message receipt for debugging duplicates
+        _log_handler_recv(raw_text)
 
         if raw_text.startswith(config.STREAM_PREFIX):
             chunk = raw_text[len(config.STREAM_PREFIX) :]
