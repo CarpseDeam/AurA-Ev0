@@ -28,40 +28,18 @@ class OutputPanel(QWidget):
         self._text_edit.setReadOnly(True)
         self._text_edit.setAcceptRichText(True)
         self._text_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
-
-        font = QFont(config.FONT_FAMILY, config.FONT_SIZE_OUTPUT)
-        try:
-            font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
-        except AttributeError:
-            pass
-        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-
-        self._text_edit.setFont(font)
-        self._text_edit.document().setDefaultFont(font)
-        self._text_edit.setStyleSheet(
-            "QTextEdit {"
-            f" background-color: {config.COLORS.background};"
-            f" color: {config.COLORS.text};"
-            " border: none;"
-            "}"
-        )
-        self._text_edit.document().setDocumentMargin(12.0)
+        self._text_edit.setFont(QFont(config.FONT_FAMILY))
 
     @property
     def text_edit(self) -> QTextEdit:
         """Expose the internal text edit widget for styling or testing."""
         return self._text_edit
 
-    def display_output(
-        self, text: str, color: Optional[str] = None, *, font_size: Optional[int] = None
-    ) -> None:
+    def display_output(self, text: str, color: Optional[str] = None) -> None:
         """Append output to the transcript."""
         chosen_color = color or self._resolve_line_color(text)
-        payload = self._build_html_block(
-            text=text,
-            color=chosen_color,
-            font_size=font_size or config.FONT_SIZE_OUTPUT,
-        )
+        escaped_text = html.escape(text)
+        payload = f'<span style="color: {chosen_color};">{escaped_text}</span><br>'
         self._append_html(payload)
 
     def display_thinking(self, text: str) -> None:
@@ -89,28 +67,27 @@ class OutputPanel(QWidget):
         """Append streaming output without timestamp metadata."""
         if not text:
             return
-        chosen_color = color or config.COLORS.text
-        payload = self._build_html_block(
-            text=text,
-            color=chosen_color,
-            font_size=config.FONT_SIZE_OUTPUT,
-        )
+        chosen_color = color or config.COLORS.agent_output
+        escaped_text = html.escape(text)
+        payload = f'<span style="color: {chosen_color};">{escaped_text}</span><br>'
         self._append_html(payload)
 
     def display_startup_header(self) -> None:
         """Render the startup ASCII art header."""
         header_html = """
-<pre style="font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 18px; line-height: 1.5; margin: 24px 0; display: block;">
-<span style="color: #00CED1;">   █████╗ ██╗   ██╗██████╗  █████╗ </span>
-<span style="color: #40E0D0;">  ██╔══██╗██║   ██║██╔══██╗██╔══██╗</span>
-<span style="color: #42A5F5;">  ███████║██║   ██║██████╔╝███████║</span>
-<span style="color: #64B5F6;">  ██╔══██║██║   ██║██╔══██╗██╔══██║</span>
-<span style="color: #7E85E8;">  ██║  ██║╚██████╔╝██║  ██║██║  ██║</span>
-<span style="color: #9370DB;">  ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝</span>
-<span style="color: #B19CD9;">  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
-<span style="color: #DA70D6;">   AI-Powered Development Assistant</span>
-<span style="color: #FF69B4;">  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
-</pre><br>
+<pre style="font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 16px; line-height: 0.95; margin: 20px 0;">
+<span style="color: #00CED1;">  █████╗ ██╗   ██╗██████╗  █████╗ </span>
+<span style="color: #20D5E0;"> ██╔══██╗██║   ██║██╔══██╗██╔══██╗</span>
+<span style="color: #40B5F5;"> ███████║██║   ██║██████╔╝███████║</span>
+<span style="color: #60A0F0;"> ██╔══██║██║   ██║██╔══██╗██╔══██║</span>
+<span style="color: #8080E8;"> ██║  ██║╚██████╔╝██║  ██║██║  ██║</span>
+<span style="color: #A060DD;"> ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝</span>
+</pre>
+<div style="text-align: center; color: #C090D0; font-size: 13px; margin: 10px 0; letter-spacing: 1px;">
+AI-Powered Development Assistant
+</div>
+<div style="text-align: center; color: #555555; margin-bottom: 20px;">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</div>
+<br>
         """
         self._append_html(header_html)
 
@@ -136,35 +113,4 @@ class OutputPanel(QWidget):
             return config.COLORS.error
         if stripped.startswith(("Creating", "Modifying")):
             return config.COLORS.accent
-        if self._is_timestamp_prefix(stripped):
-            return config.COLORS.secondary
-        return config.COLORS.text
-
-    def _is_timestamp_prefix(self, text: str) -> bool:
-        """Return True when the line begins with a timestamp-like token."""
-        if not text.startswith("["):
-            return False
-        closing_index = text.find("]")
-        if closing_index <= 1:
-            return False
-        token = text[1:closing_index]
-        has_digit = any(char.isdigit() for char in token)
-        has_time_separator = any(char in (":", "-", "/") for char in token)
-        return has_digit and has_time_separator
-
-    def _build_html_block(self, text: str, color: str, font_size: int) -> str:
-        """Return a styled HTML block for consistent typography."""
-        font_family = config.FONT_FAMILY.replace('"', '\\"')
-        content = html.escape(text) if text else "&nbsp;"
-        return (
-            '<div style="'
-            f'font-family: \\"{font_family}\\";'
-            f" font-size: {font_size}px;"
-            " line-height: 1.5;"
-            " margin: 0 0 8px 0;"
-            " white-space: pre-wrap;"
-            f" color: {color};"
-            '">'
-            f"{content}"
-            "</div>"
-        )
+        return config.COLORS.agent_output
