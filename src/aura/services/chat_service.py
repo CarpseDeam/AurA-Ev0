@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Set
@@ -66,6 +67,11 @@ def execute_cli_agent(prompt: str, working_directory: Optional[str] = None) -> d
     LOGGER.debug("Using Gemini CLI executable: %s", executable_path)
 
     prompt_text = "" if prompt is None else str(prompt)
+    # Sanitize the prompt for CLI compatibility
+    prompt_text = prompt_text.replace('\n', ' ')  # Replace newlines with spaces
+    prompt_text = prompt_text.replace('`', '')     # Remove backticks
+    prompt_text = prompt_text.strip()              # Strip leading/trailing whitespace
+    prompt_text = re.sub(r'\s+', ' ', prompt_text) # Collapse multiple spaces
     command = [executable_path, "-p", prompt_text, "--yolo"]
     LOGGER.info(
         "execute_cli_agent start | cwd=%s | prompt_chars=%d",
