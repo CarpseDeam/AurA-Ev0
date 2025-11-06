@@ -414,6 +414,58 @@ class _ExecutionWorker(QObject):
             return error_lines[-1]
         return ""
 
+    @staticmethod
+    def _is_modification_request(goal: str) -> bool:
+        """Detect if the goal is modifying existing code vs creating from scratch.
+
+        Args:
+            goal: The user's request/goal
+
+        Returns:
+            True if this is a modification request, False if pure creation
+        """
+        goal_lower = goal.lower()
+
+        # Modification keywords
+        modification_keywords = {
+            "add", "update", "modify", "change", "edit", "fix", "include",
+            "extend", "enhance", "improve", "refactor", "adjust", "alter",
+            "append", "insert", "remove", "delete", "replace"
+        }
+
+        # Modification phrases
+        modification_phrases = [
+            "add field", "add method", "add function", "add endpoint",
+            "add route", "add email", "add role", "add parameter",
+            "update to", "change the", "modify the", "fix the"
+        ]
+
+        # Pure creation keywords (override modification detection)
+        creation_keywords = {
+            "create", "build", "make", "generate", "new", "from scratch",
+            "start a", "start an", "initialize"
+        }
+
+        # Creation phrases
+        creation_phrases = [
+            "build a", "create a", "make a", "new project",
+            "from scratch", "start from", "generate a"
+        ]
+
+        # Check for pure creation first (takes priority)
+        if any(keyword in goal_lower for keyword in creation_keywords):
+            # Check if it's unambiguously creation
+            if any(phrase in goal_lower for phrase in creation_phrases):
+                return False
+
+        # Check for modification keywords
+        has_modification_keyword = any(keyword in goal_lower for keyword in modification_keywords)
+
+        # Check for modification phrases
+        has_modification_phrase = any(phrase in goal_lower for phrase in modification_phrases)
+
+        return has_modification_keyword or has_modification_phrase
+
     def _discover_project_context(self, goal: str) -> str:
         """Use ChatService with tools to discover project context intelligently.
 
@@ -423,6 +475,16 @@ class _ExecutionWorker(QObject):
         self.session_output.emit("  └─ Discovering project context with AI tools...")
         LOGGER.info("Starting intelligent project discovery with ChatService")
 
+        # Detect if this is a modification request
+        is_modification = self._is_modification_request(goal)
+
+        if is_modification:
+            LOGGER.info("Detected MODIFICATION request - will enhance discovery with symbol resolution")
+            self.session_output.emit("    ├─ Detected modification request - using enhanced context gathering...")
+        else:
+            LOGGER.info("Detected CREATION request - will use standard discovery")
+            self.session_output.emit("    ├─ Detected creation request - using standard discovery...")
+
         api_key = self._api_key or os.getenv("GEMINI_API_KEY", "")
         if not api_key:
             LOGGER.warning("No API key available for discovery phase, falling back to basic context")
@@ -431,17 +493,43 @@ class _ExecutionWorker(QObject):
         try:
             chat = ChatService(api_key=api_key)
 
-            # Discovery-focused prompt that triggers mandatory tool usage
-            discovery_prompt = (
-                f"Analyze this project for the following task: {goal}\n\n"
-                "Use your developer tools to understand:\n"
-                "1. What files and directories exist (list_project_files)\n"
-                "2. What relevant code patterns are already implemented (search_in_files)\n"
-                "3. Function signatures in key files (get_function_definitions)\n"
-                "4. Implementation details of relevant modules (read_project_file)\n\n"
-                "Gather comprehensive context about the codebase that will help plan "
-                "focused coding sessions. Be thorough but concise in your analysis."
-            )
+            # Build discovery prompt based on request type
+            if is_modification:
+                # Enhanced prompt for modification requests - MANDATES symbol resolution
+                discovery_prompt = (
+                    f"⚠️ MODIFICATION REQUEST DETECTED ⚠️\n\n"
+                    f"Task: {goal}\n\n"
+                    "This is a MODIFICATION request (not pure creation). You MUST follow the enhanced discovery protocol:\n\n"
+                    "MANDATORY STEPS - YOU CANNOT SKIP THESE:\n\n"
+                    "1. Call list_project_files() to locate existing files\n"
+                    "2. Call read_multiple_files() to read ALL relevant existing code files\n"
+                    "3. Call find_definition() on EVERY class/function being modified\n"
+                    "   - Example: If adding field to User, call find_definition('User') to see current __init__\n"
+                    "4. Call find_usages() to understand where modified entities are referenced\n"
+                    "   - This shows you how existing code uses these symbols\n"
+                    "5. Call get_imports() on files being modified to verify available dependencies\n"
+                    "6. Call get_function_definitions() to see all function signatures in relevant files\n\n"
+                    "CRITICAL: You CANNOT plan modifications without reading existing code and resolving symbols.\n"
+                    "If you skip find_definition() or read_project_file(), you WILL create bugs.\n\n"
+                    "Extract:\n"
+                    "- Exact current signatures and fields\n"
+                    "- Usage patterns and dependencies\n"
+                    "- Existing implementation details\n"
+                    "- Where changes will have impact\n\n"
+                    "Be thorough - gather ALL context needed to modify code without breaking existing functionality."
+                )
+            else:
+                # Standard prompt for creation requests
+                discovery_prompt = (
+                    f"Analyze this project for the following task: {goal}\n\n"
+                    "Use your developer tools to understand:\n"
+                    "1. What files and directories exist (list_project_files)\n"
+                    "2. What relevant code patterns are already implemented (search_in_files)\n"
+                    "3. Function signatures in key files (get_function_definitions)\n"
+                    "4. Implementation details of relevant modules (read_project_file)\n\n"
+                    "Gather comprehensive context about the codebase that will help plan "
+                    "focused coding sessions. Be thorough but concise in your analysis."
+                )
 
             # Get discovery response with automatic tool calling
             # The SDK will automatically execute all tool calls behind the scenes
