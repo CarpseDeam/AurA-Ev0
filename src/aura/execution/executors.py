@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import logging
+import os
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -330,11 +331,17 @@ class CliAgentExecutor(SessionExecutor):
             Dictionary mapping relative paths to modification times
         """
         snapshot: dict[str, float] = {}
-        for root, _, files in working_dir.walk():
+        for root, _, files in os.walk(working_dir):
             for filename in files:
-                path = Path(root) / filename
-                relative = str(path.relative_to(working_dir))
-                snapshot[relative] = path.stat().st_mtime
+                try:
+                    path = Path(root) / filename
+                    # Ensure the path is within working_dir
+                    relative = str(path.relative_to(working_dir))
+                    snapshot[relative] = path.stat().st_mtime
+                except (ValueError, PermissionError, OSError) as e:
+                    # Skip files that are outside working_dir or have permission issues
+                    LOGGER.debug(f"Skipping file {path}: {e}")
+                    continue
         return snapshot
 
     def _detect_file_changes(
