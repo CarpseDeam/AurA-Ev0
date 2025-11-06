@@ -291,7 +291,6 @@ def _run_consistency_check_real(
     for _ in range(3):
         plan = service.plan_sessions(prompt, project_context)
         plans.append(plan)
-        service._chat.clear_history()
 
     session_counts = [len(plan.sessions) for plan in plans]
     count_range = max(session_counts) - min(session_counts)
@@ -336,8 +335,6 @@ def _assert_empty_vs_existing_project_difference(
     prompt: str,
 ) -> None:
     plan_empty = service.plan_sessions(prompt, empty_project_context)
-    if hasattr(service, "_chat"):
-        service._chat.clear_history()
     plan_existing = service.plan_sessions(prompt, sample_project_context)
     similarity = calculate_plan_similarity(plan_empty, plan_existing)
     assert similarity < 0.9, f"Plans are too similar for different contexts: {similarity:.2f}"
@@ -810,7 +807,6 @@ def test_save_successful_plans_as_fixtures_real(
         if 3 <= len(plan.sessions) <= 7:
             save_plan_as_fixture(plan, test_name)
 
-        planning_service._chat.clear_history()
 
 
 # ============================================================================

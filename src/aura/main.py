@@ -52,7 +52,7 @@ class ApplicationController:
         api_key = os.getenv("GEMINI_API_KEY", "")
         if api_key:
             self.chat_service = ChatService(api_key=api_key)
-            self.planning_service = PlanningService(self.chat_service)
+            self.planning_service = PlanningService(api_key=api_key)
             self.orchestrator = Orchestrator(
                 self.planning_service,
                 self.app_state.working_directory,

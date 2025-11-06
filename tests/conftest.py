@@ -44,12 +44,10 @@ def chat_service(api_key: str) -> ChatService:
 
 
 @pytest.fixture(scope="function")
-def planning_service(chat_service: ChatService) -> Generator[PlanningService, None, None]:
+def planning_service(api_key: str) -> Generator[PlanningService, None, None]:
     """Create a fresh PlanningService instance for each test."""
-    service = PlanningService(chat_service)
+    service = PlanningService(api_key=api_key)
     yield service
-    # Cleanup: clear chat history for next test
-    chat_service.clear_history()
 
 
 @pytest.fixture(scope="function")
@@ -62,9 +60,9 @@ def mock_chat_service() -> Mock:
 
 
 @pytest.fixture(scope="function")
-def mock_planning_service(mock_chat_service: Mock) -> PlanningService:
+def mock_planning_service() -> PlanningService:
     """Create a mocked PlanningService for fast tests."""
-    service = PlanningService(mock_chat_service)
+    service = PlanningService(api_key="test-key")
 
     simple_keywords = ("calculator", "hello", "simple", "organizer", "converter", "cli")
     medium_keywords = ("todo", "url", "api", "csv", "queue", "processor", "shortener", "pipeline")

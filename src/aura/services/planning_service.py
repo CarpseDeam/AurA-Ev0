@@ -1,4 +1,4 @@
-"""Session planning service leveraging Aura's chat layer."""
+"""Session planning service leveraging Gemini JSON responses."""
 
 from __future__ import annotations
 
@@ -6,9 +6,12 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Iterator, List
+from typing import List
 
-from src.aura.services import ChatService
+import google.generativeai as genai
+
+from src.aura.services.chat_service import AURA_SYSTEM_PROMPT
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -97,16 +100,26 @@ class SessionPlan:
 
 
 class PlanningService:
-    """Produces structured plans using the chat service."""
+    """Produces structured plans using a dedicated Gemini model instance."""
 
-    def __init__(self, chat_service: ChatService) -> None:
-        """Store the chat service dependency."""
-        self._chat = chat_service
+    def __init__(self, api_key: str, model: str = "gemini-2.5-pro") -> None:
+        """Configure a dedicated planning model that returns JSON."""
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY environment variable must be set.")
+        self._api_key = api_key
+        self._model_name = model
+
+        genai.configure(api_key=self._api_key)
+        self._model = genai.GenerativeModel(
+            self._model_name,
+            system_instruction=AURA_SYSTEM_PROMPT,
+            generation_config={"response_mime_type": "application/json"},
+        )
 
     def plan_sessions(self, goal: str, project_context: str) -> SessionPlan:
         """Generate a session plan for the given goal."""
         prompt = PLANNING_PROMPT_TEMPLATE.format(goal=goal.strip(), project_context=project_context.strip())
-        response_text = self._collect_response(self._chat.send_message(prompt))
+        response_text = self._collect_response(prompt)
         try:
             payload = json.loads(response_text)
         except json.JSONDecodeError as exc:
@@ -114,29 +127,46 @@ class PlanningService:
             raise ValueError("Planning service returned invalid JSON.") from exc
         return self._build_plan(payload)
 
-    def _collect_response(self, stream: Iterator[str]) -> str:
-        """Gather streaming chunks into a response string."""
-        chunks = []
-        for chunk in stream:
-            chunks.append(chunk)
-        response = "".join(chunks)
+    def _collect_response(self, prompt: str) -> str:
+        """Request a plan and normalize the JSON payload."""
+        response = self._model.generate_content(prompt)
+
+        text_chunks: list[str] = []
+        direct_text = getattr(response, "text", None)
+        if direct_text:
+            text_chunks.append(direct_text)
+
+        candidates = getattr(response, "candidates", None) or []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            if not content:
+                continue
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                part_text = getattr(part, "text", None)
+                if part_text:
+                    text_chunks.append(part_text)
+
+        combined = "".join(text_chunks)
+        if not combined.strip():
+            raise ValueError("Planning service returned an empty response.")
 
         # Try to extract JSON from response (handles natural language + JSON)
-        json_match = re.search(r'\{[\s\S]*\}', response)
+        json_match = re.search(r'\{[\s\S]*\}', combined)
         if json_match:
-            response = json_match.group(0)
+            response_text = json_match.group(0)
         else:
             # Strip markdown code blocks if present
-            response = response.strip()
-            if response.startswith("```json"):
-                response = response[7:]  # Remove ```json
-            elif response.startswith("```"):
-                response = response[3:]  # Remove ```
+            response_text = combined.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]  # Remove ```json
+            elif response_text.startswith("```"):
+                response_text = response_text[3:]  # Remove ```
 
-            if response.endswith("```"):
-                response = response[:-3]  # Remove trailing ```
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]  # Remove trailing ```
 
-        return response.strip()
+        return response_text.strip()
 
     def _build_plan(self, payload: dict) -> SessionPlan:
         """Validate and construct the session plan."""
