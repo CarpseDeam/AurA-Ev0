@@ -109,10 +109,8 @@ class NativeAgentExecutor(SessionExecutor):
 
         agent_result = agent.execute_session(session_context)
 
-        # Emit output lines if signal provided
-        if self._output_signal:
-            for line in agent_result.output_lines:
-                self._output_signal.emit(line)
+        # Output is already emitted in real-time via progress_update signal connection
+        # No need to emit output_lines again here to avoid duplicates
 
         # Convert AgentResult to SessionResult
         all_files = list(agent_result.files_created) + list(agent_result.files_modified)

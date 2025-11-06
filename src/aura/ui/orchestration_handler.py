@@ -43,7 +43,8 @@ class OrchestrationHandler(QObject):
 
     def handle_plan_ready(self, plan: SessionPlan) -> None:
         """Render the plan details and re-enable input."""
-        if isinstance(plan, SessionPlan):
+        # Use duck typing instead of isinstance check since Qt signals may not preserve exact type
+        if plan is not None and hasattr(plan, 'sessions') and hasattr(plan, 'total_estimated_minutes'):
             self._app_state.set_current_plan(plan)
             self._display_plan(plan)
         else:
@@ -140,18 +141,28 @@ class OrchestrationHandler(QObject):
             return
 
         if event.type is EventType.SESSION_OUTPUT:
-            text = str(event.data.get("text", "")).strip()
+            text = str(event.data.get("text", ""))
             if not text:
                 return
 
-            if text.startswith("TOOL_CALL::"):
+            # Strip STREAM prefix if present (for streaming output)
+            if text.startswith(config.STREAM_PREFIX):
+                chunk = text[len(config.STREAM_PREFIX):]
+                self._output_panel.display_stream_chunk(chunk, config.COLORS.agent_output)
+                return
+
+            stripped_text = text.strip()
+            if not stripped_text:
+                return
+
+            if stripped_text.startswith("TOOL_CALL::"):
                 try:
-                    _, tool_name, args_summary = text.split("::", 2)
+                    _, tool_name, args_summary = stripped_text.split("::", 2)
                     self._output_panel.display_tool_call(tool_name, args_summary)
                 except ValueError:
-                    self._output_panel.display_output(text)  # Fallback
+                    self._output_panel.display_output(stripped_text)  # Fallback
             else:
-                self._output_panel.display_output(text)
+                self._output_panel.display_output(stripped_text)
 
         elif event.type is EventType.ERROR:
             error = str(event.data.get("error", "")).strip()
