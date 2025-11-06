@@ -7,10 +7,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Any, Generator
 
-import google.generativeai as genai
-from google.generativeai import protos
+from google import genai
+from google.genai import types
 
 from src.aura.agents import PythonCoderAgent, SessionContext
 from src.aura.tools.file_system_tools import (
@@ -252,294 +251,55 @@ class ChatService:
 
     api_key: str
     model_name: str = "gemini-2.5-pro"
-    _model: genai.GenerativeModel = field(init=False, repr=False)
-    _history: list[protos.Content] = field(default_factory=list, init=False, repr=False)
-    _tools_dict: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+    _client: genai.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Initialize the Gemini model with tools."""
-        genai.configure(api_key=self.api_key)
+        """Initialize the Gemini client."""
+        self._client = genai.Client(api_key=self.api_key)
 
-        tools = [
-            genai.protos.Tool(
-                function_declarations=[
-                    self._create_function_declaration(
-                        "execute_python_session",
-                        "Execute a Python coding session to create or modify files",
-                        {
-                            "session_prompt": "Detailed instructions for what to build",
-                            "working_directory": "Directory to work in",
-                        },
-                    ),
-                    self._create_function_declaration(
-                        "read_project_file",
-                        "Read the contents of a file in the project",
-                        {"path": "Path to the file to read"},
-                    ),
-                    self._create_function_declaration(
-                        "list_project_files",
-                        "List files in a directory with optional extension filter",
-                        {
-                            "directory": "Directory to list (default: current)",
-                            "extension": "File extension filter (e.g., .py)",
-                        },
-                    ),
-                    self._create_function_declaration(
-                        "search_in_files",
-                        "Search for a pattern in project files",
-                        {
-                            "pattern": "Search pattern or keyword",
-                            "directory": "Directory to search",
-                            "file_extension": "File extension to filter",
-                        },
-                    ),
-                    self._create_function_declaration(
-                        "read_multiple_files",
-                        "Read multiple files efficiently",
-                        {"paths": "List of file paths to read"},
-                    ),
-                    self._create_function_declaration(
-                        "get_function_definitions",
-                        "Extract function signatures from a Python file using AST parsing",
-                        {"file_path": "Path to Python file to analyze"},
-                    ),
-                    self._create_function_declaration(
-                        "run_tests",
-                        "Run the test suite",
-                        {"test_path": "Optional specific test file or directory"},
-                    ),
-                    self._create_function_declaration(
-                        "lint_code",
-                        "Check code quality with linting tools",
-                        {"path": "File or directory to lint"},
-                    ),
-                    self._create_function_declaration(
-                        "format_code",
-                        "Auto-format code with black",
-                        {"path": "File or directory to format"},
-                    ),
-                    self._create_function_declaration(
-                        "install_package",
-                        "Install a Python package",
-                        {"package": "Package name to install"},
-                    ),
-                    self._create_function_declaration(
-                        "get_git_status",
-                        "Get current git status",
-                        {},
-                    ),
-                    self._create_function_declaration(
-                        "git_commit",
-                        "Commit changes to git",
-                        {"message": "Commit message"},
-                    ),
-                    self._create_function_declaration(
-                        "git_push",
-                        "Push commits to remote",
-                        {},
-                    ),
-                    self._create_function_declaration(
-                        "git_diff",
-                        "Show git diff",
-                        {"cached": "Show staged changes only"},
-                    ),
-                    self._create_function_declaration(
-                        "clear_session_context",
-                        "Clear all session context to start fresh",
-                        {},
-                    ),
-                ]
-            )
-        ]
 
-        self._model = genai.GenerativeModel(
-            model_name=self.model_name,
-            tools=tools,
-            system_instruction=AURA_SYSTEM_PROMPT,
-        )
-
-        # Build tools dictionary for execution
-        self._tools_dict = {
-            "execute_python_session": execute_python_session,
-            "read_project_file": read_project_file,
-            "list_project_files": list_project_files,
-            "search_in_files": search_in_files,
-            "read_multiple_files": read_multiple_files,
-            "get_function_definitions": get_function_definitions,
-            "run_tests": run_tests,
-            "lint_code": lint_code,
-            "format_code": format_code,
-            "install_package": install_package,
-            "get_git_status": get_git_status,
-            "git_commit": git_commit,
-            "git_push": git_push,
-            "git_diff": git_diff,
-            "clear_session_context": clear_session_context,
-        }
-
-    def _execute_tool(self, function_name: str, function_args: dict[str, Any]) -> dict[str, Any]:
-        """Execute a registered tool and return its result."""
-        LOGGER.warning(f"🔧 TOOL CALLED: {function_name}")
-
-        tool_func = self._tools_dict.get(function_name)
-        if not tool_func:
-            LOGGER.error(f"Unknown tool requested: {function_name}")
-            return {"error": f"Unknown tool: {function_name}"}
-
+    def send_message(self, user_message: str) -> str:
+        """Send a message and get response with automatic tool usage."""
         try:
-            result = tool_func(**function_args)
-            return {"result": result}
-        except Exception as e:
-            LOGGER.exception(f"Tool execution failed: {function_name}")
-            return {"error": str(e)}
-
-    def send_message(self, user_message: str) -> Generator[str, None, None]:
-        """Send a message and handle function calling loop."""
-        # Build conversation history
-        chat_history = list(self._history)
-        chat_history.append(protos.Content(role="user", parts=[protos.Part(text=user_message)]))
-
-        max_iterations = 10
-        iteration = 0
-
-        while iteration < max_iterations:
-            iteration += 1
-
-            # Generate response (non-streaming)
-            try:
-                response = self._model.generate_content(
-                    contents=chat_history,
-                    stream=False
-                )
-            except Exception as e:
-                LOGGER.exception("Failed to generate content")
-                yield f"Error: {str(e)}"
-                return
-
-            # Check if response has parts
-            if not response.candidates or not response.candidates[0].content.parts:
-                LOGGER.warning("Response has no parts")
-                break
-
-            first_part = response.candidates[0].content.parts[0]
-
-            # DEBUG: Comprehensive function call detection logging
-            LOGGER.warning("=" * 80)
-            LOGGER.warning("🔍 DEBUGGING FUNCTION CALL DETECTION")
-            LOGGER.warning("=" * 80)
-            LOGGER.warning(f"1. Type of first_part: {type(first_part)}")
-            LOGGER.warning(f"2. Has 'function_call' attribute: {hasattr(first_part, 'function_call')}")
-
-            if hasattr(first_part, "function_call"):
-                func_call = first_part.function_call
-                LOGGER.warning(f"3. Type of function_call: {type(func_call)}")
-                LOGGER.warning(f"4. Boolean value of function_call (truthy?): {bool(func_call)}")
-                LOGGER.warning(f"5. repr() of function_call: {repr(func_call)}")
-
-                try:
-                    name = func_call.name
-                    LOGGER.warning(f"6. function_call.name: {name}")
-                except Exception as e:
-                    LOGGER.warning(f"6. Error accessing function_call.name: {e}")
-
-                try:
-                    dir_output = dir(func_call)
-                    LOGGER.warning(f"7. dir() of function_call: {dir_output}")
-                except Exception as e:
-                    LOGGER.warning(f"7. Error getting dir() of function_call: {e}")
-            else:
-                LOGGER.warning("3-7. Skipped: No function_call attribute found")
-
-            LOGGER.warning("=" * 80)
-            LOGGER.warning("🔍 CHECKING CONDITION NOW")
-            LOGGER.warning("=" * 80)
-
-            # Check for function call FIRST
-            LOGGER.warning(f"BEFORE CONDITION: hasattr(first_part, 'function_call') = {hasattr(first_part, 'function_call')}")
-            if hasattr(first_part, "function_call"):
-                LOGGER.warning(f"BEFORE CONDITION: first_part.function_call = {first_part.function_call}")
-                LOGGER.warning(f"BEFORE CONDITION: bool(first_part.function_call) = {bool(first_part.function_call)}")
-                try:
-                    LOGGER.warning(f"BEFORE CONDITION: first_part.function_call.name = {first_part.function_call.name}")
-                except Exception as e:
-                    LOGGER.warning(f"BEFORE CONDITION: Error accessing .name: {e}")
-
-            # FIX: Check for function_call.name, not just truthy value of function_call
-            # Empty function_call objects evaluate to False but still prevent .text access
-            if hasattr(first_part, "function_call") and first_part.function_call.name:
-                LOGGER.warning("✅ CONDITION PASSED: Entering function call handling block")
-                function_call = first_part.function_call
-                function_name = function_call.name
-                function_args = dict(function_call.args)
-
-                # Log and notify
-                args_str = ", ".join(f"{k}={v}" for k, v in function_args.items())
-                LOGGER.info(f"Model requested function call: {function_name}({args_str})")
-                yield f"🔧 Calling tool: {function_name}({args_str[:100]}...)\n"
-
-                # Execute the tool
-                result = self._execute_tool(function_name, function_args)
-
-                # Append model's response to history
-                chat_history.append(response.candidates[0].content)
-
-                # Append function response
-                function_response = protos.FunctionResponse(
-                    name=function_name,
-                    response=result
-                )
-                chat_history.append(protos.Content(
-                    role="user",
-                    parts=[protos.Part(function_response=function_response)]
-                ))
-
-                # Continue loop
-                continue
-            else:
-                LOGGER.warning("❌ CONDITION FAILED: Function call NOT detected or condition not met")
-                if hasattr(first_part, "function_call"):
-                    LOGGER.warning(f"   - function_call exists but evaluated to False: {first_part.function_call}")
-                else:
-                    LOGGER.warning("   - function_call attribute does not exist")
-
-            # No function call - try to get text
-            try:
-                final_text = response.text
-                self._history = chat_history
-                yield final_text
-                return
-            except Exception as e:
-                LOGGER.error(f"Could not extract text from final response: {e}")
-                yield "Error: Could not generate response"
-                return
-
-        # Max iterations reached
-        LOGGER.warning(f"Function calling loop exceeded {max_iterations} iterations")
-        yield "Error: Too many function calls"
-
-    def _create_function_declaration(
-        self, name: str, description: str, parameters: dict[str, str]
-    ) -> genai.protos.FunctionDeclaration:
-        """Create a function declaration for Gemini."""
-        properties = {}
-        required = []
-
-        for param_name, param_desc in parameters.items():
-            properties[param_name] = genai.protos.Schema(
-                type=genai.protos.Type.STRING, description=param_desc
+            # Create config with Python functions as tools
+            config = types.GenerateContentConfig(
+                tools=[
+                    list_project_files,
+                    search_in_files,
+                    read_project_file,
+                    read_multiple_files,
+                    get_function_definitions,
+                    run_tests,
+                    lint_code,
+                    format_code,
+                    install_package,
+                    get_git_status,
+                    git_commit,
+                    git_push,
+                    git_diff,
+                    clear_session_context,
+                    execute_python_session,
+                ],
+                system_instruction=AURA_SYSTEM_PROMPT,
             )
-            required.append(param_name)
 
-        return genai.protos.FunctionDeclaration(
-            name=name,
-            description=description,
-            parameters=genai.protos.Schema(
-                type=genai.protos.Type.OBJECT,
-                properties=properties,
-                required=required if required else None,
-            ),
-        )
+            # The SDK automatically:
+            # - Detects function calls
+            # - Executes the functions
+            # - Sends results back to model
+            # - Repeats until model returns text
+            response = self._client.models.generate_content(
+                model=self.model_name,
+                contents=user_message,
+                config=config,
+            )
+
+            return response.text
+
+        except Exception as e:
+            LOGGER.exception("Failed to generate content with automatic function calling")
+            return f"Error: {str(e)}"
 
     def clear_history(self) -> None:
-        """Clear the conversation history."""
-        self._history.clear()
+        """Clear the conversation history (no-op with stateless client)."""
+        pass

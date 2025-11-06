@@ -290,30 +290,14 @@ class _ExecutionWorker(QObject):
                 "focused coding sessions. Be thorough but concise in your analysis."
             )
 
-            # Collect all streaming responses including tool calls
-            discovery_results = []
-            tool_calls_made = []
+            # Get discovery response with automatic tool calling
+            # The SDK will automatically execute all tool calls behind the scenes
+            self.session_output.emit("    └─ Running discovery phase with automatic tool calling...")
+            combined_discovery = chat.send_message(discovery_prompt)
 
-            for chunk in chat.send_message(discovery_prompt):
-                # Track tool calls
-                if chunk.startswith("TOOL_CALL::"):
-                    parts = chunk.split("::", 2)
-                    if len(parts) >= 3:
-                        tool_name = parts[1]
-                        tool_args = parts[2]
-                        tool_calls_made.append(f"- {tool_name}({tool_args})")
-                        self.session_output.emit(f"    └─ Calling {tool_name}...")
-                discovery_results.append(chunk)
-
-            combined_discovery = "".join(discovery_results)
-
-            # Log what tools were actually used
-            if tool_calls_made:
-                LOGGER.info("Discovery phase used %d tool calls:", len(tool_calls_made))
-                for tool_call in tool_calls_made:
-                    LOGGER.info("  %s", tool_call)
-            else:
-                LOGGER.warning("Discovery phase completed but NO TOOLS WERE CALLED - this is a failure!")
+            # Note: With automatic function calling, we don't get visibility into individual tool calls
+            # The SDK handles the entire function calling loop internally
+            LOGGER.info("Discovery phase completed with automatic function calling")
 
             # Build rich context combining basic info with AI discovery
             basic_context = self._build_project_context()
