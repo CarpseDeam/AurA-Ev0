@@ -58,7 +58,7 @@ class OrchestrationHandler(QObject):
         self._app_state.set_current_plan(None)
         self._set_running_state()
         self.request_input_enabled.emit(False)
-        self._output_panel.display_thinking("Analyzing request and planning sessions...")
+        self._output_panel.display_thinking("Analyzing request...")
 
     def handle_plan_ready(self, plan: SessionPlan) -> None:
         """Render the plan details and re-enable input."""
@@ -76,8 +76,8 @@ class OrchestrationHandler(QObject):
     def handle_session_started(self, index: int, session: Session) -> None:
         """Display headers for a new session."""
         self._set_running_state()
-        total = len(self._app_state.current_plan.sessions) if self._app_state.current_plan else "?"
-        name = getattr(session, "name", "Unknown session")
+        total = len(self._app_state.current_plan.sessions) if self._app_state.current_plan else 1
+        name = getattr(session, "name", "Conversation")
 
         self._output_panel.display_output("")  # Spacer
         self._output_panel.display_output(
@@ -135,16 +135,16 @@ class OrchestrationHandler(QObject):
         success = getattr(result, "success", False)
 
         if success:
-            self._output_panel.display_success(f"Session complete in {duration:.1f}s")
+            self._output_panel.display_success(f"Response complete in {duration:.1f}s")
         else:
-            self._output_panel.display_error(f"Session failed in {duration:.1f}s")
+            self._output_panel.display_error(f"Response failed in {duration:.1f}s")
 
     def handle_all_complete(self) -> None:
         """Mark orchestration as complete."""
         self._app_state.set_current_plan(None)
         self._set_completed_state()
         self._output_panel.display_output("")  # Spacer
-        self._output_panel.display_success("All sessions complete")
+        self._output_panel.display_success("Conversation finished")
         self.request_input_enabled.emit(True)
         self.request_input_focus.emit()
 

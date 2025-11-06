@@ -13,7 +13,6 @@ from PySide6.QtWidgets import QApplication
 from aura import config
 from aura.orchestrator import Orchestrator
 from aura.services import ChatService
-from aura.services.planning_service import PlanningService
 from aura.state import AppState
 from aura.ui.main_window import MainWindow
 
@@ -43,7 +42,6 @@ class ApplicationController:
         """Initialize the application controller."""
         self.app_state: AppState | None = None
         self.chat_service: ChatService | None = None
-        self.planning_service: PlanningService | None = None
         self.orchestrator: Orchestrator | None = None
         self.main_window: MainWindow | None = None
 
@@ -67,12 +65,10 @@ class ApplicationController:
         api_key = os.getenv("GEMINI_API_KEY", "")
         if api_key:
             self.chat_service = ChatService(api_key=api_key)
-            self.planning_service = PlanningService(api_key=api_key)
             self.orchestrator = Orchestrator(
-                self.planning_service,
+                self.chat_service,
                 self.app_state.working_directory,
-                self.app_state.agent_path,
-                api_key=api_key,
+                self.app_state.agent_path or "",
             )
 
         # Create main window with dependencies
@@ -116,29 +112,12 @@ class ApplicationController:
         if not self.orchestrator:
             return
 
-        # Create new orchestrator with updated working directory
-        self.orchestrator = Orchestrator(
-            self.planning_service,
-            path,
-            self.app_state.agent_path,
-            api_key=os.getenv("GEMINI_API_KEY", ""),
-        )
-
-        # Update MainWindow's orchestrator reference
-        self.main_window.orchestrator = self.orchestrator
-
-        # Wire all orchestrator signals through OrchestrationHandler
-        self.main_window._connect_orchestrator_signals()
-
-        # Connect progress updates and execution requests
-        self.orchestrator.progress_update.connect(
-            self.main_window._on_progress_update,
-            Qt.ConnectionType.UniqueConnection,
-        )
-        self.main_window.execution_requested.connect(
-            self.orchestrator.execute_goal,
-            Qt.ConnectionType.UniqueConnection,
-        )
+        # Update orchestrator workspace without recreating it
+        try:
+            self.orchestrator.update_working_directory(path)
+        except FileNotFoundError as exc:
+            logging.getLogger("aura").error("Failed to update working directory: %s", exc)
+            self.main_window._on_progress_update("Invalid working directory")
 
 
 def _create_application() -> QApplication:
