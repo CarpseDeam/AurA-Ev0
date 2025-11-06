@@ -151,22 +151,66 @@ class PlanningService:
         if not combined.strip():
             raise ValueError("Planning service returned an empty response.")
 
-        # Try to extract JSON from response (handles natural language + JSON)
-        json_match = re.search(r'\{[\s\S]*\}', combined)
-        if json_match:
-            response_text = json_match.group(0)
-        else:
-            # Strip markdown code blocks if present
-            response_text = combined.strip()
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]  # Remove ```json
-            elif response_text.startswith("```"):
-                response_text = response_text[3:]  # Remove ```
+        # Strip markdown code blocks if present
+        cleaned = combined.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
 
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]  # Remove trailing ```
+        # Extract JSON object even if followed by explanation text
+        # Find the first opening brace
+        first_brace = cleaned.find('{')
+        if first_brace == -1:
+            raise ValueError("No JSON object found in planning response.")
+
+        # Use JSONDecoder.raw_decode to extract valid JSON and ignore trailing text
+        try:
+            decoder = json.JSONDecoder()
+            _, end_idx = decoder.raw_decode(cleaned, first_brace)
+            response_text = cleaned[first_brace:end_idx]
+        except json.JSONDecodeError as exc:
+            LOGGER.warning("Failed to extract JSON with raw_decode, trying fallback: %s", exc)
+            # Fallback: try to find matching braces manually
+            response_text = self._extract_json_by_braces(cleaned[first_brace:])
 
         return response_text.strip()
+
+    def _extract_json_by_braces(self, text: str) -> str:
+        """Manually extract JSON by tracking brace depth (fallback method)."""
+        if not text.startswith('{'):
+            raise ValueError("Text does not start with opening brace.")
+
+        depth = 0
+        in_string = False
+        escape_next = False
+
+        for i, char in enumerate(text):
+            if escape_next:
+                escape_next = False
+                continue
+
+            if char == '\\' and in_string:
+                escape_next = True
+                continue
+
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+
+            if not in_string:
+                if char == '{':
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0:
+                        # Found the matching closing brace
+                        return text[:i + 1]
+
+        raise ValueError("Could not find matching closing brace for JSON object.")
 
     def _build_plan(self, payload: dict) -> SessionPlan:
         """Validate and construct the session plan."""
