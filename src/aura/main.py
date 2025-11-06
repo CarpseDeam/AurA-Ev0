@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from aura import config
@@ -92,19 +93,23 @@ class ApplicationController:
 
         if self.orchestrator:
             self.app_state.working_directory_changed.connect(
-                self._on_working_directory_changed
+                self._on_working_directory_changed,
+                Qt.ConnectionType.UniqueConnection,
             )
 
             self.main_window.execution_requested.connect(
-                self.orchestrator.execute_goal
+                self.orchestrator.execute_goal,
+                Qt.ConnectionType.UniqueConnection,
             )
 
             self.orchestrator.progress_update.connect(
-                self.main_window._on_progress_update
+                self.main_window._on_progress_update,
+                Qt.ConnectionType.UniqueConnection,
             )
 
             self.orchestrator.session_output.connect(
-                self.main_window.append_to_log
+                self.main_window.append_to_log,
+                Qt.ConnectionType.UniqueConnection,
             )
 
     def _on_working_directory_changed(self, path: str) -> None:
@@ -124,35 +129,45 @@ class ApplicationController:
         )
 
         self.orchestrator.planning_started.connect(
-            self.main_window._on_planning_started
+            self.main_window._on_planning_started,
+            Qt.ConnectionType.UniqueConnection,
         )
         self.orchestrator.plan_ready.connect(
-            self.main_window._on_plan_ready
+            self.main_window._on_plan_ready,
+            Qt.ConnectionType.UniqueConnection,
         )
         self.orchestrator.session_started.connect(
-            self.main_window._on_session_started
+            self.main_window._on_session_started,
+            Qt.ConnectionType.UniqueConnection,
         )
         self.orchestrator.session_output.connect(
-            self.main_window._on_session_output
+            self.main_window._on_session_output,
+            Qt.ConnectionType.UniqueConnection,
         )
         self.orchestrator.session_output.connect(
-            self.main_window.append_to_log
+            self.main_window.append_to_log,
+            Qt.ConnectionType.UniqueConnection,
         )
         self.orchestrator.session_complete.connect(
-            self.main_window._on_session_complete
+            self.main_window._on_session_complete,
+            Qt.ConnectionType.UniqueConnection,
         )
         self.orchestrator.all_sessions_complete.connect(
-            self.main_window._on_all_complete
+            self.main_window._on_all_complete,
+            Qt.ConnectionType.UniqueConnection,
         )
         self.orchestrator.error_occurred.connect(
-            self.main_window._on_error
+            self.main_window._on_error,
+            Qt.ConnectionType.UniqueConnection,
         )
         self.orchestrator.progress_update.connect(
-            self.main_window._on_progress_update
+            self.main_window._on_progress_update,
+            Qt.ConnectionType.UniqueConnection,
         )
 
         self.main_window.execution_requested.connect(
-            self.orchestrator.execute_goal
+            self.orchestrator.execute_goal,
+            Qt.ConnectionType.UniqueConnection,
         )
 
 

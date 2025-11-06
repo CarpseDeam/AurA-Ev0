@@ -136,7 +136,7 @@ class MainWindow(QMainWindow):
         self.orchestration_handler.request_input_enabled.connect(self._set_input_enabled); self.orchestration_handler.request_input_focus.connect(self.input_field.setFocus)
 
     def _subscribe_to_events(self) -> None:
-        self._event_bus.subscribe(EventType.SESSION_OUTPUT, self._emit_event_signal); self._event_bus.subscribe(EventType.ERROR, self._emit_event_signal)
+        self._event_bus.subscribe(EventType.ERROR, self._emit_event_signal)
 
     def _emit_event_signal(self, event: Event) -> None:
         self._event_received.emit(event)
