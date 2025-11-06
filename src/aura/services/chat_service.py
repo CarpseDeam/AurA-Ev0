@@ -35,7 +35,7 @@ from aura.tools.symbol_tools import find_definition, find_usages, get_imports
 LOGGER = logging.getLogger(__name__)
 
 
-def execute_cli_agent(prompt: str, working_directory: Optional[str] = None) -> dict[str, object]:
+def execute_cli_agent(prompt: str, working_directory: Optional[str] = None) -> dict:
     """Synchronously execute the Gemini CLI agent and return structured results."""
     from aura.utils.agent_finder import find_cli_agents
 
