@@ -61,10 +61,6 @@ class AgentExecutionManager:
         for agent in agents:
             if agent.is_available and agent.name == self._app_state.selected_agent:
                 self._app_state.set_agent_path(agent.executable_path)
-                self._output_panel.display_output(
-                    f"Using {agent.display_name} at {agent.executable_path}",
-                    config.COLORS.success,
-                )
                 if self._orchestrator:
                     self._orchestrator.update_agent_path(agent.executable_path)
                 return
@@ -73,10 +69,6 @@ class AgentExecutionManager:
             if agent.is_available:
                 self._app_state.set_selected_agent(agent.name)
                 self._app_state.set_agent_path(agent.executable_path)
-                self._output_panel.display_output(
-                    f"Using {agent.display_name} at {agent.executable_path}",
-                    config.COLORS.success,
-                )
                 if self._orchestrator:
                     self._orchestrator.update_agent_path(agent.executable_path)
                 return
