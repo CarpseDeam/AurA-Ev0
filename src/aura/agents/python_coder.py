@@ -50,6 +50,7 @@ class AgentResult:
     output_lines: Sequence[str]
     errors: Sequence[str]
     duration_seconds: float
+    tool_calls: Sequence[Mapping[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -221,72 +222,55 @@ def calculate_discount(price: float, user_tier: str) -> float:
         raise ValueError(f"Invalid tier: {user_tier}")
     return price * (1 - discount_rates[user_tier])
 
-7. CONTEXT PASSING BETWEEN SESSIONS (CRITICAL FOR MULTI-SESSION TASKS)
+7. MANDATORY REASONING PROTOCOL (Layered-CoT)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-⚠️ WARNING: Failure to read existing function signatures causes TypeError crashes!
+To prevent critical bugs, you MUST follow this structured reasoning protocol.
+Skipping phases or checkpoints WILL result in rejected work.
 
-MANDATORY REQUIREMENTS:
-✓ If previous work context is provided (previous sessions created files), you MUST:
-  1. Use get_function_definitions tool to read EXACT function signatures
-  2. Read ALL files you will import from or call functions from
-  3. Match parameter names EXACTLY when calling existing functions
-  4. NEVER GUESS at parameter names or function signatures
+PHASE 1: CONTEXT GATHERING (MANDATORY - CANNOT SKIP)
+------------------------------------------------------------------------------
 
-WHY THIS MATTERS:
-Previous sessions created working code. If you guess at how to call their functions,
-you will create parameter mismatch bugs like:
-  ❌ Session 1 creates: generate_password(use_uppercase, use_numbers, use_symbols)
-  ❌ Session 2 guesses: generate_password(include_uppercase, include_numbers, include_symbols)
-  ❌ Result: TypeError - code crashes in production
+This is the most critical phase. Failure here guarantees production bugs.
 
-THE MANDATORY WORKFLOW:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IF `previous_work` is provided (meaning prior sessions have run):
+  - You MUST call the `get_function_definitions` tool on EVERY file from previous sessions that you will import from or interact with.
+  - You MUST record the EXACT function signatures: parameter names, types, defaults, and return types.
+  - CHECKPOINT: Verify that you have retrieved the function signatures BEFORE proceeding to Phase 2.
 
-IF you see "Previous work:" in your prompt:
-  STEP 1: Call get_function_definitions on EVERY file from previous sessions
-  STEP 2: Read the exact parameter names, types, and return values
-  STEP 3: Use those EXACT signatures when calling functions
-  STEP 4: Proceed with your implementation
+ELSE (if this is the first session, `previous_work` is empty):
+  - You may skip to Phase 2.
 
-EXAMPLE - THE RIGHT WAY:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHY THIS IS MANDATORY:
+Guessing parameter names instead of reading them causes `TypeError` crashes.
+  - Session 1 creates: `generate_password(use_uppercase, use_numbers)`
+  - Session 2 GUESSES: `generate_password(include_uppercase, include_numbers)`
+  - RESULT: `TypeError: got unexpected keyword argument 'include_uppercase'`. This is a fatal error.
 
-Scenario: Session 2 needs to call Session 1's function
+BLOCKING CONDITION: You CANNOT proceed to design or implementation without completing this phase if previous work exists.
 
-Previous work shows: generator.py created
+PHASE 2: DESIGN (Verified Against Phase 1)
+------------------------------------------------------------------------------
 
-✅ STEP 1 - Call tool:
-get_function_definitions(file_path="generator.py")
+1.  State clearly what you are building or modifying.
+2.  List the files you will create or modify.
+3.  CHECKPOINT: If importing or calling functions from previous work, explicitly cross-reference the EXACT parameter names you retrieved in Phase 1. Confirm they are available before proceeding.
 
-✅ STEP 2 - Read result:
-def generate_password(length: int = 12, use_uppercase: bool = True,
-                     use_numbers: bool = True, use_symbols: bool = True) -> str:
-    ...
+PHASE 3: IMPLEMENTATION (Using Exact Signatures)
+------------------------------------------------------------------------------
 
-✅ STEP 3 - Call with EXACT parameters:
-password = generate_password(
-    length=16,
-    use_uppercase=True,
-    use_numbers=True,
-    use_symbols=False
-)
+1.  Write the code to implement the design.
+2.  When calling functions from previous work, use the VERBATIM signatures retrieved in Phase 1.
+3.  DO NOT guess, assume, or modify parameter names.
+4.  Adhere to all code quality standards (type hints, docstrings, SRP, DRY).
 
-❌ WRONG - Guessing at parameters:
-password = generate_password(
-    length=16,
-    include_uppercase=True,    # WRONG! Parameter is use_uppercase, not include_uppercase
-    include_numbers=True,      # WRONG! Parameter is use_numbers
-    include_symbols=False      # WRONG! Parameter is use_symbols
-)
-# Result: TypeError: got unexpected keyword argument 'include_uppercase'
+PHASE 4: VALIDATION
+------------------------------------------------------------------------------
 
-THIS IS NON-NEGOTIABLE:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-You CANNOT proceed with Session 2+ without first reading Session 1's function signatures.
-If you skip get_function_definitions when previous work exists, your code WILL crash.
-This is a HARD REQUIREMENT - not optional, not a suggestion.
+1.  Provide validation commands in the `commands` section of your JSON response.
+2.  For new functions, include a `pytest` test case.
+3.  For API endpoints, include a `curl` command.
+4.  CHECKPOINT: Verify that your implementation works with the exact signatures from previous work, preventing `TypeError` bugs.
 
 8. THINKING AND REASONING
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -404,7 +388,7 @@ Before returning your response, verify:
 ✓ No emojis in code
 ✓ Consistent naming conventions
 ✓ Secure practices (validated inputs, hashed passwords)
-✓ IF previous work exists: get_function_definitions was called to read exact signatures
+✓ IF previous work exists: Phase 1 (Context Gathering) was completed and `get_function_definitions` was called.
 ✓ IF calling functions from previous sessions: parameter names match EXACTLY
 
 If any check fails, your code is UNACCEPTABLE.
@@ -430,17 +414,29 @@ Code that violates these principles WILL BE REJECTED.
         outputs: List[str] = []
         errors: List[str] = []
         summary = ""
+        tool_calls: List[Mapping[str, object]] = []
         self.progress_update.emit("⋯ Generating code...")
         try:
             prompt = self._build_prompt(context)
             LOGGER.debug("Built prompt with %d characters", len(prompt))
 
-            plan = self._request_plan(prompt)
+            if context.previous_work:
+                LOGGER.info("PHASE 1: Context Gathering Started")
+
+            plan, new_tool_calls = self._request_plan(prompt)
+            tool_calls.extend(new_tool_calls)
+
+            if new_tool_calls:
+                LOGGER.info(
+                    "CHECKPOINT: Verified signatures for %d tool calls.", len(new_tool_calls)
+                )
+
             summary = plan.get("summary", "")
-            LOGGER.info("Received plan: %s", summary)
+            LOGGER.info("PHASE 2: Design - Received plan: %s", summary)
             plan_summary = summary.strip() or "No summary provided"
             self.progress_update.emit(f"⋯ {plan_summary}")
 
+            LOGGER.info("PHASE 3: Implementation")
             file_ops = self._parse_file_operations(plan.get("files", []), context.working_dir)
             LOGGER.debug("Parsed %d file operations", len(file_ops))
 
@@ -449,6 +445,7 @@ Code that violates these principles WILL BE REJECTED.
 
             plan_commands = plan.get("commands", [])
             if plan_commands:
+                LOGGER.info("PHASE 4: Validation")
                 self.progress_update.emit("▶ Running validation...")
 
             commands, cmd_outputs, cmd_errors = self._execute_commands(
@@ -472,11 +469,12 @@ Code that violates these principles WILL BE REJECTED.
             )
 
         LOGGER.info(
-            "Session completed: success=%s, duration=%.2fs, files=%d, commands=%d",
+            "Session completed: success=%s, duration=%.2fs, files=%d, commands=%d, tool_calls=%d",
             success,
             duration,
             files_count,
             len(commands),
+            len(tool_calls),
         )
 
         return AgentResult(
@@ -488,6 +486,7 @@ Code that violates these principles WILL BE REJECTED.
             output_lines=tuple(outputs),
             errors=tuple(errors),
             duration_seconds=duration,
+            tool_calls=tuple(tool_calls),
         )
 
     def _build_prompt(self, context: SessionContext) -> str:
@@ -522,9 +521,12 @@ Code that violates these principles WILL BE REJECTED.
         )
         return "\n\n".join(section for section in sections if section)
 
-    def _request_plan(self, prompt: str) -> Mapping[str, object]:
+    def _request_plan(
+        self, prompt: str
+    ) -> tuple[Mapping[str, object], List[Mapping[str, object]]]:
         LOGGER.debug("Requesting plan from Gemini API")
         response = self._model.generate_content(prompt, stream=True)
+        tool_calls = []
 
         try:
             iterator = iter(response)
@@ -533,15 +535,21 @@ Code that violates these principles WILL BE REJECTED.
             if payload:
                 self._emit_stream_chunk(payload)
                 self._emit_stream_chunk("\n")
-            return self._parse_plan_payload(payload)
+            return self._parse_plan_payload(payload), []
 
         aggregated_text = ""
         collected_parts: List[str] = []
         seen_calls: Set[str] = set()
         streamed_any = False
         for chunk in iterator:
-            streamed_any = self._emit_tool_calls(chunk, seen_calls) or streamed_any
-            addition, aggregated_text = self._extract_stream_addition(chunk, aggregated_text)
+            new_calls = self._emit_tool_calls(chunk, seen_calls)
+            if new_calls:
+                tool_calls.extend(new_calls)
+                streamed_any = True
+
+            addition, aggregated_text = self._extract_stream_addition(
+                chunk, aggregated_text
+            )
             if addition:
                 self._emit_stream_chunk(addition)
                 collected_parts.append(addition)
@@ -556,7 +564,7 @@ Code that violates these principles WILL BE REJECTED.
 
         payload = (raw_payload or "").strip()
 
-        return self._parse_plan_payload(payload)
+        return self._parse_plan_payload(payload), tool_calls
 
     def _emit_stream_chunk(self, chunk: str) -> None:
         """Emit streaming output to the connected UI signal."""
@@ -587,23 +595,28 @@ Code that violates these principles WILL BE REJECTED.
         self,
         chunk: generation_types.GenerateContentResponse,
         seen_calls: Set[str],
-    ) -> bool:
-        """Emit notifications for newly observed tool calls while streaming."""
+    ) -> List[Mapping[str, object]]:
+        """Emit notifications and return newly observed tool calls."""
         function_calls = getattr(chunk, "function_calls", None)
         if not function_calls:
-            return False
+            return []
 
-        emitted = False
+        new_calls = []
         for call in function_calls:
             name = getattr(call, "name", "")
-            args_summary = self._summarize_args(getattr(call, "args", None))
+            args = getattr(call, "args", {})
+            args_summary = self._summarize_args(args)
             signature = f"{name}:{args_summary}"
             if signature in seen_calls:
                 continue
+
             seen_calls.add(signature)
+            LOGGER.debug("🔧 TOOL CALLED: %s(%s)", name, args_summary)
             self.progress_update.emit(f"TOOL_CALL::{name}::{args_summary}")
-            emitted = True
-        return emitted
+
+            new_calls.append({"name": name, "args": dict(args)})
+
+        return new_calls
 
     @staticmethod
     def _summarize_args(args: object) -> str:
