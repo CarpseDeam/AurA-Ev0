@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import wraps
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
@@ -28,6 +29,107 @@ from aura.tools import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+# Preserve original tool implementations before wrapping them with high-visibility logging.
+_ORIG_READ_PROJECT_FILE = read_project_file
+_ORIG_LIST_PROJECT_FILES = list_project_files
+_ORIG_SEARCH_IN_FILES = search_in_files
+_ORIG_GET_FUNCTION_DEFINITIONS = get_function_definitions
+_ORIG_READ_MULTIPLE_FILES = read_multiple_files
+_ORIG_GET_GIT_STATUS = get_git_status
+_ORIG_GIT_COMMIT = git_commit
+_ORIG_GIT_PUSH = git_push
+_ORIG_GIT_DIFF = git_diff
+_ORIG_RUN_TESTS = run_tests
+_ORIG_LINT_CODE = lint_code
+_ORIG_FORMAT_CODE = format_code
+_ORIG_INSTALL_PACKAGE = install_package
+
+
+@wraps(_ORIG_READ_PROJECT_FILE)
+def read_project_file(path: str) -> str:
+    LOGGER.warning("🚨 TOOL_CALL read_project_file path=%s", path)
+    return _ORIG_READ_PROJECT_FILE(path)
+
+
+@wraps(_ORIG_LIST_PROJECT_FILES)
+def list_project_files(directory: str = ".", extension: str = ".py") -> list[str]:
+    LOGGER.warning("🚨 TOOL_CALL list_project_files directory=%s extension=%s", directory, extension)
+    return _ORIG_LIST_PROJECT_FILES(directory=directory, extension=extension)
+
+
+@wraps(_ORIG_SEARCH_IN_FILES)
+def search_in_files(
+    pattern: str, directory: str = ".", file_extension: str = ".py"
+) -> dict[str, object]:
+    LOGGER.warning("🚨 TOOL_CALL search_in_files pattern=%s directory=%s extension=%s", pattern, directory, file_extension)
+    return _ORIG_SEARCH_IN_FILES(pattern=pattern, directory=directory, file_extension=file_extension)
+
+
+@wraps(_ORIG_GET_FUNCTION_DEFINITIONS)
+def get_function_definitions(file_path: str) -> list[dict[str, object]]:
+    LOGGER.warning("🚨 TOOL_CALL get_function_definitions file_path=%s", file_path)
+    return _ORIG_GET_FUNCTION_DEFINITIONS(file_path)
+
+
+@wraps(_ORIG_READ_MULTIPLE_FILES)
+def read_multiple_files(file_paths: list[str]) -> dict[str, str]:
+    LOGGER.warning("🚨 TOOL_CALL read_multiple_files file_count=%d paths=%s", len(file_paths), file_paths)
+    return _ORIG_READ_MULTIPLE_FILES(file_paths)
+
+
+@wraps(_ORIG_GET_GIT_STATUS)
+def get_git_status() -> str:
+    LOGGER.warning("🚨 TOOL_CALL get_git_status")
+    return _ORIG_GET_GIT_STATUS()
+
+
+@wraps(_ORIG_GIT_COMMIT)
+def git_commit(message: str) -> str:
+    LOGGER.warning("🚨 TOOL_CALL git_commit message=%s", message)
+    return _ORIG_GIT_COMMIT(message)
+
+
+@wraps(_ORIG_GIT_PUSH)
+def git_push(remote: str = "origin", branch: str = "main") -> str:
+    LOGGER.warning("🚨 TOOL_CALL git_push remote=%s branch=%s", remote, branch)
+    return _ORIG_GIT_PUSH(remote=remote, branch=branch)
+
+
+@wraps(_ORIG_GIT_DIFF)
+def git_diff(file_path: str = "", staged: bool = False) -> str:
+    LOGGER.warning("🚨 TOOL_CALL git_diff file_path=%s staged=%s", file_path or "<all>", staged)
+    return _ORIG_GIT_DIFF(file_path=file_path, staged=staged)
+
+
+@wraps(_ORIG_RUN_TESTS)
+def run_tests(
+    test_path: str = "tests/", verbose: bool = False
+) -> dict[str, object]:
+    LOGGER.warning("🚨 TOOL_CALL run_tests test_path=%s verbose=%s", test_path, verbose)
+    return _ORIG_RUN_TESTS(test_path=test_path, verbose=verbose)
+
+
+@wraps(_ORIG_LINT_CODE)
+def lint_code(
+    file_paths: list[str] | None = None, directory: str = "."
+) -> dict[str, object]:
+    LOGGER.warning("🚨 TOOL_CALL lint_code file_paths=%s directory=%s", file_paths, directory)
+    return _ORIG_LINT_CODE(file_paths=file_paths, directory=directory)
+
+
+@wraps(_ORIG_FORMAT_CODE)
+def format_code(
+    file_paths: list[str] | None = None, directory: str = "."
+) -> dict[str, object]:
+    LOGGER.warning("🚨 TOOL_CALL format_code file_paths=%s directory=%s", file_paths, directory)
+    return _ORIG_FORMAT_CODE(file_paths=file_paths, directory=directory)
+
+
+@wraps(_ORIG_INSTALL_PACKAGE)
+def install_package(package: str, version: str = "") -> str:
+    LOGGER.warning("🚨 TOOL_CALL install_package package=%s version=%s", package, version)
+    return _ORIG_INSTALL_PACKAGE(package=package, version=version)
 
 
 class SessionContextManager:
@@ -116,6 +218,7 @@ AURA_SYSTEM_PROMPT = (
 
 def execute_python_session(session_prompt: str, working_directory: str) -> dict[str, object]:
     """Run a Python coder session using the local project."""
+    LOGGER.warning("🚨 TOOL_CALL execute_python_session working_directory=%s prompt_chars=%d", working_directory, len(session_prompt))
     LOGGER.info(
         "execute_python_session called: prompt_length=%d, working_directory=%s",
         len(session_prompt),
@@ -188,6 +291,7 @@ def execute_python_session(session_prompt: str, working_directory: str) -> dict[
 
 def clear_session_context() -> str:
     """Clear accumulated session context for a fresh start."""
+    LOGGER.warning("🚨 TOOL_CALL clear_session_context invoked")
     manager = get_session_context_manager()
     manager.clear()
     LOGGER.info("Session context cleared.")
