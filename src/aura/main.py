@@ -116,6 +116,7 @@ class ApplicationController:
         if not self.orchestrator:
             return
 
+        # Create new orchestrator with updated working directory
         self.orchestrator = Orchestrator(
             self.planning_service,
             path,
@@ -123,39 +124,17 @@ class ApplicationController:
             api_key=os.getenv("GEMINI_API_KEY", ""),
         )
 
-        self.orchestrator.planning_started.connect(
-            self.main_window._on_planning_started,
-            Qt.ConnectionType.UniqueConnection,
-        )
-        self.orchestrator.plan_ready.connect(
-            self.main_window._on_plan_ready,
-            Qt.ConnectionType.UniqueConnection,
-        )
-        self.orchestrator.session_started.connect(
-            self.main_window._on_session_started,
-            Qt.ConnectionType.UniqueConnection,
-        )
-        self.orchestrator.session_output.connect(
-            self.main_window._on_session_output,
-            Qt.ConnectionType.UniqueConnection,
-        )
-        self.orchestrator.session_complete.connect(
-            self.main_window._on_session_complete,
-            Qt.ConnectionType.UniqueConnection,
-        )
-        self.orchestrator.all_sessions_complete.connect(
-            self.main_window._on_all_complete,
-            Qt.ConnectionType.UniqueConnection,
-        )
-        self.orchestrator.error_occurred.connect(
-            self.main_window._on_error,
-            Qt.ConnectionType.UniqueConnection,
-        )
+        # Update MainWindow's orchestrator reference
+        self.main_window.orchestrator = self.orchestrator
+
+        # Wire all orchestrator signals through OrchestrationHandler
+        self.main_window._connect_orchestrator_signals()
+
+        # Connect progress updates and execution requests
         self.orchestrator.progress_update.connect(
             self.main_window._on_progress_update,
             Qt.ConnectionType.UniqueConnection,
         )
-
         self.main_window.execution_requested.connect(
             self.orchestrator.execute_goal,
             Qt.ConnectionType.UniqueConnection,
