@@ -251,7 +251,7 @@ class ChatService:
     """Manages conversational interactions with developer tool access."""
 
     api_key: str
-    model_name: str = "gemini-2.0-flash-exp"
+    model_name: str = "gemini-2.5-pro"
     _model: genai.GenerativeModel = field(init=False, repr=False)
     _history: list[protos.Content] = field(default_factory=list, init=False, repr=False)
     _tools_dict: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
