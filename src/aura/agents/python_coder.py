@@ -675,8 +675,11 @@ Code that violates these principles WILL BE REJECTED.
         aggregated_text: str,
     ) -> tuple[str, str]:
         """Return the new text produced by this chunk."""
-        text = getattr(chunk, "text", "") or ""
-        if not text:
+        try:
+            text = getattr(chunk, "text", "") or ""
+            if not text:
+                return "", aggregated_text
+        except (ValueError, AttributeError):
             return "", aggregated_text
 
         if aggregated_text and aggregated_text.startswith(text):
