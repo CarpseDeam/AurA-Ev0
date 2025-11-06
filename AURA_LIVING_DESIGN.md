@@ -378,7 +378,6 @@ Google GenAI SDK - https://github.com/google/generative-ai-python
 
 Inspiration
 
-Gemini CLI - Terminal aesthetic, massive gradient banner, pure black background
 ReAct Pattern - Reason + Act (Yao et al. 2022)
 AWS Agentic Patterns - Planning agents, tool use
 Microsoft Agent Framework - Multi-agent orchestration

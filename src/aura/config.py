@@ -51,7 +51,7 @@ AGENT_SEARCH_PATHS: list[str] = [
 ]
 
 AGENT_DISPLAY_NAMES: dict[str, str] = {
-    "gemini": "Gemini CLI",
+    "gemini": "Gemini 2.5 Pro",
     "claude": "Claude Code",
     "codex": "Codex",
 }
