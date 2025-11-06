@@ -15,6 +15,7 @@ from aura import config
 from aura.events import EventType, get_event_bus
 from aura.execution import CliAgentExecutor, NativeAgentExecutor, SessionExecutor
 from aura.services import PlanningService
+from aura.services.chat_service import ChatService
 from aura.services.planning_service import Session
 from aura.tools import GitHelper
 from aura.utils import scan_directory
@@ -173,10 +174,13 @@ class _ExecutionWorker(QObject):
         self._event_bus.publish(EventType.PLANNING_STARTED)
         self.session_output.emit("Analyzing request...")
 
-        LOGGER.info("Building project context for planning")
-        project_context = self._build_project_context()
+        # NEW: Intelligent discovery phase using ChatService with tools
+        LOGGER.info("Starting intelligent project discovery phase")
+        self.session_output.emit("  ├─ Phase 1: Discovering project context...")
+        project_context = self._discover_project_context(self._goal)
 
         LOGGER.info("Requesting session plan from planning service")
+        self.session_output.emit("  └─ Phase 2: Generating session plan...")
         plan = self._planning_service.plan_sessions(self._goal, project_context)
 
         if not plan or not plan.sessions:
@@ -257,8 +261,78 @@ class _ExecutionWorker(QObject):
         self.session_output.emit(f"  └─ Total time: {total_duration:.1f}s")
         LOGGER.info("Orchestration complete: %d sessions, %.1fs total", session_count, total_duration)
 
+    def _discover_project_context(self, goal: str) -> str:
+        """Use ChatService with tools to discover project context intelligently.
+
+        This method triggers the mandatory tool usage workflow defined in AURA_SYSTEM_PROMPT,
+        causing ChatService to analyze the project using its 8 developer tools before planning.
+        """
+        self.session_output.emit("  └─ Discovering project context with AI tools...")
+        LOGGER.info("Starting intelligent project discovery with ChatService")
+
+        api_key = self._api_key or os.getenv("GEMINI_API_KEY", "")
+        if not api_key:
+            LOGGER.warning("No API key available for discovery phase, falling back to basic context")
+            return self._build_project_context()
+
+        try:
+            chat = ChatService(api_key=api_key)
+
+            # Discovery-focused prompt that triggers mandatory tool usage
+            discovery_prompt = (
+                f"Analyze this project for the following task: {goal}\n\n"
+                "Use your developer tools to understand:\n"
+                "1. What files and directories exist (list_project_files)\n"
+                "2. What relevant code patterns are already implemented (search_in_files)\n"
+                "3. Function signatures in key files (get_function_definitions)\n"
+                "4. Implementation details of relevant modules (read_project_file)\n\n"
+                "Gather comprehensive context about the codebase that will help plan "
+                "focused coding sessions. Be thorough but concise in your analysis."
+            )
+
+            # Collect all streaming responses including tool calls
+            discovery_results = []
+            tool_calls_made = []
+
+            for chunk in chat.send_message(discovery_prompt):
+                # Track tool calls
+                if chunk.startswith("TOOL_CALL::"):
+                    parts = chunk.split("::", 2)
+                    if len(parts) >= 3:
+                        tool_name = parts[1]
+                        tool_args = parts[2]
+                        tool_calls_made.append(f"- {tool_name}({tool_args})")
+                        self.session_output.emit(f"    └─ Calling {tool_name}...")
+                discovery_results.append(chunk)
+
+            combined_discovery = "".join(discovery_results)
+
+            # Log what tools were actually used
+            if tool_calls_made:
+                LOGGER.info("Discovery phase used %d tool calls:", len(tool_calls_made))
+                for tool_call in tool_calls_made:
+                    LOGGER.info("  %s", tool_call)
+            else:
+                LOGGER.warning("Discovery phase completed but NO TOOLS WERE CALLED - this is a failure!")
+
+            # Build rich context combining basic info with AI discovery
+            basic_context = self._build_project_context()
+
+            return (
+                f"{basic_context}\n\n"
+                f"AI Discovery Analysis:\n"
+                f"{combined_discovery}\n\n"
+                f"Tools Used: {len(tool_calls_made)}\n"
+                f"{chr(10).join(tool_calls_made) if tool_calls_made else '- None (DISCOVERY FAILED)'}"
+            )
+
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Discovery phase failed, falling back to basic context: %s", exc)
+            self.session_output.emit(f"  └─ Discovery failed: {exc}, using basic context")
+            return self._build_project_context()
+
     def _build_project_context(self) -> str:
-        """Summarize the working directory for planning."""
+        """Summarize the working directory for planning (basic fallback)."""
         snapshot = scan_directory(str(self._working_dir), max_depth=2)
         directories = "\n".join(f"- {entry}" for entry in snapshot["directories"]) or "- None"
         python_files = [
