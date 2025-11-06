@@ -41,13 +41,9 @@ class OutputPanel(QWidget):
         chosen_color = color or self._resolve_line_color(text)
         escaped_text = html.escape(text)
         timestamp = datetime.now().strftime("%H:%M:%S")
-        wrap_style = (
-            f"color: {chosen_color}; white-space: pre-wrap; "
-            "overflow-wrap: anywhere; word-break: break-word;"
-        )
         payload = (
             f'<span style="color: {config.COLORS.secondary};">[{timestamp}]</span> '
-            f'<span style="{wrap_style}">{escaped_text}</span><br>'
+            f'<span style="color: {chosen_color};">{escaped_text}</span><br>'
         )
         self._append_html(payload)
 
@@ -78,24 +74,20 @@ class OutputPanel(QWidget):
             return
         chosen_color = color or config.COLORS.agent_output
         escaped_text = html.escape(text)
-        wrap_style = (
-            f"color: {chosen_color}; white-space: pre-wrap; "
-            "overflow-wrap: anywhere; word-break: break-word;"
-        )
-        payload = f'<span style="{wrap_style}">{escaped_text}</span><br>'
+        payload = f'<span style="color: {chosen_color};">{escaped_text}</span><br>'
         self._append_html(payload)
 
     def display_startup_header(self) -> None:
         """Render the startup ASCII art header."""
         header_html = """
-<div style="font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 12px; line-height: 1.0; text-align: center; white-space: pre; margin: 10px 0;">
-<span style="color: #9370DB;">    █████╗ ██╗   ██╗██████╗  █████╗    </span>
-<span style="color: #7E85E8;">    ██╔══██╗██║   ██║██╔══██╗██╔══██╗    </span>
-<span style="color: #6A90F5;">    ███████║██║   ██║██████╔╝███████║    </span>
-<span style="color: #569AFB;">    ██╔══██║██║   ██║██╔══██╗██╔══██║    </span>
-<span style="color: #42A5F5;">    ██║  ██║╚██████╔╝██║  ██║██║  ██║    </span>
-<span style="color: #40E0D0;">    ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝    </span>
-</div>
+<pre style="font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 12px; line-height: 1.0; margin: 10px 0; display: block;">
+<span style="color: #9370DB;">    █████╗ ██╗   ██╗██████╗  █████╗</span>
+<span style="color: #7E85E8;">   ██╔══██╗██║   ██║██╔══██╗██╔══██╗</span>
+<span style="color: #6A90F5;">   ███████║██║   ██║██████╔╝███████║</span>
+<span style="color: #569AFB;">   ██╔══██║██║   ██║██╔══██╗██╔══██║</span>
+<span style="color: #42A5F5;">   ██║  ██║╚██████╔╝██║  ██║██║  ██║</span>
+<span style="color: #40E0D0;">   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝</span>
+</pre><br>
         """
         self._append_html(header_html)
 
