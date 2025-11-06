@@ -83,10 +83,14 @@ class MainWindow(QMainWindow):
 
     def _configure_window(self) -> None:
         self.setWindowTitle("Aura"); self.resize(*config.WINDOW_DIMENSIONS)
-        font = QFont(config.FONT_FAMILY)
-        self.output_panel.text_edit.setFont(font)
-        self.input_field.setPlaceholderText("Enter a request"); self.input_field.setClearButtonEnabled(True)
-        self.input_field.setFont(font); self.input_field.setFocus()
+
+        # Configure input field with larger font for better readability
+        input_font = QFont(config.FONT_FAMILY)
+        input_font.setPointSize(config.FONT_SIZE_INPUT)
+        self.input_field.setPlaceholderText("Enter a request")
+        self.input_field.setClearButtonEnabled(True)
+        self.input_field.setFont(input_font)
+        self.input_field.setFocus()
 
     def _build_layout(self) -> None:
         container = QWidget(self)
@@ -104,17 +108,18 @@ class MainWindow(QMainWindow):
             f"selection-background-color: {config.COLORS.accent};}}"
             f"QLineEdit {{background: {config.COLORS.background}; "
             f"color: {config.COLORS.text}; border: none; border-bottom: 1px solid #333333; padding: 10px 14px; "
-            "font-size: 13px;}}"
+            f"font-size: {config.FONT_SIZE_INPUT}px;}}"
             f"QLineEdit:focus {{border-bottom: 1px solid #333333;}}"
             f"QStatusBar {{background: {config.COLORS.background}; "
-            f"color: {config.COLORS.text}; border: none; padding: 6px;}}"
+            f"color: {config.COLORS.text}; border: none; padding: 6px; "
+            f"font-size: {config.FONT_SIZE_STATUS}px;}}"
             f"QToolBar {{background: {config.COLORS.background}; "
             "border: none; spacing: 8px; padding: 4px;}}"
         )
         self.clear_button.setStyleSheet(
             f"QPushButton {{background: {config.COLORS.background}; "
             f"color: {config.COLORS.text}; border: 1px solid #333333; padding: 8px 12px; "
-            "font-weight: 500;}}"
+            f"font-size: {config.FONT_SIZE_STATUS}px; font-weight: 500;}}"
             f"QPushButton:hover {{border-color: {config.COLORS.accent};}}"
             f"QPushButton:pressed {{background: #111111;}}"
         )
@@ -137,24 +142,38 @@ class MainWindow(QMainWindow):
         self._event_received.emit(event)
 
     def _connect_orchestrator_signals(self) -> None:
+        from PySide6.QtCore import Qt
+
         assert self.orchestrator is not None
+        # Use UniqueConnection to prevent duplicate connections if called multiple times
         self.orchestrator.planning_started.connect(
-            self.orchestration_handler.handle_planning_started
+            self.orchestration_handler.handle_planning_started,
+            Qt.ConnectionType.UniqueConnection
         )
-        self.orchestrator.plan_ready.connect(self.orchestration_handler.handle_plan_ready)
+        self.orchestrator.plan_ready.connect(
+            self.orchestration_handler.handle_plan_ready,
+            Qt.ConnectionType.UniqueConnection
+        )
         self.orchestrator.session_started.connect(
-            self.orchestration_handler.handle_session_started
+            self.orchestration_handler.handle_session_started,
+            Qt.ConnectionType.UniqueConnection
         )
         self.orchestrator.session_output.connect(
-            self.orchestration_handler.handle_session_output
+            self.orchestration_handler.handle_session_output,
+            Qt.ConnectionType.UniqueConnection
         )
         self.orchestrator.session_complete.connect(
-            self.orchestration_handler.handle_session_complete
+            self.orchestration_handler.handle_session_complete,
+            Qt.ConnectionType.UniqueConnection
         )
         self.orchestrator.all_sessions_complete.connect(
-            self.orchestration_handler.handle_all_complete
+            self.orchestration_handler.handle_all_complete,
+            Qt.ConnectionType.UniqueConnection
         )
-        self.orchestrator.error_occurred.connect(self.orchestration_handler.handle_error)
+        self.orchestrator.error_occurred.connect(
+            self.orchestration_handler.handle_error,
+            Qt.ConnectionType.UniqueConnection
+        )
 
     def _handle_submit(self) -> None:
         prompt = self.input_field.text().strip()

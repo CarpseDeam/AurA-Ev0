@@ -28,18 +28,28 @@ class OutputPanel(QWidget):
         self._text_edit.setReadOnly(True)
         self._text_edit.setAcceptRichText(True)
         self._text_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
-        self._text_edit.setFont(QFont(config.FONT_FAMILY))
+
+        # Set font with configured size for better readability
+        font = QFont(config.FONT_FAMILY)
+        font.setPointSize(config.FONT_SIZE_OUTPUT)
+        self._text_edit.setFont(font)
 
     @property
     def text_edit(self) -> QTextEdit:
         """Expose the internal text edit widget for styling or testing."""
         return self._text_edit
 
-    def display_output(self, text: str, color: Optional[str] = None) -> None:
+    def display_output(self, text: str, color: Optional[str] = None, font_size: Optional[int] = None) -> None:
         """Append output to the transcript."""
         chosen_color = color or self._resolve_line_color(text)
         escaped_text = html.escape(text)
-        payload = f'<span style="color: {chosen_color};">{escaped_text}</span><br>'
+
+        # Build style string with optional font-size
+        style = f"color: {chosen_color};"
+        if font_size is not None:
+            style += f" font-size: {font_size}px; font-weight: 500;"
+
+        payload = f'<span style="{style}">{escaped_text}</span><br>'
         self._append_html(payload)
 
     def display_thinking(self, text: str) -> None:
@@ -83,10 +93,10 @@ class OutputPanel(QWidget):
 <span style="color: #8080E8;"> ██║  ██║╚██████╔╝██║  ██║██║  ██║</span>
 <span style="color: #A060DD;"> ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝</span>
 </pre>
-<div style="text-align: center; color: #C090D0; font-size: 13px; margin: 10px 0; letter-spacing: 1px;">
+<div style="color: #C090D0; font-size: 13px; margin: 10px 0 10px 16px; letter-spacing: 1px;">
 AI-Powered Development Assistant
 </div>
-<div style="text-align: center; color: #555555; margin-bottom: 20px;">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</div>
+<div style="color: #555555; margin: 0 0 20px 16px;">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</div>
 <br>
         """
         self._append_html(header_html)

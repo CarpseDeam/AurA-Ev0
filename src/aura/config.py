@@ -34,8 +34,10 @@ COLORS = ColorPalette(
 )
 
 FONT_FAMILY: str = "JetBrains Mono"
-FONT_SIZE_OUTPUT: int = 13
+FONT_SIZE_OUTPUT: int = 14  # Increased from 13 for better readability
+FONT_SIZE_INPUT: int = 14  # Input field font size
 FONT_SIZE_HEADER: int = 16
+FONT_SIZE_STATUS: int = 11  # Status bar font size
 WINDOW_DIMENSIONS: tuple[int, int] = (900, 700)
 
 DEFAULT_AGENT: str = "gemini"
@@ -64,7 +66,9 @@ __all__ = [
     "COLORS",
     "FONT_FAMILY",
     "FONT_SIZE_OUTPUT",
+    "FONT_SIZE_INPUT",
     "FONT_SIZE_HEADER",
+    "FONT_SIZE_STATUS",
     "WINDOW_DIMENSIONS",
     "ColorPalette",
     "DEFAULT_AGENT",

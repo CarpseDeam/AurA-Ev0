@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -12,16 +13,88 @@ from typing import Dict, List
 
 from PySide6.QtCore import QObject, QEventLoop, QThread, Signal
 
-from aura import config
-from aura.events import EventType, get_event_bus
-from aura.execution import CliAgentExecutor, NativeAgentExecutor, SessionExecutor
-from aura.services import PlanningService
-from aura.services.chat_service import ChatService
-from aura.services.planning_service import Session
-from aura.tools import GitHelper
-from aura.utils import scan_directory
+from src.aura import config
+from src.aura.events import EventType, get_event_bus
+from src.aura.execution import CliAgentExecutor, NativeAgentExecutor, SessionExecutor
+from src.aura.services import PlanningService
+from src.aura.services.chat_service import ChatService
+from src.aura.services.planning_service import Session
+from src.aura.tools import GitHelper
+from src.aura.utils import scan_directory
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _infer_project_name(goal: str) -> str:
+    """Infer a project name from the user's goal.
+
+    Args:
+        goal: The user's request/goal
+
+    Returns:
+        A kebab-case project name (e.g., "blog-api", "password-gen")
+    """
+    # Extract key phrases that indicate project type
+    goal_lower = goal.lower()
+
+    # Look for common project patterns
+    patterns = [
+        r"(?:build|create|make)\s+(?:a|an)?\s*([a-z0-9\s-]+?)(?:\s+(?:app|application|api|system|service|tool|generator|website|platform))",
+        r"([a-z0-9\s-]+?)\s+(?:app|application|api|system|service|tool|generator|website|platform)",
+        r"(?:build|create|make)\s+(?:a|an)?\s*([a-z0-9\s-]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, goal_lower)
+        if match:
+            name = match.group(1).strip()
+            # Convert to kebab-case
+            name = re.sub(r'\s+', '-', name)
+            name = re.sub(r'[^a-z0-9-]', '', name)
+            # Limit to 3-4 words max
+            parts = name.split('-')[:4]
+            name = '-'.join(parts)
+            if name and len(name) > 2:
+                return name
+
+    # Fallback: use first few meaningful words
+    words = re.findall(r'\b[a-z]{3,}\b', goal_lower)
+    if words:
+        # Take first 2-3 meaningful words
+        project_words = words[:3]
+        name = '-'.join(project_words)
+        if len(name) > 2:
+            return name
+
+    # Ultimate fallback
+    return "project"
+
+
+def _ensure_unique_project_dir(base_dir: Path, project_name: str) -> Path:
+    """Ensure the project directory doesn't already exist, append number if needed.
+
+    Args:
+        base_dir: The base workspace directory
+        project_name: The inferred project name
+
+    Returns:
+        A unique project directory path
+    """
+    project_dir = base_dir / project_name
+    if not project_dir.exists():
+        return project_dir
+
+    # If exists, try appending numbers
+    counter = 2
+    while counter < 100:
+        candidate = base_dir / f"{project_name}-{counter}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+    # If we still can't find a unique name, use timestamp
+    timestamp = int(time.time())
+    return base_dir / f"{project_name}-{timestamp}"
 
 
 @dataclass(frozen=True)
@@ -170,6 +243,27 @@ class _ExecutionWorker(QObject):
 
     def _execute(self) -> None:
         """Perform planning then execute all sessions sequentially."""
+        # Infer project name and create project directory
+        project_name = _infer_project_name(self._goal)
+        project_dir = _ensure_unique_project_dir(self._working_dir, project_name)
+
+        LOGGER.info("Inferred project name: %s", project_name)
+        LOGGER.info("Creating project directory: %s", project_dir)
+
+        # Create the project directory
+        try:
+            project_dir.mkdir(parents=True, exist_ok=False)
+            self.session_output.emit(f"📁 Creating project: {project_dir.name}")
+            self.session_output.emit(f"   └─ Location: {project_dir}")
+            self.session_output.emit("")
+        except FileExistsError:
+            LOGGER.warning("Project directory already exists: %s", project_dir)
+            self.session_output.emit(f"📁 Using existing project: {project_dir.name}")
+            self.session_output.emit("")
+
+        # Update working directory to the project directory
+        self._working_dir = project_dir
+
         self.progress_update.emit("Generating session plan...")
         self.planning_started.emit()
         self._event_bus.publish(EventType.PLANNING_STARTED)
