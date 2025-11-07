@@ -119,7 +119,7 @@ class MainWindow(QMainWindow):
             f"QLineEdit {{background: transparent; "
             f"color: {config.COLORS.text}; border: none; border-bottom: 1px solid {config.COLORS.border}; "
             f"padding: 12px 16px; font-size: {config.FONT_SIZE_INPUT}px;}}"
-            f"QLineEdit:focus {{background: #0d1117; border-bottom: 2px solid {config.COLORS.accent}; "
+            f"QLineEdit:focus {{background: #1a1a1a; border-bottom: 2px solid {config.COLORS.accent}; "
             f"padding-bottom: 11px;}}"
             f"QStatusBar {{background: {config.COLORS.background}; "
             f"color: {config.COLORS.text}; border: none; border-top: 1px solid {config.COLORS.border}; "
@@ -132,8 +132,8 @@ class MainWindow(QMainWindow):
             f"color: {config.COLORS.text}; border: 1px solid {config.COLORS.border}; "
             f"border-radius: 6px; padding: 8px 12px; "
             f"font-size: {config.FONT_SIZE_STATUS}px; font-weight: 500;}}"
-            f"QPushButton:hover {{background: #30363d; border-color: {config.COLORS.accent};}}"
-            f"QPushButton:pressed {{background: #0d1117;}}"
+            f"QPushButton:hover {{background: #2a2a2a; border-color: {config.COLORS.accent};}}"
+            f"QPushButton:pressed {{background: #1a1a1a;}}"
         )
 
     def _build_toolbar(self) -> None:

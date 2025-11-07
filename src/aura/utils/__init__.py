@@ -1,17 +1,20 @@
-"""Utility helpers for the Aura application."""
+"""
+Utility modules for the Aura application.
+"""
 
-from .agent_finder import AgentInfo, find_cli_agents, validate_agent
-from .project_scanner import scan_directory
-from .safety import is_safe_working_directory
-from .model_discovery import ModelInfo, discover_gemini_models, discover_claude_models
+from .agent_finder import find_agents
+from .file_filter import FileFilter
+from .model_discovery import get_available_models
+from .project_scanner import ProjectScanner
+from .safety import Safety
+from .settings import load_settings, save_settings
 
 __all__ = [
-    "scan_directory",
-    "AgentInfo",
-    "find_cli_agents",
-    "validate_agent",
-    "is_safe_working_directory",
-    "ModelInfo",
-    "discover_gemini_models",
-    "discover_claude_models",
+    "find_agents",
+    "get_available_models",
+    "FileFilter",
+    "ProjectScanner",
+    "Safety",
+    "load_settings",
+    "save_settings",
 ]

@@ -30,7 +30,7 @@ class ColorPalette:
 
 
 COLORS = ColorPalette(
-    background="#0a0e14",
+    background="#0d0d0d",
     text="#e6edf3",
     accent="#58a6ff",
     success="#3fb950",
@@ -42,7 +42,7 @@ COLORS = ColorPalette(
     border="#21262d",
     prompt="#58a6ff",
     header="#9cdcfe",
-    code_block_bg="#0f141b",
+    code_block_bg="#0a0a0a",
     code_block_border="#1f2630",
     code_keyword="#9cdcfe",
     code_string="#a5d6ff",

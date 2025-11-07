@@ -24,6 +24,7 @@ from aura import config
 from aura.state import AppState
 from aura.utils.agent_finder import AgentInfo, find_cli_agents, validate_agent
 from aura.utils.model_discovery import discover_claude_models, discover_gemini_models
+from aura.utils.settings import save_settings
 
 
 class AgentSettingsDialog(QDialog):
@@ -39,6 +40,8 @@ class AgentSettingsDialog(QDialog):
         self.test_button = QPushButton("Test", self)
         self.set_default_button = QPushButton("Set as Default", self)
         self.custom_path_button = QPushButton("Add Custom Path...", self)
+        self.save_settings_button = QPushButton("Save Settings", self)
+        self.save_settings_button.setObjectName("save_settings_button")
 
         # Model selection widgets
         self.gemini_model_combo = QComboBox(self)
@@ -83,6 +86,7 @@ class AgentSettingsDialog(QDialog):
         button_row.addWidget(self.test_button)
         button_row.addWidget(self.set_default_button)
         button_row.addWidget(self.custom_path_button)
+        button_row.addWidget(self.save_settings_button)
         button_row.addStretch()
         button_row.addWidget(self.close_button)
         layout.addLayout(button_row)
@@ -134,11 +138,16 @@ class AgentSettingsDialog(QDialog):
                 min-width: 80px;
             }}
             QPushButton:hover {{
-                background: #30363d;
+                background: #2a2a2a;
                 border-color: {config.COLORS.accent};
             }}
             QPushButton:pressed {{
-                background: #0d1117;
+                background: #1a1a1a;
+            }}
+            QPushButton#save_settings_button {{
+                background-color: {config.COLORS.accent};
+                color: #ffffff;
+                border-color: {config.COLORS.accent};
             }}
             QComboBox {{
                 background-color: {config.COLORS.background};
@@ -163,6 +172,7 @@ class AgentSettingsDialog(QDialog):
         self.test_button.clicked.connect(self.test_selected_agent)
         self.set_default_button.clicked.connect(self._set_as_default)
         self.custom_path_button.clicked.connect(self._add_custom_path)
+        self.save_settings_button.clicked.connect(self._save_settings)
         self.close_button.clicked.connect(self.accept)
 
         # Model selection signals
@@ -225,11 +235,27 @@ class AgentSettingsDialog(QDialog):
                 self, "Agent Unavailable", f"{agent.display_name} is not available."
             )
             return
+        
+        self.app_state.set_selected_agent(agent.name)
+        if agent.executable_path:
+            self.app_state.set_agent_executable(agent.name, agent.executable_path)
+
         QMessageBox.information(
             self,
             "Default Set",
-            f"{agent.display_name} set as default agent.\n(Configuration persistence not yet implemented)",
+            f"{agent.display_name} set as default agent. Click 'Save Settings' to persist this change.",
         )
+
+    def _save_settings(self) -> None:
+        """Save current settings to disk."""
+        settings = {
+            "gemini_model": self.app_state.gemini_model,
+            "claude_model": self.app_state.claude_model,
+            "selected_agent": self.app_state.selected_agent,
+            "agent_executable": self.app_state.agent_executable.get(self.app_state.selected_agent)
+        }
+        save_settings(settings)
+        QMessageBox.information(self, "Settings Saved", "Your settings have been saved successfully.")
 
     def _add_custom_path(self) -> None:
         """Allow user to manually specify agent path."""

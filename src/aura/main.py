@@ -17,6 +17,7 @@ from aura.orchestrator import Orchestrator
 from aura.services import ChatService
 from aura.state import AppState
 from aura.ui.main_window import MainWindow
+from aura.utils import load_settings
 
 
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(funcName)s:%(lineno)d | %(message)s"
@@ -98,9 +99,18 @@ class ApplicationController:
         workspace_path = app_source_path.parent / "aura-workspace"
         workspace_path.mkdir(parents=True, exist_ok=True)
         self.app_state.set_working_directory(str(workspace_path))
-        self.app_state.set_selected_agent(config.DEFAULT_AGENT)
-        self.app_state.set_gemini_model("gemini-2.5-pro")
-        self.app_state.set_claude_model("claude-sonnet-4-5-20250929")
+
+        # Load settings and apply them to the AppState
+        settings = load_settings()
+        self.app_state.set_gemini_model(settings.get("gemini_model", "gemini-2.5-pro"))
+        self.app_state.set_claude_model(settings.get("claude_model", "claude-sonnet-4-5-20250929"))
+        
+        selected_agent = settings.get("selected_agent", config.DEFAULT_AGENT)
+        agent_executable = settings.get("agent_executable")
+        
+        self.app_state.set_selected_agent(selected_agent)
+        if agent_executable:
+            self.app_state.set_agent_executable(selected_agent, agent_executable)
 
         orchestrator_warning: str | None = None
 

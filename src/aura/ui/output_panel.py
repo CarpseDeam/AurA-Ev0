@@ -59,7 +59,7 @@ class OutputPanel(QWidget):
                 min-height: 20px;
             }}
             QScrollBar::handle:vertical:hover {{
-                background: #30363d;
+                background: #2a2a2a;
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0px;
