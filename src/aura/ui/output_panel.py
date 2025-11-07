@@ -22,6 +22,7 @@ class OutputPanel(QWidget):
         super().__init__(parent)
         self._text_edit = QTextEdit(self)
         self._stream_buffer: str = ""
+        self._needs_leading_break = False
         self._configure_widget()
 
     def _configure_widget(self) -> None:
@@ -82,11 +83,17 @@ class OutputPanel(QWidget):
         font_size: Optional[int] = None,
     ) -> None:
         """Append formatted output to the transcript."""
-        if not text:
+        if text is None:
             return
         self._flush_stream_buffer()
+        self._ensure_leading_break()
         chosen_color = color or self._resolve_line_color(text)
-        self._render_formatted_block(text, chosen_color, font_size)
+        self._render_formatted_block(
+            text,
+            chosen_color,
+            font_size,
+            add_trailing_break=True,
+        )
 
     def display_stream_chunk(self, text: str, color: Optional[str] = None) -> None:
         """Append a streaming chunk while buffering for structural parsing."""
@@ -182,7 +189,8 @@ class OutputPanel(QWidget):
         if not text:
             return
         chosen_color = color or config.COLORS.agent_output
-        self._render_formatted_block(text, chosen_color, None)
+        self._ensure_leading_break()
+        self._render_formatted_block(text, chosen_color, None, add_trailing_break=True)
 
     def display_startup_header(self) -> None:
         """Render the startup ASCII art header."""
@@ -207,17 +215,19 @@ AI-Powered Development Assistant
         """Remove all text from the panel."""
         self._text_edit.clear()
         self._stream_buffer = ""
+        self._needs_leading_break = False
 
     def _render_formatted_block(
         self,
         text: str,
         color: str,
         font_size: Optional[int],
+        add_trailing_break: bool = False,
     ) -> None:
         """Detect structure within text and render the appropriate HTML."""
         normalized = self._normalize_content(text)
         if not normalized.strip():
-            self._append_html("<br>")
+            self._append_html("<br>", mark_content=False)
             return
 
         if self._looks_like_code(normalized):
@@ -226,11 +236,13 @@ AI-Powered Development Assistant
 
         paragraphs = [chunk.strip() for chunk in normalized.split("\n\n") if chunk.strip()]
         if not paragraphs:
-            self._append_html("<br>")
+            self._append_html("<br>", mark_content=False)
             return
 
         parts = [self._format_paragraph(paragraph, color, font_size) for paragraph in paragraphs]
         self._append_html("".join(parts))
+        if add_trailing_break:
+            self._append_html("<br>", mark_content=False)
 
     def _format_paragraph(self, paragraph: str, color: str, font_size: Optional[int]) -> str:
         """Return HTML for a paragraph, list, or header block."""
@@ -446,7 +458,12 @@ AI-Powered Development Assistant
             )
         self._append_html("".join(parts))
 
-    def _append_html(self, html_content: str) -> None:
+    def _ensure_leading_break(self) -> None:
+        """Insert a break if the previous append did not finish with one."""
+        if self._needs_leading_break:
+            self._append_html("<br>", mark_content=False)
+
+    def _append_html(self, html_content: str, *, mark_content: bool = True) -> None:
         """Append HTML content to the underlying text edit with smooth scrolling."""
         cursor = self._text_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -458,6 +475,7 @@ AI-Powered Development Assistant
         scrollbar.setValue(scrollbar.maximum())
 
         self._text_edit.ensureCursorVisible()
+        self._needs_leading_break = mark_content
 
     def _resolve_line_color(self, text: str) -> str:
         """Infer an output color when one is not provided."""
