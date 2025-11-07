@@ -26,6 +26,21 @@ import re
 LOGGER = logging.getLogger(__name__)
 
 
+def _build_powershell_claude_command(cli_prompt: str, working_dir: Path, executable_path: str) -> list[str]:
+    """Return a PowerShell command that runs the Claude CLI with the provided prompt."""
+    normalized_prompt = cli_prompt.replace("\r\n", "\n")
+    escaped_working_dir = str(working_dir).replace("'", "''")
+    escaped_executable = executable_path.replace("'", "''")
+    ps_script = (
+        f"Set-Location -LiteralPath '{escaped_working_dir}'\n"
+        "$prompt = @'\n"
+        f"{normalized_prompt}\n"
+        "'@\n"
+        f"& '{escaped_executable}' -p $prompt --dangerously-skip-permissions"
+    )
+    return ["powershell.exe", "-NoProfile", "-Command", ps_script]
+
+
 @dataclass(frozen=True)
 class SessionResult:
     """Outcome details for a single conversation turn."""
@@ -96,14 +111,11 @@ class _ConversationWorker(QObject):
                     raise AuraExecutionError("Claude Code CLI agent not found or is not available.")
 
                 claude_agent_path = claude_agent.executable_path
-                command = [
-                    claude_agent_path,
-                    "-p",
+                command = _build_powershell_claude_command(
                     cli_prompt,
-                    "--dangerously-skip-permissions",
-                ]
-                if claude_agent_path.lower().endswith(".cmd"):
-                    command = ["cmd", "/c", *command]
+                    self._working_dir,
+                    claude_agent_path,
+                )
                 runner = AgentRunner(command=command, working_directory=str(self._working_dir))
 
                 self.chunk_emitted.emit("TOOL_CALL::claude_cli::Executing agent...")
@@ -281,14 +293,11 @@ class Orchestrator(QObject):
                     raise AuraExecutionError("Claude Code CLI agent not found or is not available.")
 
                 claude_agent_path = claude_agent.executable_path
-                command = [
-                    claude_agent_path,
-                    "-p",
+                command = _build_powershell_claude_command(
                     cli_prompt,
-                    "--dangerously-skip-permissions",
-                ]
-                if claude_agent_path.lower().endswith(".cmd"):
-                    command = ["cmd", "/c", *command]
+                    self._working_dir,
+                    claude_agent_path,
+                )
                 runner = AgentRunner(command=command, working_directory=str(self._working_dir))
 
                 self.session_output.emit("TOOL_CALL::claude_cli::Executing agent...")
