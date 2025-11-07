@@ -58,21 +58,48 @@ def discover_gemini_models(api_key: str) -> List[ModelInfo]:
 
 def discover_claude_models(api_key: str) -> List[ModelInfo]:
     """
-    Discovers available Claude models.
-    Since the Anthropic SDK doesn't have a model listing API, this returns a hardcoded list.
+    Discovers available Claude models from the Anthropic API.
     Caches results for 5 minutes.
     """
     if "claude" in _model_cache:
         models, timestamp = _model_cache["claude"]
         if time.time() - timestamp < CACHE_DURATION:
+            logger.debug("Returning cached Claude models.")
             return models
 
-    # Hardcoded list as Anthropic SDK doesn't support model listing
-    models = [
-        ModelInfo("claude-3-opus-20240229", "Claude 3 Opus", "Most powerful model for complex tasks.", "anthropic"),
-        ModelInfo("claude-3-sonnet-20240229", "Claude 3 Sonnet", "Balanced model for performance and speed.", "anthropic"),
-        ModelInfo("claude-3-haiku-20240307", "Claude 3 Haiku", "Fastest model for near-instant responses.", "anthropic"),
+    fallback_models = [
+        ModelInfo("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5", "Claude Sonnet 4.5", "anthropic"),
+        ModelInfo("claude-sonnet-4-20250514", "Claude Sonnet 4", "Claude Sonnet 4", "anthropic"),
+        ModelInfo("claude-opus-4-1-20250805", "Claude Opus 4.1", "Claude Opus 4.1", "anthropic"),
+        ModelInfo("claude-opus-4-20250514", "Claude Opus 4", "Claude Opus 4", "anthropic"),
+        ModelInfo("claude-haiku-4-5-20251001", "Claude Haiku 4.5", "Claude Haiku 4.5", "anthropic"),
     ]
-    
-    _model_cache["claude"] = (models, time.time())
-    return models
+
+    if not api_key:
+        logger.warning("ANTHROPIC_API_KEY not provided. Returning fallback models.")
+        return fallback_models
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.models.list()
+        
+        models = []
+        for model in response.data:
+            models.append(ModelInfo(
+                model_id=model.id,
+                display_name=model.display_name,
+                description=f"Provider: Anthropic, Model: {model.display_name}",
+                provider="anthropic"
+            ))
+        
+        if not models:
+            logger.warning("No Claude models found from API. Returning fallback models.")
+            models = fallback_models
+
+        _model_cache["claude"] = (models, time.time())
+        logger.info(f"Discovered {len(models)} Claude models.")
+        return models
+    except Exception as e:
+        logger.error(f"Failed to discover Claude models: {e}")
+        return fallback_models
