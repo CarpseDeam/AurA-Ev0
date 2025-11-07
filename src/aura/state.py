@@ -26,6 +26,8 @@ class AppState(QObject):
     status_changed = Signal(str, str)  # message, color
     gemini_model_changed = Signal(str)
     claude_model_changed = Signal(str)
+    current_project_changed = Signal(object)  # project_id (int or None)
+    current_conversation_changed = Signal(object)  # conversation_id (int or None)
 
     def __init__(self, parent: QObject | None = None) -> None:
         """Initialize application state with default values."""
@@ -37,6 +39,8 @@ class AppState(QObject):
         self._status_color: str = "#ffffff"
         self._selected_gemini_model: str = "gemini-1.5-pro-latest"
         self._selected_claude_model: str = "claude-3-sonnet-20240229"
+        self._current_project_id: Optional[int] = None
+        self._current_conversation_id: Optional[int] = None
 
     @property
     def working_directory(self) -> str:
@@ -136,3 +140,33 @@ class AppState(QObject):
         if self._selected_claude_model != model_id:
             self._selected_claude_model = model_id
             self.claude_model_changed.emit(model_id)
+
+    @property
+    def current_project_id(self) -> Optional[int]:
+        """Get the current project ID."""
+        return self._current_project_id
+
+    def set_current_project(self, project_id: Optional[int]) -> None:
+        """Set the current project and emit change signal.
+
+        Args:
+            project_id: Project ID to set as current, or None to clear
+        """
+        if self._current_project_id != project_id:
+            self._current_project_id = project_id
+            self.current_project_changed.emit(project_id)
+
+    @property
+    def current_conversation_id(self) -> Optional[int]:
+        """Get the current conversation ID."""
+        return self._current_conversation_id
+
+    def set_current_conversation(self, conversation_id: Optional[int]) -> None:
+        """Set the current conversation and emit change signal.
+
+        Args:
+            conversation_id: Conversation ID to set as current, or None to clear
+        """
+        if self._current_conversation_id != conversation_id:
+            self._current_conversation_id = conversation_id
+            self.current_conversation_changed.emit(conversation_id)

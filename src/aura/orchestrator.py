@@ -23,6 +23,7 @@ from aura.services.gemini_analyst_service import GeminiAnalystService
 from aura.services.claude_executor_service import ClaudeExecutorService
 from aura.state import AppState
 from aura.tools.tool_manager import ToolManager
+from aura.models import Conversation, Message
 
 LOGGER = logging.getLogger(__name__)
 
@@ -447,6 +448,9 @@ class Orchestrator(QObject):
         """Update history, emit completion signals, and reset state."""
         self._history.append(("user", session.prompt))
         self._history.append(("assistant", outcome.response.strip()))
+        # Persist to database
+        self._persist_messages_to_db(session.prompt, outcome.response.strip())
+
 
         exit_code = 0 if outcome.success else 1
         result = SessionResult(
@@ -526,3 +530,55 @@ class Orchestrator(QObject):
                     "Configured agent is not executable. Please reconfigure the agent path.",
                     context={"issue": "agent_not_executable", "path": str(agent)},
                 )
+
+    def load_conversation_history(self, conversation_id: int) -> None:
+        """
+        Load conversation history from database into memory.
+
+        Args:
+            conversation_id: Conversation ID to load
+        """
+        try:
+            conv = Conversation.get_by_id(conversation_id)
+            if conv:
+                self._history = conv.get_history()
+                LOGGER.info(f"Loaded {len(self._history)} messages from conversation {conversation_id}")
+            else:
+                LOGGER.warning(f"Conversation {conversation_id} not found")
+                self._history = []
+        except Exception as e:
+            LOGGER.error(f"Failed to load conversation history: {e}")
+            self._history = []
+
+    def _persist_messages_to_db(self, user_message: str, assistant_message: str) -> None:
+        """
+        Persist user and assistant messages to the database.
+
+        Args:
+            user_message: User's message content
+            assistant_message: Assistant's response content
+        """
+        try:
+            conversation_id = self.app_state.current_conversation_id
+
+            # If no current conversation, create one
+            if conversation_id is None:
+                project_id = self.app_state.current_project_id
+                conv = Conversation.create(project_id=project_id)
+                conversation_id = conv.id
+                self.app_state.set_current_conversation(conversation_id)
+                LOGGER.info(f"Created new conversation {conversation_id}")
+
+            # Save messages
+            Message.create(conversation_id, "user", user_message)
+            Message.create(conversation_id, "assistant", assistant_message)
+
+            # Auto-generate title from first message if needed
+            conv = Conversation.get_by_id(conversation_id)
+            if conv and not conv.title:
+                conv.generate_title_from_first_message()
+
+            LOGGER.info(f"Persisted messages to conversation {conversation_id}")
+
+        except Exception as e:
+            LOGGER.error(f"Failed to persist messages to database: {e}")

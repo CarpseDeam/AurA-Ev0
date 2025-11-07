@@ -18,6 +18,8 @@ from aura.services import ChatService
 from aura.state import AppState
 from aura.ui.main_window import MainWindow
 from aura.utils import load_settings
+from aura.database import initialize_database
+from aura.models import Conversation
 
 
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(funcName)s:%(lineno)d | %(message)s"
@@ -94,6 +96,13 @@ class ApplicationController:
         # Initialize application state
         self.app_state = AppState()
 
+        # Initialize database
+        try:
+            initialize_database()
+            LOGGER.info("Database initialized successfully")
+        except Exception as e:
+            LOGGER.error(f"Failed to initialize database: {e}")
+
         # Set initial working directory
         app_source_path = Path(__file__).resolve().parent.parent
         workspace_path = app_source_path.parent / "aura-workspace"
@@ -133,6 +142,9 @@ class ApplicationController:
             app_state=self.app_state,
             orchestrator=self.orchestrator,
         )
+
+        # Load most recent conversation
+        self._load_last_conversation()
 
         # Wire signals and slots
         self._connect_signals()
@@ -247,3 +259,49 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+    def _load_last_conversation(self) -> None:
+        """Load the most recent conversation on startup."""
+        if not self.main_window or not self.app_state or not self.orchestrator:
+            return
+
+        try:
+            # Refresh sidebars first
+            self.main_window.refresh_sidebars()
+
+            # Load most recent conversation
+            conv = Conversation.get_most_recent()
+            if conv:
+                self.app_state.set_current_conversation(conv.id)
+
+                # Set project if conversation has one
+                if conv.project_id:
+                    self.app_state.set_current_project(conv.project_id)
+                    self.main_window.project_sidebar.set_current_project(conv.project_id)
+
+                # Load conversation history
+                self.orchestrator.load_conversation_history(conv.id)
+
+                # Display conversation in output panel
+                self.main_window.output_panel.display_output(
+                    f"Loaded conversation: {conv.title or '(Untitled)'}",
+                    config.COLORS.accent
+                )
+
+                # Display conversation history
+                messages = conv.get_messages()
+                for msg in messages:
+                    if msg.role == 'user':
+                        self.main_window.output_panel.display_user_prompt(msg.content)
+                    else:
+                        self.main_window.output_panel.display_output(msg.content, config.COLORS.agent_output)
+
+                # Update sidebar highlighting
+                self.main_window.project_sidebar.set_current_conversation(conv.id)
+
+                LOGGER.info(f"Loaded last conversation: {conv.title} (ID: {conv.id})")
+            else:
+                LOGGER.info("No previous conversations found")
+
+        except Exception as e:
+            LOGGER.error(f"Failed to load last conversation: {e}")

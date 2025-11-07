@@ -103,3 +103,23 @@ def discover_claude_models(api_key: str) -> List[ModelInfo]:
     except Exception as e:
         logger.error(f"Failed to discover Claude models: {e}")
         return fallback_models
+
+
+def get_available_models(
+    gemini_api_key: str | None = None,
+    claude_api_key: str | None = None,
+) -> Dict[str, List[ModelInfo]]:
+    """
+    Convenience helper that returns both Gemini and Claude models.
+
+    Args:
+        gemini_api_key: Optional Gemini API key.
+        claude_api_key: Optional Claude API key.
+
+    Returns:
+        Dict[str, List[ModelInfo]]: Mapping of provider name to model list.
+    """
+    return {
+        "gemini": discover_gemini_models(gemini_api_key or ""),
+        "claude": discover_claude_models(claude_api_key or ""),
+    }

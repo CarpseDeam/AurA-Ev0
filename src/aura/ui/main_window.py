@@ -35,6 +35,10 @@ from aura.ui.agent_execution_manager import AgentExecutionManager
 from aura.ui.orchestration_handler import OrchestrationHandler
 from aura.ui.output_panel import OutputPanel
 from aura.ui.status_bar_manager import StatusBarManager
+from aura.ui.project_sidebar import ProjectSidebar
+from aura.ui.project_panel import ProjectPanel
+from aura.ui.project_dialog import ProjectDialog
+from aura.models import Project, Conversation
 
 LOGGER = logging.getLogger(__name__)
 
@@ -60,6 +64,11 @@ class MainWindow(QMainWindow):
         self.current_runner: Optional[AgentRunner] = None
         self._event_bus = get_event_bus()
         self._prompting_for_directory = False
+
+        # Initialize project sidebars
+        self.project_sidebar = ProjectSidebar(self)
+        self.project_panel = ProjectPanel(self)
+        self.project_panel.hide()  # Hidden by default
 
         status_bar = QStatusBar(self); self.status_bar_manager = StatusBarManager(status_bar, self.app_state, self)
         self.setStatusBar(self.status_bar_manager.status_bar)
@@ -102,12 +111,36 @@ class MainWindow(QMainWindow):
         self.input_field.setFocus()
 
     def _build_layout(self) -> None:
+        """Build the main window layout with sidebars."""
         container = QWidget(self)
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(16, 16, 16, 16); layout.setSpacing(12); layout.addWidget(self.output_panel)
+        main_layout = QHBoxLayout(container)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Left sidebar (project sidebar)
+        main_layout.addWidget(self.project_sidebar)
+
+        # Center panel (existing output and input)
+        center_widget = QWidget()
+        center_layout = QVBoxLayout(center_widget)
+        center_layout.setContentsMargins(16, 16, 16, 16)
+        center_layout.setSpacing(12)
+        center_layout.addWidget(self.output_panel)
+
         input_row = QHBoxLayout()
-        input_row.addWidget(self.input_field); self.clear_button.setFixedWidth(72); input_row.addWidget(self.clear_button)
-        layout.addLayout(input_row); layout.setStretch(0, 1); layout.setStretch(1, 0); self.setCentralWidget(container)
+        input_row.addWidget(self.input_field)
+        self.clear_button.setFixedWidth(72)
+        input_row.addWidget(self.clear_button)
+        center_layout.addLayout(input_row)
+        center_layout.setStretch(0, 1)
+        center_layout.setStretch(1, 0)
+
+        main_layout.addWidget(center_widget, 1)  # Give center widget stretch factor
+
+        # Right sidebar (project panel)
+        main_layout.addWidget(self.project_panel)
+
+        self.setCentralWidget(container)
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -375,3 +408,150 @@ class MainWindow(QMainWindow):
         # Also show in output for visibility
         if message.startswith("⋯"):
             self.output_panel.display_thinking(message[1:].strip())
+
+    def _connect_sidebar_signals(self) -> None:
+        """Connect signals from project sidebars."""
+        # Project sidebar signals
+        self.project_sidebar.project_selected.connect(self._on_project_selected)
+        self.project_sidebar.conversation_selected.connect(self._on_conversation_selected)
+        self.project_sidebar.new_project_clicked.connect(self._on_new_project)
+        self.project_sidebar.new_conversation_clicked.connect(self._on_new_conversation)
+
+        # Project panel signals
+        self.project_panel.edit_project_clicked.connect(self._on_edit_project)
+        self.project_panel.close_clicked.connect(self._on_close_project_panel)
+
+    def _on_project_selected(self, project_id: int) -> None:
+        """Handle project selection from sidebar."""
+        try:
+            project = Project.get_by_id(project_id)
+            if project:
+                # Update app state
+                self.app_state.set_current_project(project_id)
+
+                # Update working directory if project has one
+                if project.working_directory and self.orchestrator:
+                    try:
+                        self.orchestrator.update_working_directory(project.working_directory)
+                        self.app_state.set_working_directory(project.working_directory)
+                    except Exception as e:
+                        LOGGER.warning(f"Failed to set working directory: {e}")
+
+                # Show project panel
+                self.project_panel.set_project(project)
+                self.project_panel.show()
+
+                # Refresh sidebar to highlight selection
+                self.project_sidebar.set_current_project(project_id)
+
+                LOGGER.info(f"Selected project: {project.name} (ID: {project_id})")
+
+        except Exception as e:
+            LOGGER.error(f"Failed to select project: {e}")
+
+    def _on_conversation_selected(self, conversation_id: int) -> None:
+        """Handle conversation selection from sidebar."""
+        try:
+            conv = Conversation.get_by_id(conversation_id)
+            if conv:
+                # Update app state
+                self.app_state.set_current_conversation(conversation_id)
+
+                # Load conversation history into orchestrator
+                if self.orchestrator:
+                    self.orchestrator.load_conversation_history(conversation_id)
+
+                # Clear output and display conversation
+                self.output_panel.clear()
+                self.output_panel.display_output(f"Loaded conversation: {conv.title or '(Untitled)'}", config.COLORS.accent)
+
+                # Display conversation history
+                messages = conv.get_messages()
+                for msg in messages:
+                    if msg.role == 'user':
+                        self.output_panel.display_user_prompt(msg.content)
+                    else:
+                        self.output_panel.display_output(msg.content, config.COLORS.agent_output)
+
+                # Refresh sidebar to highlight selection
+                self.project_sidebar.set_current_conversation(conversation_id)
+
+                LOGGER.info(f"Selected conversation ID: {conversation_id}")
+
+        except Exception as e:
+            LOGGER.error(f"Failed to select conversation: {e}")
+
+    def _on_new_project(self) -> None:
+        """Handle new project button click."""
+        dialog = ProjectDialog(parent=self)
+        result = dialog.exec()
+
+        if result == dialog.Accepted:
+            project = dialog.get_project()
+            if project:
+                # Refresh sidebar to show new project
+                self.project_sidebar.refresh_projects()
+
+                # Select the new project
+                if project.id:
+                    self._on_project_selected(project.id)
+
+                LOGGER.info(f"Created new project: {project.name}")
+
+    def _on_new_conversation(self) -> None:
+        """Handle new conversation button click."""
+        # Clear current conversation
+        self.app_state.set_current_conversation(None)
+
+        # Reset orchestrator history
+        if self.orchestrator:
+            self.orchestrator.reset_history()
+
+        # Clear output
+        self.output_panel.clear()
+        self.output_panel.display_output("New conversation started", config.COLORS.success)
+
+        # Refresh sidebar
+        self.project_sidebar.set_current_conversation(None)
+
+        LOGGER.info("Started new conversation")
+
+    def _on_edit_project(self) -> None:
+        """Handle edit project button click."""
+        project = self.project_panel.get_current_project()
+        if not project:
+            return
+
+        dialog = ProjectDialog(project=project, parent=self)
+        result = dialog.exec()
+
+        if result == dialog.Accepted:
+            # Refresh sidebars
+            self.project_sidebar.refresh_projects()
+
+            # Reload project in panel
+            updated_project = Project.get_by_id(project.id)
+            if updated_project:
+                self.project_panel.set_project(updated_project)
+
+            LOGGER.info(f"Updated project: {project.name}")
+
+        elif result == -1:  # Deletion
+            # Hide panel
+            self.project_panel.hide()
+
+            # Clear state
+            self.app_state.set_current_project(None)
+
+            # Refresh sidebar
+            self.project_sidebar.refresh_projects()
+
+            LOGGER.info(f"Deleted project: {project.name}")
+
+    def _on_close_project_panel(self) -> None:
+        """Handle project panel close button click."""
+        self.project_panel.hide()
+
+    def refresh_sidebars(self) -> None:
+        """Refresh both sidebars (call after database changes)."""
+        self.project_sidebar.refresh_all()
