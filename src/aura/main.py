@@ -99,8 +99,8 @@ class ApplicationController:
         workspace_path.mkdir(parents=True, exist_ok=True)
         self.app_state.set_working_directory(str(workspace_path))
         self.app_state.set_selected_agent(config.DEFAULT_AGENT)
-        self.app_state.set_gemini_model("gemini-1.5-pro-latest")
-        self.app_state.set_claude_model("claude-3-sonnet-20240229")
+        self.app_state.set_gemini_model("gemini-2.5-pro")
+        self.app_state.set_claude_model("claude-sonnet-4-5-20250929")
 
         orchestrator_warning: str | None = None
 
