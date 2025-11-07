@@ -13,13 +13,6 @@ from google.genai import types
 
 from aura import config
 from aura.prompt import AURA_SYSTEM_PROMPT
-from aura.tools.file_system_tools import (
-    list_project_files,
-    read_multiple_files,
-    read_project_file,
-    search_in_files,
-)
-from aura.tools.file_operations import create_file, modify_file, delete_file
 from aura.tools.git_tools import git_commit, git_diff, git_push, get_git_status
 from aura.tools.python_tools import (
     format_code,
@@ -29,6 +22,7 @@ from aura.tools.python_tools import (
     run_tests,
 )
 from aura.tools.symbol_tools import find_definition, find_usages, get_imports
+from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +32,7 @@ class ChatService:
     """Manages conversational interactions with developer tool access."""
 
     api_key: str
+    tool_manager: ToolManager
     model_name: str = "gemini-2.5-pro"
     _client: genai.Client = field(init=False, repr=False)
 
@@ -64,10 +59,10 @@ class ChatService:
             # Create config with Python functions as tools
             request_config = types.GenerateContentConfig(
                 tools=[
-                    list_project_files,
-                    search_in_files,
-                    read_project_file,
-                    read_multiple_files,
+                    self.tool_manager.list_project_files,
+                    self.tool_manager.search_in_files,
+                    self.tool_manager.read_project_file,
+                    self.tool_manager.read_multiple_files,
                     get_function_definitions,
                     run_tests,
                     lint_code,
@@ -80,9 +75,9 @@ class ChatService:
                     find_definition,
                     find_usages,
                     get_imports,
-                    create_file,
-                    modify_file,
-                    delete_file,
+                    self.tool_manager.create_file,
+                    self.tool_manager.modify_file,
+                    self.tool_manager.delete_file,
                 ],
                 system_instruction=AURA_SYSTEM_PROMPT,
             )

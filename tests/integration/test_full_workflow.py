@@ -6,7 +6,6 @@ from unittest import mock
 import pytest
 
 from aura.orchestrator import Orchestrator
-from aura.services.chat_service import ChatService
 
 
 class IntegrationStream:
@@ -54,11 +53,10 @@ def test_full_workflow_success(
 
         fake_genai_client.models.generate_content_stream.return_value = IntegrationStream(stream_factory)
 
-        service = ChatService(api_key=mock_api_key)
         orchestrator = Orchestrator(
-            chat_service=service,
             working_dir=str(temp_workspace),
             agent_path="",
+            api_key=mock_api_key,
             use_background_thread=False,
         )
 
@@ -97,11 +95,10 @@ def test_full_workflow_error_path(
 
     fake_genai_client.models.generate_content_stream.return_value = IntegrationStream(stream_factory)
 
-    service = ChatService(api_key=mock_api_key)
     orchestrator = Orchestrator(
-        chat_service=service,
         working_dir=str(temp_workspace),
         agent_path="",
+        api_key=mock_api_key,
         use_background_thread=False,
     )
 

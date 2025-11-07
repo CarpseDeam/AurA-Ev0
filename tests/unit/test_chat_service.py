@@ -10,6 +10,7 @@ from aura.services.chat_service import (
     AURA_SYSTEM_PROMPT,
     ChatService,
 )
+from aura.tools.tool_manager import ToolManager
 
 
 class FakeStream:
@@ -37,7 +38,14 @@ def capture_config(monkeypatch):
     return created
 
 
-def test_send_message_with_mocked_gemini_api(fake_genai_client, mock_api_key, capture_config):
+@pytest.fixture
+def tool_manager(temp_workspace) -> ToolManager:
+    return ToolManager(str(temp_workspace))
+
+
+def test_send_message_with_mocked_gemini_api(
+    fake_genai_client, mock_api_key, capture_config, tool_manager
+):
     stream = FakeStream(
         [
             SimpleNamespace(text="Hello", function_calls=None),
@@ -45,7 +53,7 @@ def test_send_message_with_mocked_gemini_api(fake_genai_client, mock_api_key, ca
         ]
     )
     fake_genai_client.models.generate_content_stream.return_value = stream
-    service = ChatService(api_key=mock_api_key)
+    service = ChatService(api_key=mock_api_key, tool_manager=tool_manager)
 
     result = service.send_message("Hi there")
 
@@ -53,7 +61,9 @@ def test_send_message_with_mocked_gemini_api(fake_genai_client, mock_api_key, ca
     assert capture_config[0].tools, "Tools should be included in the config"
 
 
-def test_streaming_chunks_are_emitted_via_callback(fake_genai_client, mock_api_key, capture_config):
+def test_streaming_chunks_are_emitted_via_callback(
+    fake_genai_client, mock_api_key, capture_config, tool_manager
+):
     stream = FakeStream(
         [
             SimpleNamespace(text="Alpha", function_calls=None),
@@ -61,7 +71,7 @@ def test_streaming_chunks_are_emitted_via_callback(fake_genai_client, mock_api_k
         ]
     )
     fake_genai_client.models.generate_content_stream.return_value = stream
-    service = ChatService(api_key=mock_api_key)
+    service = ChatService(api_key=mock_api_key, tool_manager=tool_manager)
 
     chunks: list[str] = []
     service.send_message("Stream please", on_chunk=chunks.append)
@@ -73,14 +83,14 @@ def test_streaming_chunks_are_emitted_via_callback(fake_genai_client, mock_api_k
     ]
 
 
-def test_cli_prompt_tag_is_emitted(fake_genai_client, mock_api_key, capture_config):
+def test_cli_prompt_tag_is_emitted(fake_genai_client, mock_api_key, capture_config, tool_manager):
     stream = FakeStream(
         [
             SimpleNamespace(text="<CLI_PROMPT>build</CLI_PROMPT>", function_calls=None),
         ]
     )
     fake_genai_client.models.generate_content_stream.return_value = stream
-    service = ChatService(api_key=mock_api_key)
+    service = ChatService(api_key=mock_api_key, tool_manager=tool_manager)
 
     events: list[str] = []
     result = service.send_message("Need tool", on_chunk=events.append)
@@ -88,9 +98,9 @@ def test_cli_prompt_tag_is_emitted(fake_genai_client, mock_api_key, capture_conf
     assert "<CLI_PROMPT>build</CLI_PROMPT>" in result
 
 
-def test_send_message_error_handling(fake_genai_client, mock_api_key, capture_config):
+def test_send_message_error_handling(fake_genai_client, mock_api_key, capture_config, tool_manager):
     fake_genai_client.models.generate_content_stream.side_effect = RuntimeError("boom")
-    service = ChatService(api_key=mock_api_key)
+    service = ChatService(api_key=mock_api_key, tool_manager=tool_manager)
 
     result = service.send_message("Fail please")
 
@@ -100,21 +110,23 @@ def test_send_message_error_handling(fake_genai_client, mock_api_key, capture_co
 
 
 
-def test_all_tools_are_registered_in_config(fake_genai_client, mock_api_key, capture_config):
+def test_all_tools_are_registered_in_config(
+    fake_genai_client, mock_api_key, capture_config, tool_manager
+):
     stream = FakeStream([])
     fake_genai_client.models.generate_content_stream.return_value = stream
-    service = ChatService(api_key=mock_api_key)
+    service = ChatService(api_key=mock_api_key, tool_manager=tool_manager)
 
     service.send_message("Check config")
 
     tools = capture_config[0].tools
-    assert len(tools) == 16
+    assert len(tools) == 19
 
 
-def test_system_prompt_is_applied(fake_genai_client, mock_api_key, capture_config):
+def test_system_prompt_is_applied(fake_genai_client, mock_api_key, capture_config, tool_manager):
     stream = FakeStream([])
     fake_genai_client.models.generate_content_stream.return_value = stream
-    service = ChatService(api_key=mock_api_key)
+    service = ChatService(api_key=mock_api_key, tool_manager=tool_manager)
 
     service.send_message("Prompt check")
 
@@ -122,11 +134,11 @@ def test_system_prompt_is_applied(fake_genai_client, mock_api_key, capture_confi
 
 
 def test_conversation_without_streaming_falls_back_to_final_text(
-    fake_genai_client, mock_api_key, capture_config
+    fake_genai_client, mock_api_key, capture_config, tool_manager
 ):
     stream = FakeStream([], final_text="Fallback response")
     fake_genai_client.models.generate_content_stream.return_value = stream
-    service = ChatService(api_key=mock_api_key)
+    service = ChatService(api_key=mock_api_key, tool_manager=tool_manager)
 
     result = service.send_message("No streaming")
 

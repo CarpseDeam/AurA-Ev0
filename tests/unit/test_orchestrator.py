@@ -12,9 +12,9 @@ from aura.orchestrator import Orchestrator
 
 def _build_orchestrator(mock_chat_service, workspace: Path, *, background: bool = False) -> Orchestrator:
     return Orchestrator(
-        chat_service=mock_chat_service,
         working_dir=str(workspace),
         agent_path="",
+        chat_service=mock_chat_service,
         use_background_thread=background,
     )
 
@@ -95,6 +95,17 @@ def test_update_agent_path_stores_path_correctly(qt_app, mock_chat_service, temp
     orchestrator = _build_orchestrator(mock_chat_service, temp_workspace)
     orchestrator.update_agent_path("/tmp/agent")
     assert orchestrator._agent_path == "/tmp/agent"
+
+
+def test_update_working_directory_refreshes_tool_manager(qt_app, mock_chat_service, temp_workspace):
+    orchestrator = _build_orchestrator(mock_chat_service, temp_workspace)
+    new_workspace = temp_workspace / "nested"
+    new_workspace.mkdir()
+
+    orchestrator.update_working_directory(str(new_workspace))
+
+    assert orchestrator._tool_manager.workspace_dir == new_workspace.resolve()
+    assert mock_chat_service.tool_manager is orchestrator._tool_manager
 
 
 def test_execute_goal_runs_inline_when_background_disabled(qt_app, mock_chat_service, temp_workspace):

@@ -97,6 +97,7 @@ def mock_chat_service() -> ChatService:
     """Provide a ChatService mock with a controllable send_message method."""
     service = mock.create_autospec(ChatService, instance=True)
     service.send_message.return_value = "ok"
+    service.tool_manager = mock.Mock()
     return service
 
 

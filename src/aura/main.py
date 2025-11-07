@@ -103,21 +103,16 @@ class ApplicationController:
         orchestrator_warning: str | None = None
 
         try:
-            self.chat_service = self._create_chat_service()
+            api_key = self._require_api_key()
+            self.orchestrator = Orchestrator(
+                working_dir=self.app_state.working_directory,
+                agent_path=self.app_state.agent_path or "",
+                api_key=api_key,
+            )
+            self.chat_service = self.orchestrator.chat_service
         except AuraConfigurationError as exc:
             orchestrator_warning = str(exc)
-            LOGGER.warning("Chat service unavailable: %s", exc)
-
-        if self.chat_service:
-            try:
-                self.orchestrator = Orchestrator(
-                    self.chat_service,
-                    self.app_state.working_directory,
-                    self.app_state.agent_path or "",
-                )
-            except AuraConfigurationError as exc:
-                orchestrator_warning = str(exc)
-                LOGGER.error("Failed to initialize orchestrator: %s", exc)
+            LOGGER.error("Failed to initialize orchestrator: %s", exc)
 
         # Create main window with dependencies
         self.main_window = MainWindow(
@@ -170,15 +165,15 @@ class ApplicationController:
             logging.getLogger("aura").error("Failed to update working directory: %s", exc)
             self.main_window._on_progress_update("Invalid working directory")
 
-    def _create_chat_service(self) -> ChatService:
-        """Create a chat service instance with validation."""
+    def _require_api_key(self) -> str:
+        """Return a validated Gemini API key."""
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
             raise AuraConfigurationError(
                 "Gemini API key is missing. Set GEMINI_API_KEY and restart Aura.",
                 context={"env_var": "GEMINI_API_KEY"},
             )
-        return ChatService(api_key=api_key)
+        return api_key
 
 
 def _create_application() -> QApplication:

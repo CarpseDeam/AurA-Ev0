@@ -19,6 +19,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 from aura import config
 from aura.exceptions import AuraConfigurationError, AuraExecutionError
 from aura.services.chat_service import ChatService
+from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
 
@@ -105,16 +106,15 @@ class Orchestrator(QObject):
 
     def __init__(
         self,
-        chat_service: ChatService,
         working_dir: str,
         agent_path: str,
         *,
+        api_key: str | None = None,
+        chat_service: ChatService | None = None,
         use_background_thread: bool = True,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
-        if not chat_service:
-            raise AuraConfigurationError("Chat service is required for orchestration.")
 
         resolved = Path(working_dir).resolve()
         if not resolved.is_dir():
@@ -123,13 +123,28 @@ class Orchestrator(QObject):
                 context={"path": str(resolved)},
             )
 
-        self._chat_service = chat_service
         self._working_dir = resolved
         self._agent_path = agent_path
         self._use_background_thread = use_background_thread
         self._history: List[Tuple[str, str]] = []
         self._thread: QThread | None = None
         self._worker: _ConversationWorker | None = None
+        self._tool_manager = ToolManager(str(self._working_dir))
+
+        if chat_service is not None:
+            if hasattr(chat_service, "tool_manager"):
+                chat_service.tool_manager = self._tool_manager
+            self._chat_service = chat_service
+        else:
+            if not api_key:
+                raise AuraConfigurationError(
+                    "Gemini API key is required to initialize the chat service.",
+                    context={"env_var": "GEMINI_API_KEY"},
+                )
+            self._chat_service = ChatService(
+                api_key=api_key,
+                tool_manager=self._tool_manager,
+            )
 
     # ------------------------------------------------------------------
     # Public API
@@ -164,9 +179,9 @@ class Orchestrator(QObject):
 
         prompt = self._build_prompt(sanitized)
         if self._use_background_thread:
-            self._start_background_conversation(prompt)
+            self._start_background_conversation(session, prompt)
         else:
-            self._run_conversation(prompt)
+            self._run_conversation(session, prompt)
 
     def update_agent_path(self, agent_path: str) -> None:
         """Update the remembered CLI agent path (used for manual runs)."""
@@ -181,6 +196,9 @@ class Orchestrator(QObject):
                 context={"path": str(resolved)},
             )
         self._working_dir = resolved
+        self._tool_manager = ToolManager(str(self._working_dir))
+        if hasattr(self._chat_service, "tool_manager"):
+            self._chat_service.tool_manager = self._tool_manager
 
     def reset_history(self) -> None:
         """Clear the conversation history."""
@@ -191,16 +209,23 @@ class Orchestrator(QObject):
         """Return the accumulated conversation history."""
         return tuple(self._history)
 
+    @property
+    def chat_service(self) -> ChatService:
+        """Expose the managed ChatService instance."""
+        return self._chat_service
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _start_background_conversation(self, prompt: str) -> None:
+    def _start_background_conversation(
+        self,
+        session: ConversationSession,
+        prompt: str,
+    ) -> None:
         """Execute the conversation on a background QThread."""
         self._thread = QThread(self)
         self._worker = _ConversationWorker(self._chat_service, prompt)
         self._worker.moveToThread(self._thread)
-
-        session = ConversationSession(name="Conversation", prompt=prompt)
         self._worker.chunk_emitted.connect(self.session_output.emit)
         self._worker.finished.connect(
             lambda outcome: self._finalize_conversation(session, outcome)
@@ -211,7 +236,11 @@ class Orchestrator(QObject):
         self._thread.finished.connect(self._cleanup_thread)
         self._thread.start()
 
-    def _run_conversation(self, prompt: str) -> None:
+    def _run_conversation(
+        self,
+        session: ConversationSession,
+        prompt: str,
+    ) -> None:
         """Execute the conversation synchronously (useful for testing)."""
         started = time.perf_counter()
         streamed = {"value": False}
@@ -220,7 +249,6 @@ class Orchestrator(QObject):
             streamed["value"] = True
             self.session_output.emit(chunk)
 
-        session = ConversationSession(name="Conversation", prompt=prompt)
         try:
             response = self._chat_service.send_message(prompt, on_chunk=_on_chunk)
             if not streamed["value"] and response:
