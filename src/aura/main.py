@@ -224,42 +224,6 @@ class ApplicationController:
             )
         return api_key or None
 
-
-def _create_application() -> QApplication:
-    """Create the Qt application instance."""
-    existing = QApplication.instance()
-    if existing is not None:
-        return existing
-    app = QApplication(sys.argv)
-    app.setApplicationName("Aura")
-    return app
-
-
-def run() -> int:
-    """Run the Aura UI event loop."""
-    app = _create_application()
-
-    # Create and setup application controller
-    controller = ApplicationController()
-    window = controller.setup()
-
-    window.show()
-    return app.exec()
-
-
-def main() -> None:
-    """Launch the Aura application."""
-    try:
-        exit_code = run()
-    except Exception:  # noqa: BLE001
-        logging.getLogger("aura").exception("Aura terminated unexpectedly")
-        sys.exit(1)
-    sys.exit(exit_code)
-
-
-if __name__ == "__main__":
-    main()
-
     def _load_last_conversation(self) -> None:
         """Load the most recent conversation on startup."""
         if not self.main_window or not self.app_state or not self.orchestrator:
@@ -305,3 +269,39 @@ if __name__ == "__main__":
 
         except Exception as e:
             LOGGER.error(f"Failed to load last conversation: {e}")
+
+
+def _create_application() -> QApplication:
+    """Create the Qt application instance."""
+    existing = QApplication.instance()
+    if existing is not None:
+        return existing
+    app = QApplication(sys.argv)
+    app.setApplicationName("Aura")
+    return app
+
+
+def run() -> int:
+    """Run the Aura UI event loop."""
+    app = _create_application()
+
+    # Create and setup application controller
+    controller = ApplicationController()
+    window = controller.setup()
+
+    window.show()
+    return app.exec()
+
+
+def main() -> None:
+    """Launch the Aura application."""
+    try:
+        exit_code = run()
+    except Exception:  # noqa: BLE001
+        logging.getLogger("aura").exception("Aura terminated unexpectedly")
+        sys.exit(1)
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
