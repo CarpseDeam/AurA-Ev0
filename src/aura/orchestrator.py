@@ -19,26 +19,8 @@ from PySide6.QtCore import QObject, QThread, Signal
 from aura import config
 from aura.exceptions import AuraConfigurationError, AuraExecutionError
 from aura.services.chat_service import ChatService
-from aura.services.agent_runner import AgentRunner, run_agent_command_sync
-from aura.utils.agent_finder import find_cli_agents
-import re
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _build_powershell_claude_command(cli_prompt: str, working_dir: Path, executable_path: str) -> list[str]:
-    """Return a PowerShell command that runs the Claude CLI with the provided prompt."""
-    normalized_prompt = cli_prompt.replace("\r\n", "\n")
-    escaped_working_dir = str(working_dir).replace("'", "''")
-    escaped_executable = executable_path.replace("'", "''")
-    ps_script = (
-        f"Set-Location -LiteralPath '{escaped_working_dir}'\n"
-        "$prompt = @'\n"
-        f"{normalized_prompt}\n"
-        "'@\n"
-        f"& '{escaped_executable}' -p $prompt --dangerously-skip-permissions"
-    )
-    return ["powershell.exe", "-NoProfile", "-Command", ps_script]
 
 
 @dataclass(frozen=True)
@@ -76,12 +58,10 @@ class _ConversationWorker(QObject):
     finished = Signal(_ConversationOutcome)
     failed = Signal(str)
 
-    def __init__(self, chat_service: ChatService, prompt: str, working_dir: Path, agent_path: str) -> None:
+    def __init__(self, chat_service: ChatService, prompt: str) -> None:
         super().__init__()
         self._chat_service = chat_service
         self._prompt = prompt
-        self._working_dir = working_dir
-        self._agent_path = agent_path
 
     def run(self) -> None:
         """Execute the chat request and stream chunks to listeners."""
@@ -97,33 +77,6 @@ class _ConversationWorker(QObject):
             if not streamed["value"] and response:
                 self.chunk_emitted.emit(f"{config.STREAM_PREFIX}{response}")
                 self.chunk_emitted.emit(f"{config.STREAM_PREFIX}\n")
-
-            cli_match = re.search(r"<CLI_PROMPT>(.*?)</CLI_PROMPT>", response, re.DOTALL)
-            if cli_match:
-                cli_prompt = cli_match.group(1).strip()
-                LOGGER.debug("CLI prompt found in response: %s", cli_prompt[:100])
-
-                # Find the Claude Code CLI agent executable
-                agents = find_cli_agents()
-                claude_agent = next((agent for agent in agents if agent.name == "claude" and agent.is_available), None)
-
-                if not claude_agent:
-                    raise AuraExecutionError("Claude Code CLI agent not found or is not available.")
-
-                claude_agent_path = claude_agent.executable_path
-                command = _build_powershell_claude_command(
-                    cli_prompt,
-                    self._working_dir,
-                    claude_agent_path,
-                )
-                runner = AgentRunner(command=command, working_directory=str(self._working_dir))
-
-                self.chunk_emitted.emit("TOOL_CALL::claude_cli::Executing agent...")
-                exit_code, output = run_agent_command_sync(runner)
-                self.chunk_emitted.emit(f"{config.STREAM_PREFIX}{output}")
-
-                summary = f"CLI agent executed with exit code {exit_code}."
-                response = f"{response}\n\n{summary}"
 
             duration = time.perf_counter() - started
             success = not response.strip().lower().startswith("error:")
@@ -211,9 +164,9 @@ class Orchestrator(QObject):
 
         prompt = self._build_prompt(sanitized)
         if self._use_background_thread:
-            self._start_background_conversation(prompt, session)
+            self._start_background_conversation(prompt)
         else:
-            self._run_conversation(prompt, session)
+            self._run_conversation(prompt)
 
     def update_agent_path(self, agent_path: str) -> None:
         """Update the remembered CLI agent path (used for manual runs)."""
@@ -241,16 +194,13 @@ class Orchestrator(QObject):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _start_background_conversation(
-        self,
-        prompt: str,
-        session: ConversationSession,
-    ) -> None:
+    def _start_background_conversation(self, prompt: str) -> None:
         """Execute the conversation on a background QThread."""
         self._thread = QThread(self)
-        self._worker = _ConversationWorker(self._chat_service, prompt, self._working_dir, self._agent_path)
+        self._worker = _ConversationWorker(self._chat_service, prompt)
         self._worker.moveToThread(self._thread)
 
+        session = ConversationSession(name="Conversation", prompt=prompt)
         self._worker.chunk_emitted.connect(self.session_output.emit)
         self._worker.finished.connect(
             lambda outcome: self._finalize_conversation(session, outcome)
@@ -261,11 +211,7 @@ class Orchestrator(QObject):
         self._thread.finished.connect(self._cleanup_thread)
         self._thread.start()
 
-    def _run_conversation(
-        self,
-        prompt: str,
-        session: ConversationSession,
-    ) -> None:
+    def _run_conversation(self, prompt: str) -> None:
         """Execute the conversation synchronously (useful for testing)."""
         started = time.perf_counter()
         streamed = {"value": False}
@@ -274,38 +220,12 @@ class Orchestrator(QObject):
             streamed["value"] = True
             self.session_output.emit(chunk)
 
+        session = ConversationSession(name="Conversation", prompt=prompt)
         try:
             response = self._chat_service.send_message(prompt, on_chunk=_on_chunk)
             if not streamed["value"] and response:
                 self.session_output.emit(f"{config.STREAM_PREFIX}{response}")
                 self.session_output.emit(f"{config.STREAM_PREFIX}\n")
-
-            cli_match = re.search(r"<CLI_PROMPT>(.*?)</CLI_PROMPT>", response, re.DOTALL)
-            if cli_match:
-                cli_prompt = cli_match.group(1).strip()
-                LOGGER.debug("CLI prompt found in response (sync): %s", cli_prompt[:100])
-
-                # Find the Claude Code CLI agent executable
-                agents = find_cli_agents()
-                claude_agent = next((agent for agent in agents if agent.name == "claude" and agent.is_available), None)
-
-                if not claude_agent:
-                    raise AuraExecutionError("Claude Code CLI agent not found or is not available.")
-
-                claude_agent_path = claude_agent.executable_path
-                command = _build_powershell_claude_command(
-                    cli_prompt,
-                    self._working_dir,
-                    claude_agent_path,
-                )
-                runner = AgentRunner(command=command, working_directory=str(self._working_dir))
-
-                self.session_output.emit("TOOL_CALL::claude_cli::Executing agent...")
-                exit_code, output = run_agent_command_sync(runner)
-                self.session_output.emit(f"{config.STREAM_PREFIX}{output}")
-
-                summary = f"CLI agent executed with exit code {exit_code}."
-                response = f"{response}\n\n{summary}"
 
             duration = time.perf_counter() - started
             success = not response.strip().lower().startswith("error:")

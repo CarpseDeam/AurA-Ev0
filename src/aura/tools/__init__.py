@@ -15,6 +15,7 @@ from .file_system_tools import (
     read_project_file,
     search_in_files,
 )
+from .file_operations import create_file, modify_file, delete_file
 from .git_helper import GitHelper
 from .git_tools import git_commit, git_diff, git_push, get_git_status
 from .python_tools import (
@@ -32,6 +33,10 @@ __all__ = [
     "list_project_files",
     "search_in_files",
     "read_multiple_files",
+    # File operation tools
+    "create_file",
+    "modify_file",
+    "delete_file",
     # Git tools
     "get_git_status",
     "git_commit",
