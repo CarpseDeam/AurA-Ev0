@@ -19,6 +19,8 @@ from PySide6.QtCore import QObject, QThread, Signal
 from aura import config
 from aura.exceptions import AuraConfigurationError, AuraExecutionError
 from aura.services.chat_service import ChatService
+from aura.services.gemini_analyst_service import GeminiAnalystService
+from aura.services.claude_executor_service import ClaudeExecutorService
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
@@ -92,6 +94,68 @@ class _ConversationWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class _TwoAgentWorker(QObject):
+    """Background worker for two-agent execution flow."""
+
+    chunk_emitted = Signal(str)
+    finished = Signal(_ConversationOutcome)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        gemini_analyst: GeminiAnalystService,
+        claude_executor: ClaudeExecutorService,
+        goal: str,
+    ) -> None:
+        super().__init__()
+        self._gemini_analyst = gemini_analyst
+        self._claude_executor = claude_executor
+        self._goal = goal
+
+    def run(self) -> None:
+        """Execute two-agent flow: analysis then execution."""
+        started = time.perf_counter()
+        streamed = {"value": False}
+
+        def _on_chunk(chunk: str) -> None:
+            streamed["value"] = True
+            self.chunk_emitted.emit(chunk)
+
+        try:
+            # Phase 1: Gemini analysis
+            self.chunk_emitted.emit("⋯ Analyzing request with Aura Chat...\n")
+            engineered_prompt = self._gemini_analyst.analyze_and_plan(
+                self._goal, on_chunk=_on_chunk
+            )
+
+            if not engineered_prompt or "Error:" in engineered_prompt:
+                error_msg = engineered_prompt or "Analysis failed"
+                self.failed.emit(error_msg)
+                return
+
+            # Transition message
+            self.chunk_emitted.emit("\n📋 Execution plan ready\n")
+            self.chunk_emitted.emit("▶ Executing with Coding Agent...\n")
+
+            # Phase 2: Claude execution
+            result = self._claude_executor.execute_prompt(
+                engineered_prompt, on_chunk=_on_chunk
+            )
+
+            duration = time.perf_counter() - started
+            success = not result.strip().lower().startswith("error:")
+            outcome = _ConversationOutcome(
+                response=result,
+                duration_seconds=duration,
+                success=success,
+            )
+            self.finished.emit(outcome)
+
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Two-agent worker failed")
+            self.failed.emit(str(exc))
+
+
 class Orchestrator(QObject):
     """Coordinate a conversational turn between the user and ChatService."""
 
@@ -110,6 +174,8 @@ class Orchestrator(QObject):
         agent_path: str,
         *,
         api_key: str | None = None,
+        gemini_api_key: str | None = None,
+        claude_api_key: str | None = None,
         chat_service: ChatService | None = None,
         use_background_thread: bool = True,
         parent: QObject | None = None,
@@ -131,18 +197,36 @@ class Orchestrator(QObject):
         self._worker: _ConversationWorker | None = None
         self._tool_manager = ToolManager(str(self._working_dir))
 
+        # Support legacy api_key parameter for backward compatibility
+        effective_gemini_key = gemini_api_key or api_key
+        effective_claude_key = claude_api_key
+
         if chat_service is not None:
             if hasattr(chat_service, "tool_manager"):
                 chat_service.tool_manager = self._tool_manager
             self._chat_service = chat_service
         else:
-            if not api_key:
+            if not effective_gemini_key:
                 raise AuraConfigurationError(
                     "Gemini API key is required to initialize the chat service.",
                     context={"env_var": "GEMINI_API_KEY"},
                 )
             self._chat_service = ChatService(
-                api_key=api_key,
+                api_key=effective_gemini_key,
+                tool_manager=self._tool_manager,
+            )
+
+        # Initialize two-agent services
+        self._gemini_analyst: GeminiAnalystService | None = None
+        self._claude_executor: ClaudeExecutorService | None = None
+
+        if effective_gemini_key and effective_claude_key:
+            self._gemini_analyst = GeminiAnalystService(
+                api_key=effective_gemini_key,
+                tool_manager=self._tool_manager,
+            )
+            self._claude_executor = ClaudeExecutorService(
+                api_key=effective_claude_key,
                 tool_manager=self._tool_manager,
             )
 
@@ -174,14 +258,23 @@ class Orchestrator(QObject):
             self._working_dir,
         )
         self.planning_started.emit()
-        self.progress_update.emit("Starting conversation...")
         self.session_started.emit(0, session)
 
-        prompt = self._build_prompt(sanitized)
-        if self._use_background_thread:
-            self._start_background_conversation(session, prompt)
+        # Use two-agent flow if both services are available
+        if self._gemini_analyst and self._claude_executor:
+            self.progress_update.emit("⋯ Analyzing request with Aura Chat...")
+            if self._use_background_thread:
+                self._start_two_agent_execution(session, sanitized)
+            else:
+                self._run_two_agent_execution(session, sanitized)
         else:
-            self._run_conversation(session, prompt)
+            # Fall back to single-agent flow (legacy ChatService)
+            self.progress_update.emit("Starting conversation...")
+            prompt = self._build_prompt(sanitized)
+            if self._use_background_thread:
+                self._start_background_conversation(session, prompt)
+            else:
+                self._run_conversation(session, prompt)
 
     def update_agent_path(self, agent_path: str) -> None:
         """Update the remembered CLI agent path (used for manual runs)."""
@@ -199,6 +292,11 @@ class Orchestrator(QObject):
         self._tool_manager = ToolManager(str(self._working_dir))
         if hasattr(self._chat_service, "tool_manager"):
             self._chat_service.tool_manager = self._tool_manager
+        # Update two-agent services if they exist
+        if self._gemini_analyst:
+            self._gemini_analyst.tool_manager = self._tool_manager
+        if self._claude_executor:
+            self._claude_executor.tool_manager = self._tool_manager
 
     def reset_history(self) -> None:
         """Clear the conversation history."""
@@ -217,6 +315,86 @@ class Orchestrator(QObject):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _start_two_agent_execution(
+        self,
+        session: ConversationSession,
+        goal: str,
+    ) -> None:
+        """Execute two-agent flow on a background QThread."""
+        self._thread = QThread(self)
+        worker = _TwoAgentWorker(
+            self._gemini_analyst,
+            self._claude_executor,
+            goal,
+        )
+        worker.moveToThread(self._thread)
+        worker.chunk_emitted.connect(self.session_output.emit)
+        worker.finished.connect(
+            lambda outcome: self._finalize_conversation(session, outcome)
+        )
+        worker.failed.connect(self._handle_worker_error)
+
+        self._thread.started.connect(worker.run)
+        self._thread.finished.connect(self._cleanup_thread)
+        self._thread.start()
+
+    def _run_two_agent_execution(
+        self,
+        session: ConversationSession,
+        goal: str,
+    ) -> None:
+        """Execute two-agent flow synchronously."""
+        started = time.perf_counter()
+        streamed = {"value": False}
+
+        def _on_chunk(chunk: str) -> None:
+            streamed["value"] = True
+            self.session_output.emit(chunk)
+
+        try:
+            # Phase 1: Gemini analysis
+            self.session_output.emit("⋯ Analyzing request with Aura Chat...\n")
+            engineered_prompt = self._gemini_analyst.analyze_and_plan(
+                goal, on_chunk=_on_chunk
+            )
+
+            if not engineered_prompt or "Error:" in engineered_prompt:
+                error_msg = engineered_prompt or "Analysis failed"
+                self.error_occurred.emit(error_msg)
+                outcome = _ConversationOutcome(
+                    response=error_msg,
+                    duration_seconds=time.perf_counter() - started,
+                    success=False,
+                )
+                self._finalize_conversation(session, outcome)
+                return
+
+            # Transition message
+            self.session_output.emit("\n📋 Execution plan ready\n")
+            self.session_output.emit("▶ Executing with Coding Agent...\n")
+
+            # Phase 2: Claude execution
+            result = self._claude_executor.execute_prompt(
+                engineered_prompt, on_chunk=_on_chunk
+            )
+
+            duration = time.perf_counter() - started
+            success = not result.strip().lower().startswith("error:")
+            outcome = _ConversationOutcome(
+                response=result,
+                duration_seconds=duration,
+                success=success,
+            )
+            self._finalize_conversation(session, outcome)
+
+        except Exception as exc:  # noqa: BLE001
+            error = AuraExecutionError(
+                "Two-agent execution failed. Verify API keys and connectivity.",
+                context={"detail": str(exc)},
+            )
+            LOGGER.exception("Two-agent execution failed")
+            self.error_occurred.emit(str(error))
+
     def _start_background_conversation(
         self,
         session: ConversationSession,

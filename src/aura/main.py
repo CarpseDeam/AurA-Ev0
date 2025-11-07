@@ -103,11 +103,14 @@ class ApplicationController:
         orchestrator_warning: str | None = None
 
         try:
-            api_key = self._require_api_key()
+            gemini_key = self._require_gemini_api_key()
+            claude_key = self._get_claude_api_key()
+
             self.orchestrator = Orchestrator(
                 working_dir=self.app_state.working_directory,
                 agent_path=self.app_state.agent_path or "",
-                api_key=api_key,
+                gemini_api_key=gemini_key,
+                claude_api_key=claude_key,
             )
             self.chat_service = self.orchestrator.chat_service
         except AuraConfigurationError as exc:
@@ -165,15 +168,38 @@ class ApplicationController:
             logging.getLogger("aura").error("Failed to update working directory: %s", exc)
             self.main_window._on_progress_update("Invalid working directory")
 
-    def _require_api_key(self) -> str:
-        """Return a validated Gemini API key."""
+    def _require_gemini_api_key(self) -> str:
+        """Return a validated Gemini API key.
+
+        Raises:
+            AuraConfigurationError: If GEMINI_API_KEY is not set
+
+        Returns:
+            The Gemini API key
+        """
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
             raise AuraConfigurationError(
-                "Gemini API key is missing. Set GEMINI_API_KEY and restart Aura.",
+                "Gemini API key required for Aura Chat analysis. "
+                "Set GEMINI_API_KEY and restart Aura.",
                 context={"env_var": "GEMINI_API_KEY"},
             )
         return api_key
+
+    def _get_claude_api_key(self) -> str | None:
+        """Return Claude API key if available.
+
+        Returns:
+            The Claude API key or None if not set. When None, Aura falls
+            back to single-agent mode using only Gemini.
+        """
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            LOGGER.warning(
+                "ANTHROPIC_API_KEY not set. Running in single-agent mode (Gemini only). "
+                "For two-agent mode, set ANTHROPIC_API_KEY for code execution."
+            )
+        return api_key or None
 
 
 def _create_application() -> QApplication:
