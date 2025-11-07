@@ -95,7 +95,12 @@ class _ConversationWorker(QObject):
                 if not claude_agent:
                     raise AuraExecutionError("Claude Code CLI agent not found or is not available.")
 
-                command = [claude_agent.executable_path, "-p", cli_prompt, "--yolo"]
+                command = [
+                    claude_agent.executable_path,
+                    "-p",
+                    cli_prompt,
+                    "--dangerously-skip-permissions",
+                ]
                 runner = AgentRunner(command=command, working_directory=str(self._working_dir))
 
                 self.chunk_emitted.emit("TOOL_CALL::claude_cli::Executing agent...")
@@ -272,7 +277,12 @@ class Orchestrator(QObject):
                 if not claude_agent:
                     raise AuraExecutionError("Claude Code CLI agent not found or is not available.")
 
-                command = [claude_agent.executable_path, "-p", cli_prompt, "--yolo"]
+                command = [
+                    claude_agent.executable_path,
+                    "-p",
+                    cli_prompt,
+                    "--dangerously-skip-permissions",
+                ]
                 runner = AgentRunner(command=command, working_directory=str(self._working_dir))
 
                 self.session_output.emit("TOOL_CALL::claude_cli::Executing agent...")
