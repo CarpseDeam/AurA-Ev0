@@ -6,7 +6,7 @@ from unittest import mock
 import pytest
 
 from aura.orchestrator import Orchestrator
-from aura.services.chat_service import ChatService, execute_cli_agent
+from aura.services.chat_service import ChatService
 
 
 class IntegrationStream:
@@ -39,19 +39,16 @@ def test_full_workflow_success(
     fake_genai_client,
     integration_config,
 ):
-    with mock.patch("aura.services.chat_service.AgentRunner") as runner_cls, mock.patch(
-        "aura.services.chat_service.run_agent_command_sync", return_value=(0, "agent ok")
-    ):
+    with mock.patch("aura.orchestrator.find_cli_agents") as mock_find_agents, \
+         mock.patch("aura.orchestrator.run_agent_command_sync", return_value=(0, "agent ok")) as mock_run_sync:
+
+        # Mock the find_cli_agents to return a dummy agent
+        dummy_agent = SimpleNamespace(name="gemini", is_available=True, executable_path="dummy/path/gemini")
+        mock_find_agents.return_value = [dummy_agent]
 
         def stream_factory():
             def generator():
-                tool_call = SimpleNamespace(
-                    name="execute_cli_agent",
-                    args={"prompt": "plan work", "working_directory": str(temp_workspace)},
-                )
-                yield SimpleNamespace(text="", function_calls=[tool_call])
-                execute_cli_agent("plan work", working_directory=str(temp_workspace))
-                yield SimpleNamespace(text="All done", function_calls=None)
+                yield SimpleNamespace(text="<CLI_PROMPT>plan work</CLI_PROMPT>", function_calls=None)
 
             return iter(generator())
 
@@ -76,11 +73,12 @@ def test_full_workflow_success(
 
     assert events[0] == "planning"
     assert events[1] == "session_started"
-    assert events[2].startswith("output:TOOL_CALL::execute_cli_agent::")
-    assert events[3].startswith("output:STREAM::All done")
+    assert "output:STREAM::<CLI_PROMPT>plan work</CLI_PROMPT>" in events
+    assert "output:TOOL_CALL::gemini_cli::Executing agent..." in events
+    assert "output:STREAM::agent ok" in events
     assert "session_complete" in events
     assert "all_complete" in events
-    runner_cls.assert_called()
+    mock_run_sync.assert_called_once()
     assert integration_config
 
 

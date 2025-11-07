@@ -19,6 +19,9 @@ from PySide6.QtCore import QObject, QThread, Signal
 from aura import config
 from aura.exceptions import AuraConfigurationError, AuraExecutionError
 from aura.services.chat_service import ChatService
+from aura.services.agent_runner import AgentRunner, run_agent_command_sync
+from aura.utils.agent_finder import find_cli_agents
+import re
 
 LOGGER = logging.getLogger(__name__)
 
@@ -58,10 +61,12 @@ class _ConversationWorker(QObject):
     finished = Signal(_ConversationOutcome)
     failed = Signal(str)
 
-    def __init__(self, chat_service: ChatService, prompt: str) -> None:
+    def __init__(self, chat_service: ChatService, prompt: str, working_dir: Path, agent_path: str) -> None:
         super().__init__()
         self._chat_service = chat_service
         self._prompt = prompt
+        self._working_dir = working_dir
+        self._agent_path = agent_path
 
     def run(self) -> None:
         """Execute the chat request and stream chunks to listeners."""
@@ -77,6 +82,28 @@ class _ConversationWorker(QObject):
             if not streamed["value"] and response:
                 self.chunk_emitted.emit(f"{config.STREAM_PREFIX}{response}")
                 self.chunk_emitted.emit(f"{config.STREAM_PREFIX}\n")
+
+            cli_match = re.search(r"<CLI_PROMPT>(.*?)</CLI_PROMPT>", response, re.DOTALL)
+            if cli_match:
+                cli_prompt = cli_match.group(1).strip()
+                LOGGER.debug("CLI prompt found in response: %s", cli_prompt)
+
+                # Find the Gemini CLI agent executable
+                agents = find_cli_agents()
+                gemini_agent = next((agent for agent in agents if agent.name == "gemini" and agent.is_available), None)
+
+                if not gemini_agent:
+                    raise AuraExecutionError("Gemini CLI agent not found or is not available.")
+
+                command = [gemini_agent.executable_path, "-p", cli_prompt, "--yolo"]
+                runner = AgentRunner(command=command, working_directory=str(self._working_dir))
+
+                self.chunk_emitted.emit("TOOL_CALL::gemini_cli::Executing agent...")
+                exit_code, output = run_agent_command_sync(runner)
+                self.chunk_emitted.emit(f"{config.STREAM_PREFIX}{output}")
+
+                summary = f"CLI agent executed with exit code {exit_code}."
+                response = f"{response}\n\n{summary}"
 
             duration = time.perf_counter() - started
             success = not response.strip().lower().startswith("error:")
@@ -201,7 +228,7 @@ class Orchestrator(QObject):
     ) -> None:
         """Execute the conversation on a background QThread."""
         self._thread = QThread(self)
-        self._worker = _ConversationWorker(self._chat_service, prompt)
+        self._worker = _ConversationWorker(self._chat_service, prompt, self._working_dir, self._agent_path)
         self._worker.moveToThread(self._thread)
 
         self._worker.chunk_emitted.connect(self.session_output.emit)

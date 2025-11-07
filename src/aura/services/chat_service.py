@@ -4,18 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import re
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable, Optional, Set
 import time
+from typing import Callable, Optional, Set
 
 from google import genai
 from google.genai import types
 
 from aura import config
-from aura.services.agent_runner import AgentRunner, run_agent_command_sync
 from aura.tools.file_system_tools import (
     list_project_files,
     read_multiple_files,
@@ -30,94 +26,10 @@ from aura.tools.python_tools import (
     lint_code,
     run_tests,
 )
-# Symbol resolution tools for understanding code structure
 from aura.tools.symbol_tools import find_definition, find_usages, get_imports
 
 LOGGER = logging.getLogger(__name__)
 
-
-def execute_cli_agent(prompt: str, working_directory: Optional[str] = None) -> dict:
-    """Synchronously execute the Gemini CLI agent and return structured results."""
-    from aura.utils.agent_finder import find_cli_agents
-
-    cwd = working_directory or os.getcwd()
-    resolved_cwd = Path(cwd).resolve()
-    if not resolved_cwd.exists():
-        message = (
-            "Cannot execute CLI agent because the workspace no longer exists. "
-            "Select a new working directory and retry."
-        )
-        LOGGER.error("CLI agent execution aborted: workspace missing | cwd=%s", resolved_cwd)
-        return {"success": False, "output": message, "exit_code": 1}
-
-    # Find the Gemini CLI agent executable
-    agents = find_cli_agents()
-    gemini_agent = next((agent for agent in agents if agent.name == "gemini" and agent.is_available), None)
-
-    if not gemini_agent:
-        LOGGER.error("Gemini CLI agent not found or is not available.")
-        return {
-            "success": False,
-            "output": "The Gemini CLI agent is not configured or could not be found. "
-            "Please ensure it is installed and configured correctly.",
-            "exit_code": 1,
-        }
-
-    executable_path = gemini_agent.executable_path
-    LOGGER.debug("Using Gemini CLI executable: %s", executable_path)
-
-    prompt_text = "" if prompt is None else str(prompt)
-    # Sanitize the prompt for CLI compatibility
-    prompt_text = prompt_text.replace('\n', ' ')  # Replace newlines with spaces
-    prompt_text = prompt_text.replace('`', '')     # Remove backticks
-    prompt_text = prompt_text.strip()              # Strip leading/trailing whitespace
-    prompt_text = re.sub(r'\s+', ' ', prompt_text) # Collapse multiple spaces
-    command = [executable_path, "-p", prompt_text, "--yolo"]
-    LOGGER.info(
-        "execute_cli_agent start | cwd=%s | prompt_chars=%d",
-        resolved_cwd,
-        len(prompt_text),
-    )
-
-    try:
-        runner = AgentRunner(command=command, working_directory=str(resolved_cwd), parent=None)
-        exit_code, output = run_agent_command_sync(runner)
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.exception("Failed to execute CLI agent")
-        return {
-            "success": False,
-            "output": (
-                "Unable to execute the Gemini CLI agent. "
-                "Verify your CLI installation and try again."
-            ),
-            "exit_code": 1,
-        }
-
-    if exit_code != 0:
-        LOGGER.error(
-            "CLI agent finished with errors | exit_code=%s | cwd=%s",
-            exit_code,
-            resolved_cwd,
-        )
-        return {
-            "success": False,
-            "output": (
-                "The Gemini CLI agent reported an error. "
-                "Review the output above and retry once the issue is resolved."
-            ),
-            "exit_code": 1,
-        }
-
-    LOGGER.info(
-        "execute_cli_agent complete | cwd=%s | exit_code=%s",
-        resolved_cwd,
-        exit_code,
-    )
-    return {
-        "success": exit_code == 0,
-        "output": output,
-        "exit_code": exit_code,
-    }
 
 
 AURA_SYSTEM_PROMPT = """
@@ -219,10 +131,10 @@ Structure your prompt for the CLI agent with:
 - What NOT to change
 - Expected behavior after changes
 
-STEP 5: EXECUTE
-- Call execute_cli_agent(comprehensive_prompt, working_directory)
-- The CLI agent now has everything needed to succeed
-- Provide the user with a summary of what was done
+STEP 5: OUTPUT THE COMPREHENSIVE PROMPT
+- Output your comprehensive prompt wrapped in <CLI_PROMPT> XML tags.
+- The orchestrator will detect these tags, extract the prompt, and execute the CLI agent separately.
+- Example: <CLI_PROMPT>Your detailed and comprehensive prompt goes here.</CLI_PROMPT>
 
 ═══════════════════════════════════════════════════════════════════════════════
 EXAMPLE TRANSFORMATIONS
@@ -313,9 +225,6 @@ Git Tools:
 - git_push: Push to remote
 - git_diff: Show git diff
 
-Execution Tool:
-- execute_cli_agent: Run the Gemini CLI agent to execute code generation after analysis
-
 ═══════════════════════════════════════════════════════════════════════════════
 RESPONSE GUIDELINES
 ═══════════════════════════════════════════════════════════════════════════════
@@ -403,7 +312,6 @@ class ChatService:
                     find_definition,
                     find_usages,
                     get_imports,
-                    execute_cli_agent,
                 ],
                 system_instruction=AURA_SYSTEM_PROMPT,
             )

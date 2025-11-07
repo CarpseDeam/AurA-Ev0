@@ -9,7 +9,6 @@ from aura import config
 from aura.services.chat_service import (
     AURA_SYSTEM_PROMPT,
     ChatService,
-    execute_cli_agent,
 )
 
 
@@ -74,25 +73,19 @@ def test_streaming_chunks_are_emitted_via_callback(fake_genai_client, mock_api_k
     ]
 
 
-def test_tool_execution_emits_tool_call_chunks(fake_genai_client, mock_api_key, capture_config):
-    call = SimpleNamespace(name="execute_cli_agent", args={"prompt": "build"})
+def test_cli_prompt_tag_is_emitted(fake_genai_client, mock_api_key, capture_config):
     stream = FakeStream(
         [
-            SimpleNamespace(text="", function_calls=[call]),
-            SimpleNamespace(text="", function_calls=[call]),
-            SimpleNamespace(text="Agent complete", function_calls=None),
+            SimpleNamespace(text="<CLI_PROMPT>build</CLI_PROMPT>", function_calls=None),
         ]
     )
     fake_genai_client.models.generate_content_stream.return_value = stream
     service = ChatService(api_key=mock_api_key)
 
-    tool_events: list[str] = []
-    result = service.send_message("Need tool", on_chunk=tool_events.append)
+    events: list[str] = []
+    result = service.send_message("Need tool", on_chunk=events.append)
 
-    assert tool_events[0].startswith("TOOL_CALL::execute_cli_agent::")
-    assert tool_events[1] == f"{config.STREAM_PREFIX}Agent complete"
-    assert tool_events[2] == f"{config.STREAM_PREFIX}\n"
-    assert result.endswith("Agent complete")
+    assert "<CLI_PROMPT>build</CLI_PROMPT>" in result
 
 
 def test_send_message_error_handling(fake_genai_client, mock_api_key, capture_config):
@@ -101,26 +94,10 @@ def test_send_message_error_handling(fake_genai_client, mock_api_key, capture_co
 
     result = service.send_message("Fail please")
 
-    assert result.startswith("Error:")
+    assert result == "Error: Unable to reach Gemini. Please verify GEMINI_API_KEY and network connectivity."
 
 
-def test_execute_cli_agent_runs_successfully(temp_workspace):
-    with mock.patch("aura.services.chat_service.AgentRunner") as runner_cls, mock.patch(
-        "aura.services.chat_service.run_agent_command_sync", return_value=(0, "ok")
-    ):
-        result = execute_cli_agent("Do work", working_directory=str(temp_workspace))
 
-    runner_cls.assert_called_once()
-    assert result["success"] is True
-    assert result["exit_code"] == 0
-
-
-def test_execute_cli_agent_handles_missing_workspace(temp_workspace):
-    missing = temp_workspace / "gone"
-    result = execute_cli_agent("noop", working_directory=str(missing))
-
-    assert result["success"] is False
-    assert "workspace" in result["output"].lower()
 
 
 def test_all_tools_are_registered_in_config(fake_genai_client, mock_api_key, capture_config):
@@ -131,8 +108,7 @@ def test_all_tools_are_registered_in_config(fake_genai_client, mock_api_key, cap
     service.send_message("Check config")
 
     tools = capture_config[0].tools
-    assert len(tools) == 17
-    assert execute_cli_agent in tools
+    assert len(tools) == 16
 
 
 def test_system_prompt_is_applied(fake_genai_client, mock_api_key, capture_config):
