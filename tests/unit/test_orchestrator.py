@@ -8,12 +8,14 @@ import pytest
 from aura import config
 from aura.exceptions import AuraConfigurationError
 from aura.orchestrator import Orchestrator
+from aura.state import AppState
 
 
 def _build_orchestrator(mock_chat_service, workspace: Path, *, background: bool = False) -> Orchestrator:
+    app_state = AppState()
+    app_state.set_working_directory(str(workspace))
     return Orchestrator(
-        working_dir=str(workspace),
-        agent_path="",
+        app_state=app_state,
         chat_service=mock_chat_service,
         use_background_thread=background,
     )

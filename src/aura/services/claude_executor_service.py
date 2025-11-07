@@ -26,7 +26,7 @@ class ClaudeExecutorService:
 
     api_key: str
     tool_manager: ToolManager
-    model_name: str = "claude-sonnet-4-5"
+    model_name: str
 
     def execute_prompt(
         self,

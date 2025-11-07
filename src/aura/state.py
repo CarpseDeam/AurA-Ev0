@@ -24,6 +24,8 @@ class AppState(QObject):
     selected_agent_changed = Signal(str)
     agent_path_changed = Signal(str)
     status_changed = Signal(str, str)  # message, color
+    gemini_model_changed = Signal(str)
+    claude_model_changed = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         """Initialize application state with default values."""
@@ -33,6 +35,8 @@ class AppState(QObject):
         self._agent_path: str = ""
         self._status_message: str = "Ready"
         self._status_color: str = "#ffffff"
+        self._selected_gemini_model: str = "gemini-1.5-pro-latest"
+        self._selected_claude_model: str = "claude-3-sonnet-20240229"
 
     @property
     def working_directory(self) -> str:
@@ -110,3 +114,25 @@ class AppState(QObject):
             self._status_message = message
             self._status_color = color
             self.status_changed.emit(message, color)
+
+    @property
+    def selected_gemini_model(self) -> str:
+        """Get the selected Gemini model."""
+        return self._selected_gemini_model
+
+    def set_gemini_model(self, model_id: str) -> None:
+        """Set the selected Gemini model and emit change signal."""
+        if self._selected_gemini_model != model_id:
+            self._selected_gemini_model = model_id
+            self.gemini_model_changed.emit(model_id)
+
+    @property
+    def selected_claude_model(self) -> str:
+        """Get the selected Claude model."""
+        return self._selected_claude_model
+
+    def set_claude_model(self, model_id: str) -> None:
+        """Set the selected Claude model and emit change signal."""
+        if self._selected_claude_model != model_id:
+            self._selected_claude_model = model_id
+            self.claude_model_changed.emit(model_id)

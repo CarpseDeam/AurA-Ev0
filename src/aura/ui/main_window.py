@@ -350,7 +350,7 @@ class MainWindow(QMainWindow):
             self._display_user_error(str(exc))
 
     def _open_agent_settings(self) -> None:
-        dialog = AgentSettingsDialog(self)
+        dialog = AgentSettingsDialog(self.app_state, self)
         if dialog.exec():
             self.agent_manager.detect_default_agent()
 

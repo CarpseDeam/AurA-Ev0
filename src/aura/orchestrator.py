@@ -21,6 +21,7 @@ from aura.exceptions import AuraConfigurationError, AuraExecutionError
 from aura.services.chat_service import ChatService
 from aura.services.gemini_analyst_service import GeminiAnalystService
 from aura.services.claude_executor_service import ClaudeExecutorService
+from aura.state import AppState
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
@@ -170,8 +171,7 @@ class Orchestrator(QObject):
 
     def __init__(
         self,
-        working_dir: str,
-        agent_path: str,
+        app_state: AppState,
         *,
         api_key: str | None = None,
         gemini_api_key: str | None = None,
@@ -182,7 +182,9 @@ class Orchestrator(QObject):
     ) -> None:
         super().__init__(parent)
 
-        resolved = Path(working_dir).resolve()
+        self.app_state = app_state
+
+        resolved = Path(app_state.working_directory).resolve()
         if not resolved.is_dir():
             raise AuraConfigurationError(
                 "Working directory does not exist.",
@@ -190,7 +192,7 @@ class Orchestrator(QObject):
             )
 
         self._working_dir = resolved
-        self._agent_path = agent_path
+        self._agent_path = app_state.agent_path
         self._use_background_thread = use_background_thread
         self._history: List[Tuple[str, str]] = []
         self._thread: QThread | None = None
@@ -224,10 +226,12 @@ class Orchestrator(QObject):
             self._gemini_analyst = GeminiAnalystService(
                 api_key=effective_gemini_key,
                 tool_manager=self._tool_manager,
+                model_name=self.app_state.selected_gemini_model,
             )
             self._claude_executor = ClaudeExecutorService(
                 api_key=effective_claude_key,
                 tool_manager=self._tool_manager,
+                model_name=self.app_state.selected_claude_model,
             )
 
     # ------------------------------------------------------------------

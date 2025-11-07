@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFileDialog,
+    QFormLayout,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -15,29 +18,42 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+import os
 
 from aura import config
+from aura.state import AppState
 from aura.utils.agent_finder import AgentInfo, find_cli_agents, validate_agent
+from aura.utils.model_discovery import discover_claude_models, discover_gemini_models
 
 
 class AgentSettingsDialog(QDialog):
     """Dialog to view and configure available CLI agents."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, app_state: AppState, parent: QWidget | None = None) -> None:
         """Initialize the agent settings dialog."""
         super().__init__(parent)
+        self.app_state = app_state
         self.agents: list[AgentInfo] = []
         self.table = QTableWidget(self)
         self.refresh_button = QPushButton("Refresh", self)
         self.test_button = QPushButton("Test", self)
         self.set_default_button = QPushButton("Set as Default", self)
         self.custom_path_button = QPushButton("Add Custom Path...", self)
+
+        # Model selection widgets
+        self.gemini_model_combo = QComboBox(self)
+        self.gemini_refresh_button = QPushButton("Refresh Models", self)
+        self.claude_model_combo = QComboBox(self)
+        self.claude_refresh_button = QPushButton("Refresh Models", self)
+
         self.close_button = QPushButton("Close", self)
         self._configure_dialog()
         self._build_layout()
         self._apply_styles()
         self._connect_signals()
         self.refresh_agents()
+        self._refresh_gemini_models()
+        self._refresh_claude_models()
 
     def _configure_dialog(self) -> None:
         """Configure dialog properties."""
@@ -71,6 +87,23 @@ class AgentSettingsDialog(QDialog):
         button_row.addWidget(self.close_button)
         layout.addLayout(button_row)
 
+        # Model selection section
+        model_layout = QFormLayout()
+        model_layout.setContentsMargins(0, 20, 0, 0)
+        model_layout.addRow(QLabel("API MODELS"))
+
+        gemini_layout = QHBoxLayout()
+        gemini_layout.addWidget(self.gemini_model_combo)
+        gemini_layout.addWidget(self.gemini_refresh_button)
+        model_layout.addRow("Gemini (Analyst) Model:", gemini_layout)
+
+        claude_layout = QHBoxLayout()
+        claude_layout.addWidget(self.claude_model_combo)
+        claude_layout.addWidget(self.claude_refresh_button)
+        model_layout.addRow("Claude (Executor) Model:", claude_layout)
+
+        layout.addLayout(model_layout)
+
     def _apply_styles(self) -> None:
         """Apply dark theme styling."""
         self.setStyleSheet(
@@ -102,6 +135,16 @@ class AgentSettingsDialog(QDialog):
             QPushButton:hover {{
                 border-color: {config.COLORS.accent};
             }}
+            QComboBox {{
+                background-color: {config.COLORS.background};
+                color: {config.COLORS.text};
+                border: 1px solid #333333;
+                padding: 6px;
+            }}
+            QLabel {{
+                font-weight: bold;
+                padding-top: 10px;
+            }}
             """
         )
 
@@ -112,6 +155,12 @@ class AgentSettingsDialog(QDialog):
         self.set_default_button.clicked.connect(self._set_as_default)
         self.custom_path_button.clicked.connect(self._add_custom_path)
         self.close_button.clicked.connect(self.accept)
+
+        # Model selection signals
+        self.gemini_refresh_button.clicked.connect(self._refresh_gemini_models)
+        self.claude_refresh_button.clicked.connect(self._refresh_claude_models)
+        self.gemini_model_combo.currentTextChanged.connect(self._on_gemini_model_selected)
+        self.claude_model_combo.currentTextChanged.connect(self._on_claude_model_selected)
 
     def refresh_agents(self) -> None:
         """Scan system for available agents."""
@@ -200,6 +249,60 @@ class AgentSettingsDialog(QDialog):
             self, "Select Agent Type", "Choose the agent type:", items, 0, False
         )
         return item if ok else ""
+
+    def _refresh_gemini_models(self) -> None:
+        """Fetch and display available Gemini models."""
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            self._update_model_combo(self.gemini_model_combo, [], "Set GEMINI_API_KEY to discover models")
+            return
+
+        models = discover_gemini_models(api_key)
+        self._update_model_combo(self.gemini_model_combo, models, "Unable to fetch models (check network/key)")
+
+    def _refresh_claude_models(self) -> None:
+        """Fetch and display available Claude models."""
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            self._update_model_combo(self.claude_model_combo, [], "Set ANTHROPIC_API_KEY to discover models")
+            return
+
+        models = discover_claude_models(api_key)
+        self._update_model_combo(self.claude_model_combo, models, "Unable to fetch models (check network/key)")
+
+    def _update_model_combo(self, combo: QComboBox, models: list, error_message: str) -> None:
+        """Helper to populate a model combo box."""
+        current_selection = combo.currentData()
+        combo.clear()
+
+        if not models:
+            combo.addItem(error_message)
+            combo.setEnabled(False)
+            return
+
+        combo.setEnabled(True)
+        for model in models:
+            combo.addItem(model.display_name, model.model_id)
+
+        if current_selection:
+            index = combo.findData(current_selection)
+            if index != -1:
+                combo.setCurrentIndex(index)
+        else:
+            if combo.count() > 0:
+                combo.setCurrentIndex(0)
+
+    def _on_gemini_model_selected(self, text: str) -> None:
+        """Handle selection of a Gemini model."""
+        model_id = self.gemini_model_combo.currentData()
+        if model_id:
+            self.app_state.set_gemini_model(model_id)
+
+    def _on_claude_model_selected(self, text: str) -> None:
+        """Handle selection of a Claude model."""
+        model_id = self.claude_model_combo.currentData()
+        if model_id:
+            self.app_state.set_claude_model(model_id)
 
 
 __all__ = ["AgentSettingsDialog"]
