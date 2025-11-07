@@ -86,19 +86,19 @@ class _ConversationWorker(QObject):
             cli_match = re.search(r"<CLI_PROMPT>(.*?)</CLI_PROMPT>", response, re.DOTALL)
             if cli_match:
                 cli_prompt = cli_match.group(1).strip()
-                LOGGER.debug("CLI prompt found in response: %s", cli_prompt)
+                LOGGER.debug("CLI prompt found in response: %s", cli_prompt[:100])
 
-                # Find the Gemini CLI agent executable
+                # Find the Claude Code CLI agent executable
                 agents = find_cli_agents()
-                gemini_agent = next((agent for agent in agents if agent.name == "gemini" and agent.is_available), None)
+                claude_agent = next((agent for agent in agents if agent.name == "claude" and agent.is_available), None)
 
-                if not gemini_agent:
-                    raise AuraExecutionError("Gemini CLI agent not found or is not available.")
+                if not claude_agent:
+                    raise AuraExecutionError("Claude Code CLI agent not found or is not available.")
 
-                command = [gemini_agent.executable_path, "-p", cli_prompt, "--yolo"]
+                command = [claude_agent.executable_path, "-p", cli_prompt, "--yolo"]
                 runner = AgentRunner(command=command, working_directory=str(self._working_dir))
 
-                self.chunk_emitted.emit("TOOL_CALL::gemini_cli::Executing agent...")
+                self.chunk_emitted.emit("TOOL_CALL::claude_cli::Executing agent...")
                 exit_code, output = run_agent_command_sync(runner)
                 self.chunk_emitted.emit(f"{config.STREAM_PREFIX}{output}")
 
@@ -259,6 +259,28 @@ class Orchestrator(QObject):
             if not streamed["value"] and response:
                 self.session_output.emit(f"{config.STREAM_PREFIX}{response}")
                 self.session_output.emit(f"{config.STREAM_PREFIX}\n")
+
+            cli_match = re.search(r"<CLI_PROMPT>(.*?)</CLI_PROMPT>", response, re.DOTALL)
+            if cli_match:
+                cli_prompt = cli_match.group(1).strip()
+                LOGGER.debug("CLI prompt found in response (sync): %s", cli_prompt[:100])
+
+                # Find the Claude Code CLI agent executable
+                agents = find_cli_agents()
+                claude_agent = next((agent for agent in agents if agent.name == "claude" and agent.is_available), None)
+
+                if not claude_agent:
+                    raise AuraExecutionError("Claude Code CLI agent not found or is not available.")
+
+                command = [claude_agent.executable_path, "-p", cli_prompt, "--yolo"]
+                runner = AgentRunner(command=command, working_directory=str(self._working_dir))
+
+                self.session_output.emit("TOOL_CALL::claude_cli::Executing agent...")
+                exit_code, output = run_agent_command_sync(runner)
+                self.session_output.emit(f"{config.STREAM_PREFIX}{output}")
+
+                summary = f"CLI agent executed with exit code {exit_code}."
+                response = f"{response}\n\n{summary}"
 
             duration = time.perf_counter() - started
             success = not response.strip().lower().startswith("error:")
