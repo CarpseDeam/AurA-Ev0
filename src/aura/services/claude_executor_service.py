@@ -26,7 +26,7 @@ class ClaudeExecutorService:
 
     api_key: str
     tool_manager: ToolManager
-    model_name: str = "claude-sonnet-4-20250514"
+    model_name: str = "claude-sonnet-4-5"
 
     def execute_prompt(
         self,
@@ -53,46 +53,88 @@ class ClaudeExecutorService:
 
         try:
             client = anthropic.Anthropic(api_key=self.api_key)
-
             tools = self._build_anthropic_tools()
 
-            full_response_text = []
+            # Initialize conversation with user's prompt
+            messages = [{"role": "user", "content": engineered_prompt}]
 
-            with client.messages.stream(
-                model=self.model_name,
-                max_tokens=8096,
-                system=CLAUDE_EXECUTOR_PROMPT,
-                messages=[{"role": "user", "content": engineered_prompt}],
-                tools=tools,
-            ) as stream:
-                for event in stream:
-                    formatted = self._format_stream_event(event)
-                    if formatted and on_chunk:
-                        on_chunk(formatted)
-                        if not formatted.startswith(
-                            ("+ ", "~ ", "- ", "⋯ ", "✓ ", "TOOL_CALL::")
-                        ):
-                            full_response_text.append(formatted)
+            # Tool execution loop - continues until Claude stops requesting tools
+            while True:
+                response = client.messages.create(
+                    model=self.model_name,
+                    max_tokens=8096,
+                    system=CLAUDE_EXECUTOR_PROMPT,
+                    messages=messages,
+                    tools=tools,
+                )
 
-            final_message = stream.get_final_message()
-            result_text = "".join(full_response_text).strip()
+                # Add assistant's response to conversation
+                messages.append({"role": "assistant", "content": response.content})
 
-            if not result_text and final_message.content:
-                for block in final_message.content:
-                    if hasattr(block, "text"):
-                        result_text += block.text
+                # Check stop reason
+                if response.stop_reason == "tool_use":
+                    # Claude wants to use tools - extract and execute them
+                    tool_results = []
 
-            duration = time.perf_counter() - started
-            LOGGER.info(
-                "Claude execution completed | duration=%.2fs | response_chars=%d",
-                duration,
-                len(result_text),
-            )
+                    for block in response.content:
+                        if block.type == "tool_use":
+                            tool_name = block.name
+                            tool_input = block.input
+                            tool_id = block.id
 
-            if on_chunk:
-                on_chunk("\n✓ Execution complete\n")
+                            # Stream tool call notification
+                            if on_chunk:
+                                on_chunk(f"TOOL_CALL::{tool_name}::{tool_input}\n")
 
-            return result_text or "Execution complete."
+                            # Execute the tool
+                            result = self._execute_tool(tool_name, tool_input)
+
+                            # Stream the result
+                            if on_chunk:
+                                on_chunk(result + "\n")
+
+                            # Build tool result for Claude
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_id,
+                                    "content": result,
+                                }
+                            )
+
+                    # Add tool results to conversation
+                    messages.append({"role": "user", "content": tool_results})
+
+                    # Continue loop - Claude will see results and respond
+
+                elif response.stop_reason in ("end_turn", "stop_sequence", None):
+                    # Claude finished - extract final text
+                    final_text = ""
+                    for block in response.content:
+                        if block.type == "text":
+                            final_text += block.text
+
+                    duration = time.perf_counter() - started
+                    LOGGER.info(
+                        "Claude execution completed | duration=%.2fs | response_chars=%d",
+                        duration,
+                        len(final_text),
+                    )
+
+                    if on_chunk:
+                        if final_text:
+                            on_chunk(final_text + "\n")
+                        on_chunk("✓ Execution complete\n")
+
+                    return final_text or "Execution complete."
+
+                else:
+                    # Unexpected stop reason
+                    LOGGER.warning(
+                        "Unexpected stop_reason: %s",
+                        response.stop_reason,
+                    )
+                    break
 
         except anthropic.APIError as exc:
             duration = time.perf_counter() - started
@@ -184,40 +226,6 @@ class ClaudeExecutorService:
                 },
             },
         ]
-
-    def _format_stream_event(
-        self,
-        event: anthropic.types.MessageStreamEvent,
-    ) -> str:
-        """Format streaming events into CLI-style output.
-
-        Args:
-            event: Anthropic stream event
-
-        Returns:
-            Formatted CLI-style string or empty string
-        """
-        event_type = event.type
-
-        if event_type == "content_block_delta":
-            if hasattr(event, "delta") and hasattr(event.delta, "text"):
-                return event.delta.text
-
-        elif event_type == "content_block_start":
-            if hasattr(event, "content_block"):
-                block = event.content_block
-                if hasattr(block, "type") and block.type == "tool_use":
-                    tool_name = getattr(block, "name", "")
-                    tool_id = getattr(block, "id", "")
-                    return f"TOOL_CALL::{tool_name}::{tool_id}"
-
-        elif event_type == "message_delta":
-            if hasattr(event, "delta"):
-                delta = event.delta
-                if hasattr(delta, "stop_reason") and delta.stop_reason == "tool_use":
-                    return ""
-
-        return ""
 
     def _execute_tool(
         self,
