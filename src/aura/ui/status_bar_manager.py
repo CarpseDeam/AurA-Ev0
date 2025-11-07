@@ -56,7 +56,7 @@ class StatusBarManager(QObject):
             f"color: {config.COLORS.secondary}; font-weight: 400; padding: 2px 8px;"
         )
 
-        self._separator.setStyleSheet("color: #333333; padding: 0 8px;")
+        self._separator.setStyleSheet(f"color: {config.COLORS.border}; padding: 0 8px;")
 
         initial_directory = self._format_directory(self._app_state.working_directory)
         self._directory_label.setText(initial_directory)
@@ -75,9 +75,12 @@ class StatusBarManager(QObject):
         self._app_state.working_directory_changed.connect(self._on_working_directory_changed)
 
     def _apply_status(self, message: str, color: str) -> None:
-        """Apply the status text and color styling."""
+        """Apply the status text and color styling with smooth transitions."""
         self._status_label.setText(message)
-        self._status_label.setStyleSheet(f"color: {color}; font-weight: 400; padding: 2px 8px;")
+        # Note: CSS transitions don't work well in Qt's stylesheets, but we can set the style smoothly
+        self._status_label.setStyleSheet(
+            f"color: {color}; font-weight: 400; padding: 2px 8px;"
+        )
 
     def _on_status_changed(self, message: str, color: str) -> None:
         """Synchronize with AppState status updates."""

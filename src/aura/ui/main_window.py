@@ -114,23 +114,26 @@ class MainWindow(QMainWindow):
             f"QMainWindow {{background: {config.COLORS.background}; color: {config.COLORS.text};}}"
             f"QTextEdit {{background: {config.COLORS.background}; "
             f"color: {config.COLORS.text}; border: none; padding: 16px; "
+            f"line-height: {config.LINE_HEIGHT}; letter-spacing: {config.LETTER_SPACING}; "
             f"selection-background-color: {config.COLORS.accent};}}"
-            f"QLineEdit {{background: {config.COLORS.background}; "
-            f"color: {config.COLORS.text}; border: none; border-bottom: 1px solid #333333; padding: 10px 14px; "
-            f"font-size: {config.FONT_SIZE_INPUT}px;}}"
-            f"QLineEdit:focus {{border-bottom: 1px solid #333333;}}"
+            f"QLineEdit {{background: transparent; "
+            f"color: {config.COLORS.text}; border: none; border-bottom: 1px solid {config.COLORS.border}; "
+            f"padding: 12px 16px; font-size: {config.FONT_SIZE_INPUT}px;}}"
+            f"QLineEdit:focus {{background: #0d1117; border-bottom: 2px solid {config.COLORS.accent}; "
+            f"padding-bottom: 11px;}}"
             f"QStatusBar {{background: {config.COLORS.background}; "
-            f"color: {config.COLORS.text}; border: none; padding: 6px; "
-            f"font-size: {config.FONT_SIZE_STATUS}px;}}"
+            f"color: {config.COLORS.text}; border: none; border-top: 1px solid {config.COLORS.border}; "
+            f"padding: 6px; font-size: {config.FONT_SIZE_STATUS}px;}}"
             f"QToolBar {{background: {config.COLORS.background}; "
             "border: none; spacing: 8px; padding: 4px;}}"
         )
         self.clear_button.setStyleSheet(
             f"QPushButton {{background: {config.COLORS.background}; "
-            f"color: {config.COLORS.text}; border: 1px solid #333333; padding: 8px 12px; "
+            f"color: {config.COLORS.text}; border: 1px solid {config.COLORS.border}; "
+            f"border-radius: 6px; padding: 8px 12px; "
             f"font-size: {config.FONT_SIZE_STATUS}px; font-weight: 500;}}"
-            f"QPushButton:hover {{border-color: {config.COLORS.accent};}}"
-            f"QPushButton:pressed {{background: #111111;}}"
+            f"QPushButton:hover {{background: #30363d; border-color: {config.COLORS.accent};}}"
+            f"QPushButton:pressed {{background: #0d1117;}}"
         )
 
     def _build_toolbar(self) -> None:
@@ -179,6 +182,10 @@ class MainWindow(QMainWindow):
             self.orchestration_handler.handle_error,
             Qt.ConnectionType.UniqueConnection
         )
+        self.orchestrator.progress_update.connect(
+            self._on_progress_update,
+            Qt.ConnectionType.UniqueConnection
+        )
 
     def _handle_submit(self) -> None:
         prompt = self.input_field.text().strip()
@@ -188,8 +195,10 @@ class MainWindow(QMainWindow):
             self.output_panel.display_output("An agent run is already in progress.", "#FF6B6B")
             return
 
+        # IMMEDIATE FEEDBACK - happens instantly before any processing
         self.input_field.clear()
-        self.output_panel.display_output(f"> {prompt}", config.COLORS.accent)
+        self.output_panel.display_output(f"> {prompt}", config.COLORS.prompt)
+        self.status_bar_manager.update_status("⋯ Processing...", config.COLORS.thinking, persist=True)
         self._set_input_enabled(False)
 
         try:
@@ -355,6 +364,14 @@ class MainWindow(QMainWindow):
             self.agent_manager.detect_default_agent()
 
     def _on_progress_update(self, message: str) -> None:
+        """Update status bar with immediate visual feedback for progress."""
         if not message:
             return
-        LOGGER.debug("Progress update: %s", message); self.status_bar_manager.update_status(message, config.COLORS.accent, persist=True)
+        LOGGER.debug("Progress update: %s", message)
+        # Update status bar with immediate visual feedback
+        color = config.COLORS.thinking if "⋯" in message else config.COLORS.accent
+        self.status_bar_manager.update_status(message, color, persist=True)
+
+        # Also show in output for visibility
+        if message.startswith("⋯"):
+            self.output_panel.display_thinking(message[1:].strip())

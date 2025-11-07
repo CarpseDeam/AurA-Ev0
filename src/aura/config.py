@@ -19,25 +19,31 @@ class ColorPalette:
     thinking: str
     tool_call: str
     secondary: str
+    border: str
+    prompt: str
 
 
 COLORS = ColorPalette(
-    background="#000000",
-    text="#e8e8e8",
-    accent="#64B5F6",
-    success="#66BB6A",
-    error="#FF6B6B",
-    agent_output="#FFD27F",
-    thinking="#9370DB",
-    tool_call="#FFD27F",
-    secondary="#b0b0b0",
+    background="#0a0e14",
+    text="#e6edf3",
+    accent="#58a6ff",
+    success="#3fb950",
+    error="#f85149",
+    agent_output="#e6edf3",
+    thinking="#8b949e",
+    tool_call="#ffa657",
+    secondary="#8b949e",
+    border="#21262d",
+    prompt="#58a6ff",
 )
 
-FONT_FAMILY: str = "JetBrains Mono"
+FONT_FAMILY: str = "Cascadia Code, JetBrains Mono, Consolas, monospace"
 FONT_SIZE_OUTPUT: int = 14  # Increased from 13 for better readability
 FONT_SIZE_INPUT: int = 14  # Input field font size
 FONT_SIZE_HEADER: int = 16
 FONT_SIZE_STATUS: int = 11  # Status bar font size
+LINE_HEIGHT: float = 1.6
+LETTER_SPACING: str = "0.5px"
 WINDOW_DIMENSIONS: tuple[int, int] = (900, 700)
 
 DEFAULT_AGENT: str = "gemini"
@@ -66,6 +72,8 @@ __all__ = [
     "FONT_SIZE_INPUT",
     "FONT_SIZE_HEADER",
     "FONT_SIZE_STATUS",
+    "LINE_HEIGHT",
+    "LETTER_SPACING",
     "WINDOW_DIMENSIONS",
     "ColorPalette",
     "DEFAULT_AGENT",

@@ -231,6 +231,9 @@ class Orchestrator(QObject):
 
     def execute_goal(self, goal: str) -> None:
         """Execute a single conversational turn for the provided goal."""
+        # IMMEDIATE progress update
+        self.progress_update.emit("⋯ Starting...")
+
         try:
             self._validate_environment()
         except AuraConfigurationError as exc:
@@ -257,13 +260,13 @@ class Orchestrator(QObject):
         self.session_started.emit(0, session)
 
         if self._gemini_analyst and self._claude_executor:
-            self.progress_update.emit("⋯ Analyzing request with Aura Chat...")
+            self.progress_update.emit("⋯ Analyzing with Aura Chat...")
             if self._use_background_thread:
                 self._start_two_agent_execution(session, sanitized)
             else:
                 self._run_two_agent_execution(session, sanitized)
         else:
-            self.progress_update.emit("Starting conversation...")
+            self.progress_update.emit("⋯ Starting conversation...")
             prompt = self._build_prompt(sanitized)
             if self._use_background_thread:
                 self._start_background_conversation(session, prompt)

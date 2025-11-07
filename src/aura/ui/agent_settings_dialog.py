@@ -115,31 +115,40 @@ class AgentSettingsDialog(QDialog):
             QTableWidget {{
                 background-color: {config.COLORS.background};
                 color: {config.COLORS.text};
-                border: 1px solid #333333;
-                gridline-color: #222222;
+                border: 1px solid {config.COLORS.border};
+                gridline-color: {config.COLORS.border};
             }}
             QHeaderView::section {{
                 background-color: {config.COLORS.background};
                 color: {config.COLORS.text};
-                border: 1px solid #333333;
+                border: 1px solid {config.COLORS.border};
                 padding: 6px;
                 font-weight: normal;
             }}
             QPushButton {{
                 background-color: {config.COLORS.background};
                 color: {config.COLORS.text};
-                border: 1px solid #333333;
+                border: 1px solid {config.COLORS.border};
+                border-radius: 6px;
                 padding: 6px 12px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
+                background: #30363d;
                 border-color: {config.COLORS.accent};
+            }}
+            QPushButton:pressed {{
+                background: #0d1117;
             }}
             QComboBox {{
                 background-color: {config.COLORS.background};
                 color: {config.COLORS.text};
-                border: 1px solid #333333;
+                border: 1px solid {config.COLORS.border};
+                border-radius: 6px;
                 padding: 6px;
+            }}
+            QComboBox:hover {{
+                border-color: {config.COLORS.accent};
             }}
             QLabel {{
                 font-weight: bold;

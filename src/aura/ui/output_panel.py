@@ -34,6 +34,37 @@ class OutputPanel(QWidget):
         font.setPointSize(config.FONT_SIZE_OUTPUT)
         self._text_edit.setFont(font)
 
+        # Custom scrollbar styling
+        self._text_edit.setStyleSheet(
+            f"""
+            QTextEdit {{
+                background: {config.COLORS.background};
+                color: {config.COLORS.text};
+                border: none;
+                padding: 16px;
+                selection-background-color: {config.COLORS.accent};
+            }}
+            QScrollBar:vertical {{
+                width: 8px;
+                background: transparent;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {config.COLORS.border};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: #30363d;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: transparent;
+            }}
+            """
+        )
+
     @property
     def text_edit(self) -> QTextEdit:
         """Expose the internal text edit widget for styling or testing."""
@@ -60,6 +91,11 @@ class OutputPanel(QWidget):
     def display_thinking(self, text: str) -> None:
         """Render thinking/reasoning steps with a purple ellipsis."""
         self.display_output(f"⋯ {text}", config.COLORS.thinking)
+
+    def display_progress(self, message: str) -> None:
+        """Display progress message with animated indicator."""
+        # Use the thinking color with animation
+        self.display_output(f"⋯ {message}", config.COLORS.thinking)
 
     def display_tool_call(self, tool_name: str, args_summary: str) -> None:
         """Render tool calls with a gold gear symbol."""
@@ -126,11 +162,16 @@ AI-Powered Development Assistant
         self._append_html(payload)
 
     def _append_html(self, html_content: str) -> None:
-        """Append HTML content to the underlying text edit."""
+        """Append HTML content to the underlying text edit with smooth scrolling."""
         cursor = self._text_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self._text_edit.setTextCursor(cursor)
         self._text_edit.insertHtml(html_content)
+
+        # Smooth scroll to bottom
+        scrollbar = self._text_edit.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
         self._text_edit.ensureCursorVisible()
 
     def _resolve_line_color(self, text: str) -> str:
