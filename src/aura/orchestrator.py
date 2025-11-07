@@ -90,7 +90,7 @@ class _ConversationWorker(QObject):
                 success=success,
             )
             self.finished.emit(outcome)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             LOGGER.exception("Conversation worker failed")
             self.failed.emit(str(exc))
 
@@ -123,7 +123,6 @@ class _TwoAgentWorker(QObject):
             self.chunk_emitted.emit(chunk)
 
         try:
-            # Phase 1: Gemini analysis
             self.chunk_emitted.emit("⋯ Analyzing request with Aura Chat...\n")
             engineered_prompt = self._gemini_analyst.analyze_and_plan(
                 self._goal, on_chunk=_on_chunk
@@ -134,11 +133,9 @@ class _TwoAgentWorker(QObject):
                 self.failed.emit(error_msg)
                 return
 
-            # Transition message
             self.chunk_emitted.emit("\n📋 Execution plan ready\n")
             self.chunk_emitted.emit("▶ Executing with Coding Agent...\n")
 
-            # Phase 2: Claude execution
             result = self._claude_executor.execute_prompt(
                 engineered_prompt, on_chunk=_on_chunk
             )
@@ -152,7 +149,7 @@ class _TwoAgentWorker(QObject):
             )
             self.finished.emit(outcome)
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             LOGGER.exception("Two-agent worker failed")
             self.failed.emit(str(exc))
 
@@ -196,10 +193,9 @@ class Orchestrator(QObject):
         self._use_background_thread = use_background_thread
         self._history: List[Tuple[str, str]] = []
         self._thread: QThread | None = None
-        self._worker: _ConversationWorker | None = None
+        self._worker: _ConversationWorker | _TwoAgentWorker | None = None
         self._tool_manager = ToolManager(str(self._working_dir))
 
-        # Support legacy api_key parameter for backward compatibility
         effective_gemini_key = gemini_api_key or api_key
         effective_claude_key = claude_api_key
 
@@ -218,7 +214,6 @@ class Orchestrator(QObject):
                 tool_manager=self._tool_manager,
             )
 
-        # Initialize two-agent services
         self._gemini_analyst: GeminiAnalystService | None = None
         self._claude_executor: ClaudeExecutorService | None = None
 
@@ -234,9 +229,6 @@ class Orchestrator(QObject):
                 model_name=self.app_state.selected_claude_model,
             )
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
     def execute_goal(self, goal: str) -> None:
         """Execute a single conversational turn for the provided goal."""
         try:
@@ -264,7 +256,6 @@ class Orchestrator(QObject):
         self.planning_started.emit()
         self.session_started.emit(0, session)
 
-        # Use two-agent flow if both services are available
         if self._gemini_analyst and self._claude_executor:
             self.progress_update.emit("⋯ Analyzing request with Aura Chat...")
             if self._use_background_thread:
@@ -272,7 +263,6 @@ class Orchestrator(QObject):
             else:
                 self._run_two_agent_execution(session, sanitized)
         else:
-            # Fall back to single-agent flow (legacy ChatService)
             self.progress_update.emit("Starting conversation...")
             prompt = self._build_prompt(sanitized)
             if self._use_background_thread:
@@ -296,7 +286,6 @@ class Orchestrator(QObject):
         self._tool_manager = ToolManager(str(self._working_dir))
         if hasattr(self._chat_service, "tool_manager"):
             self._chat_service.tool_manager = self._tool_manager
-        # Update two-agent services if they exist
         if self._gemini_analyst:
             self._gemini_analyst.tool_manager = self._tool_manager
         if self._claude_executor:
@@ -316,9 +305,6 @@ class Orchestrator(QObject):
         """Expose the managed ChatService instance."""
         return self._chat_service
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
     def _start_two_agent_execution(
         self,
         session: ConversationSession,
@@ -326,19 +312,19 @@ class Orchestrator(QObject):
     ) -> None:
         """Execute two-agent flow on a background QThread."""
         self._thread = QThread(self)
-        worker = _TwoAgentWorker(
+        self._worker = _TwoAgentWorker(
             self._gemini_analyst,
             self._claude_executor,
             goal,
         )
-        worker.moveToThread(self._thread)
-        worker.chunk_emitted.connect(self.session_output.emit)
-        worker.finished.connect(
+        self._worker.moveToThread(self._thread)
+        self._worker.chunk_emitted.connect(self.session_output.emit)
+        self._worker.finished.connect(
             lambda outcome: self._finalize_conversation(session, outcome)
         )
-        worker.failed.connect(self._handle_worker_error)
+        self._worker.failed.connect(self._handle_worker_error)
 
-        self._thread.started.connect(worker.run)
+        self._thread.started.connect(self._worker.run)
         self._thread.finished.connect(self._cleanup_thread)
         self._thread.start()
 
@@ -356,7 +342,6 @@ class Orchestrator(QObject):
             self.session_output.emit(chunk)
 
         try:
-            # Phase 1: Gemini analysis
             self.session_output.emit("⋯ Analyzing request with Aura Chat...\n")
             engineered_prompt = self._gemini_analyst.analyze_and_plan(
                 goal, on_chunk=_on_chunk
@@ -373,11 +358,9 @@ class Orchestrator(QObject):
                 self._finalize_conversation(session, outcome)
                 return
 
-            # Transition message
             self.session_output.emit("\n📋 Execution plan ready\n")
             self.session_output.emit("▶ Executing with Coding Agent...\n")
 
-            # Phase 2: Claude execution
             result = self._claude_executor.execute_prompt(
                 engineered_prompt, on_chunk=_on_chunk
             )
@@ -391,7 +374,7 @@ class Orchestrator(QObject):
             )
             self._finalize_conversation(session, outcome)
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             error = AuraExecutionError(
                 "Two-agent execution failed. Verify API keys and connectivity.",
                 context={"detail": str(exc)},
@@ -445,7 +428,7 @@ class Orchestrator(QObject):
                 success=success,
             )
             self._finalize_conversation(session, outcome)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             error = AuraExecutionError(
                 "Unable to contact Gemini. Verify GEMINI_API_KEY and your connection, then try again.",
                 context={"detail": str(exc)},
