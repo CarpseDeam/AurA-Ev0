@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +24,7 @@ from aura.services.gemini_analyst_service import GeminiAnalystService
 from aura.services.claude_executor_service import ClaudeExecutorService
 from aura.state import AppState
 from aura.tools.tool_manager import ToolManager
-from aura.models import Conversation, Message
+from aura.models import Conversation, Message, MessageRole
 
 LOGGER = logging.getLogger(__name__)
 
@@ -196,6 +197,7 @@ class Orchestrator(QObject):
         self._thread: QThread | None = None
         self._worker: _ConversationWorker | _TwoAgentWorker | None = None
         self._tool_manager = ToolManager(str(self._working_dir))
+        self._conversation_lock = threading.Lock()
 
         effective_gemini_key = gemini_api_key or api_key
         effective_claude_key = claude_api_key
@@ -446,8 +448,8 @@ class Orchestrator(QObject):
         outcome: _ConversationOutcome,
     ) -> None:
         """Update history, emit completion signals, and reset state."""
-        self._history.append(("user", session.prompt))
-        self._history.append(("assistant", outcome.response.strip()))
+        self._history.append((MessageRole.USER, session.prompt))
+        self._history.append((MessageRole.ASSISTANT, outcome.response.strip()))
         # Persist to database
         self._persist_messages_to_db(session.prompt, outcome.response.strip())
 
@@ -506,7 +508,12 @@ class Orchestrator(QObject):
 
         lines: List[str] = []
         for role, text in self._history:
-            prefix = "User" if role == "user" else "Assistant"
+            if role == MessageRole.USER:
+                prefix = "User"
+            elif role == MessageRole.ASSISTANT:
+                prefix = "Assistant"
+            else:
+                prefix = role.title() if role else "Message"
             lines.append(f"{prefix}: {text}")
         lines.append(f"User: {goal}")
         return "\n\n".join(lines)
@@ -561,17 +568,19 @@ class Orchestrator(QObject):
         try:
             conversation_id = self.app_state.current_conversation_id
 
-            # If no current conversation, create one
             if conversation_id is None:
-                project_id = self.app_state.current_project_id
-                conv = Conversation.create(project_id=project_id)
-                conversation_id = conv.id
-                self.app_state.set_current_conversation(conversation_id)
-                LOGGER.info(f"Created new conversation {conversation_id}")
+                with self._conversation_lock:
+                    conversation_id = self.app_state.current_conversation_id
+                    if conversation_id is None:
+                        project_id = self.app_state.current_project_id
+                        conv = Conversation.create(project_id=project_id)
+                        conversation_id = conv.id
+                        self.app_state.set_current_conversation(conversation_id)
+                        LOGGER.info(f"Created new conversation {conversation_id}")
 
             # Save messages
-            Message.create(conversation_id, "user", user_message)
-            Message.create(conversation_id, "assistant", assistant_message)
+            Message.create(conversation_id, MessageRole.USER, user_message)
+            Message.create(conversation_id, MessageRole.ASSISTANT, assistant_message)
 
             # Auto-generate title from first message if needed
             conv = Conversation.get_by_id(conversation_id)
@@ -582,3 +591,4 @@ class Orchestrator(QObject):
 
         except Exception as e:
             LOGGER.error(f"Failed to persist messages to database: {e}")
+            self.error_occurred.emit("Warning: Failed to save conversation history. Your responses will not persist.")

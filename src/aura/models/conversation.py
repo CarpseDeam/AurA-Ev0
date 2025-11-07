@@ -3,13 +3,18 @@ Conversation model for managing conversation threads and CRUD operations.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass
 
 from ..database import get_connection
+from .message import MessageRole
 
 logger = logging.getLogger(__name__)
+
+ALLOWED_CONVERSATION_ORDER_COLUMNS = frozenset({"created_at", "updated_at", "title", "id"})
+TITLE_PREVIEW_LENGTH = 50
 
 
 @dataclass
@@ -109,6 +114,10 @@ class Conversation:
         Returns:
             List of Conversation instances
         """
+        if order_by not in ALLOWED_CONVERSATION_ORDER_COLUMNS:
+            allowed = ", ".join(sorted(ALLOWED_CONVERSATION_ORDER_COLUMNS))
+            raise ValueError(f"Invalid order_by column: {order_by}. Must be one of: {allowed}")
+
         order = "ASC" if ascending else "DESC"
         query = f"""
             SELECT id, project_id, title, created_at, updated_at
@@ -117,12 +126,16 @@ class Conversation:
             ORDER BY {order_by} {order}
         """
 
-        if limit:
-            query += f" LIMIT {limit}"
+        params = [project_id]
+        if limit is not None:
+            if not isinstance(limit, int) or limit <= 0:
+                raise ValueError("limit must be a positive integer when provided")
+            query += " LIMIT ?"
+            params.append(limit)
 
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query, (project_id,))
+            cursor.execute(query, tuple(params))
             rows = cursor.fetchall()
 
         return [Conversation._from_row(row) for row in rows]
@@ -314,16 +327,31 @@ class Conversation:
             return  # No messages yet
 
         # Find first user message
-        first_user_message = next((msg for msg in messages if msg.role == 'user'), None)
+        first_user_message = next((msg for msg in messages if msg.role == MessageRole.USER), None)
         if not first_user_message:
             return
 
+        cleaned_content = self._sanitize_title_source(first_user_message.content or "")
+        if not cleaned_content:
+            return
+
         # Generate title from first 50 chars
-        title = first_user_message.content[:50]
-        if len(first_user_message.content) > 50:
+        title = cleaned_content[:TITLE_PREVIEW_LENGTH]
+        if len(cleaned_content) > TITLE_PREVIEW_LENGTH:
             title += "..."
 
         self.update(title=title)
+
+    @staticmethod
+    def _sanitize_title_source(content: str) -> str:
+        """
+        Normalize whitespace to avoid malformed titles.
+        """
+        stripped = content.strip()
+        if not stripped:
+            return ""
+        normalized = re.sub(r"\s+", " ", stripped)
+        return normalized.strip()
 
     @staticmethod
     def _from_row(row: Any) -> 'Conversation':

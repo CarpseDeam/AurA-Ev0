@@ -9,6 +9,6 @@ This package provides data models and CRUD operations for:
 
 from .project import Project
 from .conversation import Conversation
-from .message import Message
+from .message import Message, MessageRole
 
-__all__ = ['Project', 'Conversation', 'Message']
+__all__ = ['Project', 'Conversation', 'Message', 'MessageRole']

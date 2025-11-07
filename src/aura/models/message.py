@@ -12,6 +12,30 @@ from ..database import get_connection
 logger = logging.getLogger(__name__)
 
 
+class MessageRole:
+    """Constants for supported message roles."""
+
+    USER = "user"
+    ASSISTANT = "assistant"
+    _ALL = frozenset({USER, ASSISTANT})
+
+    @classmethod
+    def validate(cls, role: str) -> None:
+        """Ensure the provided role is supported."""
+        if role not in cls._ALL:
+            allowed = ", ".join(sorted(cls._ALL))
+            raise ValueError(f"Invalid role: {role}. Must be one of: {allowed}")
+
+
+ALLOWED_MESSAGE_ORDER_COLUMNS = frozenset({
+    "id",
+    "conversation_id",
+    "role",
+    "content",
+    "created_at",
+})
+
+
 @dataclass
 class Message:
     """
@@ -29,14 +53,13 @@ class Message:
 
     id: Optional[int]
     conversation_id: int
-    role: str  # 'user' or 'assistant'
+    role: str
     content: str
     created_at: Optional[datetime] = None
 
     def __post_init__(self):
         """Validate role after initialization."""
-        if self.role not in ('user', 'assistant'):
-            raise ValueError(f"Invalid role: {self.role}. Must be 'user' or 'assistant'")
+        MessageRole.validate(self.role)
 
     @staticmethod
     def create(
@@ -59,8 +82,7 @@ class Message:
             ValueError: If role is invalid
             sqlite3.Error: If database operation fails
         """
-        if role not in ('user', 'assistant'):
-            raise ValueError(f"Invalid role: {role}. Must be 'user' or 'assistant'")
+        MessageRole.validate(role)
 
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -69,7 +91,6 @@ class Message:
                 VALUES (?, ?, ?)
             """, (conversation_id, role, content))
 
-            conn.commit()
             message_id = cursor.lastrowid
 
             # Update conversation's updated_at timestamp
@@ -78,6 +99,7 @@ class Message:
                 SET updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (conversation_id,))
+
             conn.commit()
 
         logger.info(f"Created {role} message ID {message_id} in conversation {conversation_id}")
@@ -126,6 +148,10 @@ class Message:
         Returns:
             List of Message instances
         """
+        if order_by not in ALLOWED_MESSAGE_ORDER_COLUMNS:
+            allowed = ", ".join(sorted(ALLOWED_MESSAGE_ORDER_COLUMNS))
+            raise ValueError(f"Invalid order_by column: {order_by}. Must be one of: {allowed}")
+
         order = "ASC" if ascending else "DESC"
         query = f"""
             SELECT id, conversation_id, role, content, created_at

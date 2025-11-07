@@ -12,6 +12,17 @@ from ..database import get_connection
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_PROJECT_ORDER_COLUMNS = frozenset({
+    "id",
+    "name",
+    "description",
+    "working_directory",
+    "created_at",
+    "updated_at",
+    "custom_instructions",
+    "settings",
+})
+
 
 @dataclass
 class Project:
@@ -119,6 +130,10 @@ class Project:
         Returns:
             List of Project instances
         """
+        if order_by not in ALLOWED_PROJECT_ORDER_COLUMNS:
+            allowed = ", ".join(sorted(ALLOWED_PROJECT_ORDER_COLUMNS))
+            raise ValueError(f"Invalid order_by column: {order_by}. Must be one of: {allowed}")
+
         order = "ASC" if ascending else "DESC"
         query = f"""
             SELECT id, name, description, working_directory,
