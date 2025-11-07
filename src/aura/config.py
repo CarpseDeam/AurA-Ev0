@@ -21,6 +21,12 @@ class ColorPalette:
     secondary: str
     border: str
     prompt: str
+    header: str
+    code_block_bg: str
+    code_block_border: str
+    code_keyword: str
+    code_string: str
+    code_comment: str
 
 
 COLORS = ColorPalette(
@@ -35,12 +41,19 @@ COLORS = ColorPalette(
     secondary="#8b949e",
     border="#21262d",
     prompt="#58a6ff",
+    header="#9cdcfe",
+    code_block_bg="#0f141b",
+    code_block_border="#1f2630",
+    code_keyword="#9cdcfe",
+    code_string="#a5d6ff",
+    code_comment="#6a9955",
 )
 
 FONT_FAMILY: str = "Cascadia Code, JetBrains Mono, Consolas, monospace"
 FONT_SIZE_OUTPUT: int = 14  # Increased from 13 for better readability
 FONT_SIZE_INPUT: int = 14  # Input field font size
 FONT_SIZE_HEADER: int = 16
+OUTPUT_HEADER_FONT_SIZE: int = 15
 FONT_SIZE_STATUS: int = 11  # Status bar font size
 LINE_HEIGHT: float = 1.6
 LETTER_SPACING: str = "0.5px"
@@ -65,12 +78,20 @@ AGENT_DISPLAY_NAMES: dict[str, str] = {
 AUTO_COMMIT_SESSIONS: bool = False
 AUTO_PUSH_ON_COMPLETE: bool = False
 
+OUTPUT_SECTION_SEPARATOR: str = "=" * 70
+OUTPUT_SUBSECTION_SEPARATOR: str = "-" * 50
+OUTPUT_SECTION_SPACING_PX: int = 14
+OUTPUT_BLOCK_SPACING_PX: int = 10
+CODE_BLOCK_PADDING_PX: int = 12
+STREAM_CHUNK_FLUSH_THRESHOLD: int = 400
+
 __all__ = [
     "COLORS",
     "FONT_FAMILY",
     "FONT_SIZE_OUTPUT",
     "FONT_SIZE_INPUT",
     "FONT_SIZE_HEADER",
+    "OUTPUT_HEADER_FONT_SIZE",
     "FONT_SIZE_STATUS",
     "LINE_HEIGHT",
     "LETTER_SPACING",
@@ -82,4 +103,10 @@ __all__ = [
     "AGENT_DISPLAY_NAMES",
     "AUTO_COMMIT_SESSIONS",
     "AUTO_PUSH_ON_COMPLETE",
+    "OUTPUT_SECTION_SEPARATOR",
+    "OUTPUT_SUBSECTION_SEPARATOR",
+    "OUTPUT_SECTION_SPACING_PX",
+    "OUTPUT_BLOCK_SPACING_PX",
+    "CODE_BLOCK_PADDING_PX",
+    "STREAM_CHUNK_FLUSH_THRESHOLD",
 ]

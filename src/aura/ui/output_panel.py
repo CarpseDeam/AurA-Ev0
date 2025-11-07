@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import html
+import io
+import keyword
+import re
+import tokenize
 from typing import Optional
 
 from PySide6.QtGui import QFont, QTextCursor, QTextOption
@@ -17,6 +21,7 @@ class OutputPanel(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._text_edit = QTextEdit(self)
+        self._stream_buffer: str = ""
         self._configure_widget()
 
     def _configure_widget(self) -> None:
@@ -76,17 +81,23 @@ class OutputPanel(QWidget):
         color: Optional[str] = None,
         font_size: Optional[int] = None,
     ) -> None:
-        """Append output to the transcript with an automatic newline."""
+        """Append formatted output to the transcript."""
+        if not text:
+            return
+        self._flush_stream_buffer()
         chosen_color = color or self._resolve_line_color(text)
-        normalized = text if text.endswith("\n") else f"{text}\n"
-        self._append_text(normalized, chosen_color, font_size)
+        self._render_formatted_block(text, chosen_color, font_size)
 
     def display_stream_chunk(self, text: str, color: Optional[str] = None) -> None:
-        """Append a streaming chunk without forcing a newline."""
+        """Append a streaming chunk while buffering for structural parsing."""
         if not text:
             return
         chosen_color = color or config.COLORS.agent_output
-        self._append_text(text, chosen_color, None)
+        normalized = self._normalize_content(text)
+        self._stream_buffer += normalized
+        for segment in self._consume_stream_segments():
+            if segment.strip():
+                self._render_formatted_block(segment, chosen_color, None)
 
     def display_thinking(self, text: str) -> None:
         """Render thinking/reasoning steps with a purple ellipsis."""
@@ -98,13 +109,65 @@ class OutputPanel(QWidget):
         self.display_output(f"⋯ {message}", config.COLORS.thinking)
 
     def display_tool_call(self, tool_name: str, args_summary: str) -> None:
-        """Render tool calls with a gold gear symbol."""
-        self.display_output(f"⚙ {tool_name}({args_summary})", config.COLORS.tool_call)
+        """Render tool calls with a structured summary block."""
+        truncated = args_summary if len(args_summary) <= 200 else f"{args_summary[:197]}..."
+        safe_name = html.escape(tool_name)
+        safe_args = html.escape(truncated)
+        payload = (
+            f'<div style="margin:{config.OUTPUT_BLOCK_SPACING_PX}px 0;'
+            f' color:{config.COLORS.tool_call};">'
+            f'<div style="font-weight:600;">⚙ {safe_name}</div>'
+            f'<div style="color:{config.COLORS.secondary}; font-size:{config.FONT_SIZE_OUTPUT - 1}px;'
+            f' margin-left:14px; white-space:pre-wrap;">{safe_args}</div>'
+            "</div>"
+        )
+        self._append_html(payload)
 
     def display_file_operation(self, action: str, path: str) -> None:
         """Render file operations with appropriate symbols and colors."""
-        symbol = "+" if action.lower() == "creating" else "~"
-        self.display_output(f"{symbol} {action} {path}", config.COLORS.accent)
+        lower = action.lower()
+        icon = "+"
+        if "delete" in lower:
+            icon = "−"
+        elif "modify" in lower or "update" in lower:
+            icon = "~"
+        self._render_file_operation_block(
+            title=action.upper(),
+            icon=icon,
+            path=path,
+            content=None,
+            footer=None,
+        )
+
+    def display_file_creation(self, path: str, content: str) -> None:
+        """Render a newly created file with formatted code content."""
+        self._render_file_operation_block(
+            title="CREATE FILE",
+            icon="+",
+            path=path,
+            content=content,
+            footer=self._format_file_stats(content),
+        )
+
+    def display_file_modification(self, path: str, content: str) -> None:
+        """Render a modified file preview."""
+        self._render_file_operation_block(
+            title="MODIFY FILE",
+            icon="~",
+            path=path,
+            content=content,
+            footer=self._format_file_stats(content),
+        )
+
+    def display_file_deletion(self, path: str) -> None:
+        """Render a deletion summary without file content."""
+        self._render_file_operation_block(
+            title="DELETE FILE",
+            icon="−",
+            path=path,
+            content=None,
+            footer="File removed from workspace.",
+        )
 
     def display_success(self, text: str) -> None:
         """Render success messages with a green checkmark."""
@@ -119,8 +182,7 @@ class OutputPanel(QWidget):
         if not text:
             return
         chosen_color = color or config.COLORS.agent_output
-        normalized = text if text.endswith("\n") else f"{text}\n"
-        self._append_text(normalized, chosen_color, None)
+        self._render_formatted_block(text, chosen_color, None)
 
     def display_startup_header(self) -> None:
         """Render the startup ASCII art header."""
@@ -144,22 +206,245 @@ AI-Powered Development Assistant
     def clear(self) -> None:
         """Remove all text from the panel."""
         self._text_edit.clear()
+        self._stream_buffer = ""
 
-    def _append_text(
+    def _render_formatted_block(
         self,
         text: str,
         color: str,
-        font_size: Optional[int] = None,
+        font_size: Optional[int],
     ) -> None:
-        """Append raw text to the panel, preserving streaming continuity."""
-        if not text:
+        """Detect structure within text and render the appropriate HTML."""
+        normalized = self._normalize_content(text)
+        if not normalized.strip():
+            self._append_html("<br>")
             return
-        escaped_text = html.escape(text).replace("\n", "<br>")
-        style = f"color: {color};"
+
+        if self._looks_like_code(normalized):
+            self._append_html(self._build_code_block_html(normalized))
+            return
+
+        paragraphs = [chunk.strip() for chunk in normalized.split("\n\n") if chunk.strip()]
+        if not paragraphs:
+            self._append_html("<br>")
+            return
+
+        parts = [self._format_paragraph(paragraph, color, font_size) for paragraph in paragraphs]
+        self._append_html("".join(parts))
+
+    def _format_paragraph(self, paragraph: str, color: str, font_size: Optional[int]) -> str:
+        """Return HTML for a paragraph, list, or header block."""
+        if self._is_header_line(paragraph):
+            return self._build_header_html(paragraph)
+        if self._is_list_block(paragraph):
+            return self._build_list_html(paragraph)
+        return self._build_plain_paragraph(paragraph, color, font_size)
+
+    def _build_header_html(self, text: str) -> str:
+        """Return styled HTML for headers such as === SECTION ===."""
+        safe = html.escape(text.strip("=" + " ").strip())
+        return (
+            f'<div style="margin:{config.OUTPUT_SECTION_SPACING_PX}px 0 '
+            f'{config.OUTPUT_BLOCK_SPACING_PX}px 0; color:{config.COLORS.header};'
+            f' font-weight:600; font-size:{config.OUTPUT_HEADER_FONT_SIZE}px; letter-spacing:0.5px;">'
+            f"{safe}</div>"
+        )
+
+    def _build_plain_paragraph(self, text: str, color: str, font_size: Optional[int]) -> str:
+        """Return HTML for standard paragraphs."""
+        escaped = html.escape(text).replace("\n", "<br>")
+        style = [
+            f"color: {color}",
+            f"margin: {config.OUTPUT_BLOCK_SPACING_PX}px 0",
+            f"line-height: {config.LINE_HEIGHT}",
+        ]
         if font_size is not None:
-            style += f" font-size: {font_size}px; font-weight: 500;"
-        payload = f'<span style="{style}">{escaped_text}</span>'
-        self._append_html(payload)
+            style.append(f"font-size: {font_size}px")
+        return f'<div style="{"; ".join(style)}">{escaped}</div>'
+
+    def _build_list_html(self, paragraph: str) -> str:
+        """Return HTML for bullet or ordered lists."""
+        lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+        if not lines:
+            return ""
+        ordered = all(re.match(r"^\d+[.)]\s+", line) for line in lines)
+        cleaned_items: list[str] = []
+        for line in lines:
+            cleaned = re.sub(r"^(\d+[.)]|[-*•])\s+", "", line)
+            cleaned_items.append(f"<li>{html.escape(cleaned)}</li>")
+        tag = "ol" if ordered else "ul"
+        return (
+            f'<{tag} style="margin:{config.OUTPUT_BLOCK_SPACING_PX}px 0 '
+            f'{config.OUTPUT_BLOCK_SPACING_PX}px 22px; color:{config.COLORS.text};'
+            ' padding-left:12px;">'
+            f'{"".join(cleaned_items)}</{tag}>'
+        )
+
+    def _is_header_line(self, text: str) -> bool:
+        """Determine whether a paragraph looks like a section header."""
+        stripped = text.strip()
+        if not stripped:
+            return False
+        if stripped.startswith("===") and stripped.endswith("==="):
+            return True
+        if stripped.startswith("---") and stripped.endswith("---"):
+            return True
+        if re.fullmatch(r"[A-Z0-9 /&'_-]+:?$", stripped) and len(stripped) <= 60:
+            return True
+        return False
+
+    def _is_list_block(self, paragraph: str) -> bool:
+        """Check whether most lines within the paragraph are list items."""
+        lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+        if not lines:
+            return False
+        bullet_lines = sum(
+            1 for line in lines if re.match(r"^([-*•]|[\d]+[.)])\s+", line)
+        )
+        return bullet_lines >= max(1, len(lines) // 2)
+
+    def _looks_like_code(self, text: str) -> bool:
+        """Heuristically determine if the text resembles Python code."""
+        lines = [line for line in text.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return False
+        patterns = (
+            r"^\s*(def|class|async\s+def)\s+",
+            r"^\s*(from|import)\s+",
+            r"^\s*@\w+",
+            r"^\s*(if|for|while|try|except|with)\b.*:\s*$",
+        )
+        matches = sum(1 for line in lines if any(re.match(pattern, line) for pattern in patterns))
+        return matches >= 2 or (matches >= 1 and len(lines) <= 4 and ":" in lines[-1])
+
+    def _build_code_block_html(self, code: str) -> str:
+        """Return syntax-highlighted HTML for code blocks."""
+        highlighted = self._syntax_highlight(code)
+        return (
+            f'<div style="background:{config.COLORS.code_block_bg};'
+            f' border-left:4px solid {config.COLORS.code_block_border};'
+            f' border-radius:6px; padding:{config.CODE_BLOCK_PADDING_PX}px;'
+            " font-family: 'JetBrains Mono','Consolas',monospace; margin:"
+            f'{config.OUTPUT_BLOCK_SPACING_PX}px 0; white-space:normal;">'
+            f'<pre style="margin:0; white-space:pre-wrap; color:{config.COLORS.text};">'
+            f"{highlighted}</pre></div>"
+        )
+
+    def _syntax_highlight(self, code: str) -> str:
+        """Perform lightweight syntax highlighting for Python code."""
+        buffer = io.StringIO(code)
+        parts: list[str] = []
+        try:
+            for token in tokenize.generate_tokens(buffer.readline):
+                tok_type, tok_string = token.type, token.string
+                if tok_type in (tokenize.NL, tokenize.NEWLINE):
+                    parts.append("\n")
+                    continue
+                if tok_type == tokenize.INDENT:
+                    parts.append(tok_string)
+                    continue
+                if tok_type == tokenize.DEDENT:
+                    continue
+                escaped = html.escape(tok_string)
+                color = None
+                if tok_type == tokenize.NAME and tok_string in keyword.kwlist:
+                    color = config.COLORS.code_keyword
+                elif tok_type == tokenize.STRING:
+                    color = config.COLORS.code_string
+                elif tok_type == tokenize.COMMENT:
+                    color = config.COLORS.code_comment
+                if color:
+                    parts.append(f'<span style="color:{color};">{escaped}</span>')
+                else:
+                    parts.append(escaped)
+        except tokenize.TokenError:
+            return html.escape(code)
+        return "".join(parts)
+
+    def _format_file_stats(self, content: str) -> str:
+        """Return a concise human-readable size summary."""
+        byte_count = len(content.encode("utf-8"))
+        if byte_count >= 1024:
+            size = f"{byte_count / 1024:.1f} KB"
+        else:
+            size = f"{byte_count} B"
+        lines = max(1, len(content.splitlines()))
+        return f"{size} · {lines} lines"
+
+    def _normalize_content(self, text: str) -> str:
+        """Normalize newlines and unescape common sequences for readability."""
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        normalized = normalized.replace("\\r\\n", "\n")
+        normalized = normalized.replace("\\n", "\n")
+        normalized = normalized.replace("\\t", "\t")
+        return normalized
+
+    def _consume_stream_segments(self) -> list[str]:
+        """Flush completed segments from the stream buffer."""
+        segments: list[str] = []
+        while True:
+            double_newline = self._stream_buffer.find("\n\n")
+            if double_newline != -1:
+                segments.append(self._stream_buffer[:double_newline])
+                self._stream_buffer = self._stream_buffer[double_newline + 2 :]
+                continue
+            if self._stream_buffer.endswith("\n"):
+                trimmed = self._stream_buffer.rstrip("\n")
+                if trimmed:
+                    segments.append(trimmed)
+                self._stream_buffer = ""
+                break
+            if len(self._stream_buffer) > config.STREAM_CHUNK_FLUSH_THRESHOLD:
+                segments.append(self._stream_buffer)
+                self._stream_buffer = ""
+                break
+            break
+        return segments
+
+    def _flush_stream_buffer(self) -> None:
+        """Flush any partial stream buffer to the panel."""
+        if not self._stream_buffer.strip():
+            self._stream_buffer = ""
+            return
+        self._render_formatted_block(self._stream_buffer, config.COLORS.agent_output, None)
+        self._stream_buffer = ""
+
+    def _render_file_operation_block(
+        self,
+        title: str,
+        icon: str,
+        path: str,
+        content: Optional[str],
+        footer: Optional[str],
+    ) -> None:
+        """Render a structured file operation summary."""
+        safe_title = html.escape(title)
+        safe_path = html.escape(path)
+        header = (
+            f'<div style="margin:{config.OUTPUT_SECTION_SPACING_PX}px 0 '
+            f'{config.OUTPUT_BLOCK_SPACING_PX}px 0;">'
+            f'<div style="color:{config.COLORS.header}; font-size:{config.OUTPUT_HEADER_FONT_SIZE}px;'
+            ' font-weight:600;">'
+            f"{icon} {safe_title}</div>"
+            f'<div style="color:{config.COLORS.secondary}; font-size:{config.FONT_SIZE_OUTPUT - 1}px;'
+            ' margin-top:2px;">'
+            f"{safe_path}</div>"
+            "</div>"
+        )
+        parts = [header]
+        if content is not None:
+            normalized = self._normalize_content(content)
+            parts.append(self._build_code_block_html(normalized))
+            parts.append(
+                f'<div style="border-bottom:1px solid {config.COLORS.code_block_border};'
+                f' margin:{config.OUTPUT_BLOCK_SPACING_PX}px 0;"></div>'
+            )
+        if footer:
+            parts.append(
+                f'<div style="color:{config.COLORS.secondary}; font-size:{config.FONT_SIZE_OUTPUT - 2}px;'
+                f' margin-bottom:{config.OUTPUT_BLOCK_SPACING_PX}px;">{html.escape(footer)}</div>'
+            )
+        self._append_html("".join(parts))
 
     def _append_html(self, html_content: str) -> None:
         """Append HTML content to the underlying text edit with smooth scrolling."""

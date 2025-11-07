@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
+import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from PySide6.QtCore import QObject, Signal
 
@@ -99,11 +101,7 @@ class OrchestrationHandler(QObject):
             stripped_text = raw_text.strip()
 
             if stripped_text.startswith("TOOL_CALL::"):
-                try:
-                    _, tool_name, args_summary = stripped_text.split("::", 2)
-                    self._output_panel.display_tool_call(tool_name, args_summary)
-                except ValueError:
-                    self._output_panel.display_output(raw_text)  # Fallback
+                self._handle_tool_call_message(stripped_text)
             elif stripped_text.startswith("⋯"):
                 self._output_panel.display_thinking(stripped_text[1:].strip())
             elif stripped_text.startswith("▶"):
@@ -188,11 +186,7 @@ class OrchestrationHandler(QObject):
                     return
 
                 if stripped_text.startswith("TOOL_CALL::"):
-                    try:
-                        _, tool_name, args_summary = stripped_text.split("::", 2)
-                        self._output_panel.display_tool_call(tool_name, args_summary)
-                    except ValueError:
-                        self._output_panel.display_output(stripped_text)  # Fallback
+                    self._handle_tool_call_message(stripped_text)
                 else:
                     self._output_panel.display_output(stripped_text)
 
@@ -208,6 +202,101 @@ class OrchestrationHandler(QObject):
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to handle background event")
             self._output_panel.display_error("Background event processing failed. See aura.log for details.")
+
+    def _handle_tool_call_message(self, payload: str) -> None:
+        """Parse a TOOL_CALL message and render it appropriately."""
+        try:
+            _, tool_name, raw_args = payload.split("::", 2)
+        except ValueError:
+            self._output_panel.display_output(payload)
+            return
+
+        parsed_args = self._parse_tool_args(raw_args)
+        if self._render_file_tool_call(tool_name, parsed_args):
+            return
+        if self._render_read_tool_call(tool_name, parsed_args):
+            return
+
+        if isinstance(parsed_args, (dict, list)):
+            args_display = json.dumps(parsed_args, ensure_ascii=False, indent=2)
+        else:
+            args_display = str(parsed_args)
+
+        if len(args_display) > 240:
+            args_display = f"{args_display[:237]}..."
+
+        self._output_panel.display_tool_call(tool_name, args_display)
+
+    def _render_file_tool_call(self, tool_name: str, args: Any) -> bool:
+        """Render structured file operations when sufficient data is available."""
+        if tool_name not in {"create_file", "modify_file", "delete_file"}:
+            return False
+        if not isinstance(args, dict):
+            return False
+
+        path = str(args.get("path") or args.get("file_path") or "")
+        if not path:
+            return False
+
+        if tool_name == "create_file":
+            content = str(args.get("content", ""))
+            self._output_panel.display_file_creation(path, content)
+            return True
+
+        if tool_name == "modify_file":
+            content = (
+                args.get("new_content")
+                or args.get("content")
+                or args.get("diff")
+                or args.get("patch")
+                or ""
+            )
+            self._output_panel.display_file_modification(path, str(content))
+            return True
+
+        if tool_name == "delete_file":
+            self._output_panel.display_file_deletion(path)
+            return True
+
+        return False
+
+    def _render_read_tool_call(self, tool_name: str, args: Any) -> bool:
+        """Render read/list operations with clearer descriptions."""
+        if tool_name not in {"read_project_file", "list_project_files"}:
+            return False
+
+        if not isinstance(args, dict):
+            return False
+
+        target = str(
+            args.get("path")
+            or args.get("file")
+            or args.get("directory")
+            or args.get("root")
+            or ""
+        )
+
+        if tool_name == "read_project_file":
+            message = f"Reading {target or 'file'}"
+        else:
+            message = f"Listing files in {target or '.'}"
+
+        self._output_panel.display_tool_call(tool_name, message)
+        return True
+
+    @staticmethod
+    def _parse_tool_args(raw_args: str) -> Any:
+        """Best-effort parsing of tool arguments from the agent stream."""
+        candidate = raw_args.strip()
+        if not candidate:
+            return {}
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                return ast.literal_eval(candidate)
+            except (ValueError, SyntaxError):
+                return candidate
 
     def _format_user_error(self, error: str) -> str:
         """Return a user-friendly error message with actionable guidance."""
