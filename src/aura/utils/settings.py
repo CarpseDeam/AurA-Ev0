@@ -37,6 +37,8 @@ def load_settings() -> Dict[str, Any]:
             "claude_model": DEFAULT_CLAUDE_MODEL,
             "selected_agent": None,
             "agent_executable": None,
+            "sidebar_collapsed": False,
+            "sidebar_width": 280,
         }
 
     try:
@@ -47,6 +49,8 @@ def load_settings() -> Dict[str, Any]:
             settings.setdefault("claude_model", DEFAULT_CLAUDE_MODEL)
             settings.setdefault("selected_agent", None)
             settings.setdefault("agent_executable", None)
+            settings.setdefault("sidebar_collapsed", False)
+            settings.setdefault("sidebar_width", 280)
             return settings
     except (json.JSONDecodeError, IOError) as e:
         logger.error(f"Failed to load or parse settings file: {e}. Using default settings.")
@@ -55,6 +59,8 @@ def load_settings() -> Dict[str, Any]:
             "claude_model": DEFAULT_CLAUDE_MODEL,
             "selected_agent": None,
             "agent_executable": None,
+            "sidebar_collapsed": False,
+            "sidebar_width": 280,
         }
 
 def save_settings(settings: Dict[str, Any]) -> None:

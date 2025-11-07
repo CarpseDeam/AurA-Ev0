@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFrame, QScrollArea
 )
-from PySide6.QtCore import Signal, Qt, QSize
+from PySide6.QtCore import Signal, Qt, QSize, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QFont
 
 from ..models import Project, Conversation
@@ -26,55 +26,114 @@ class ProjectSidebar(QWidget):
         conversation_selected: Emitted when a conversation is clicked (conversation_id)
         new_project_clicked: Emitted when "New Project" button is clicked
         new_conversation_clicked: Emitted when "New Chat" button is clicked
+        state_changed: Emitted when the sidebar is collapsed or expanded (bool)
     """
 
     project_selected = Signal(int)  # project_id
     conversation_selected = Signal(int)  # conversation_id
     new_project_clicked = Signal()
     new_conversation_clicked = Signal()
+    state_changed = Signal(bool)  # collapsed
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._current_project_id: Optional[int] = None
         self._current_conversation_id: Optional[int] = None
+        self._collapsed = False
+        self._collapsed_width = 40
+        self._expanded_width = 280
+
+        # Animation for smooth collapse/expand
+        self._animation = QPropertyAnimation(self, b"minimumWidth")
+        self._animation.setDuration(250)
+        self._animation.setEasingCurve(QEasingCurve.InOutQuad)
+
         self._setup_ui()
         self._apply_styling()
+        self.setMinimumWidth(self._expanded_width)
 
     def _setup_ui(self) -> None:
         """Create and layout UI components."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
 
         # Header
         header = self._create_header()
-        layout.addWidget(header)
+        self.main_layout.addWidget(header)
+
+        # Main content area
+        self._content_widget = QWidget()
+        content_layout = QVBoxLayout(self._content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
 
         # Projects section
         projects_section = self._create_projects_section()
-        layout.addWidget(projects_section)
+        content_layout.addWidget(projects_section)
 
         # Separator
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(separator)
+        content_layout.addWidget(separator)
 
         # Recent conversations section
         recents_section = self._create_recents_section()
-        layout.addWidget(recents_section)
+        content_layout.addWidget(recents_section)
+
+        self.main_layout.addWidget(self._content_widget)
 
     def _create_header(self) -> QWidget:
-        """Create the sidebar header with title."""
+        """Create the sidebar header with title and collapse button."""
         header = QWidget()
-        header_layout = QVBoxLayout(header)
+        header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(12, 12, 12, 12)
 
-        title = QLabel("AURA")
-        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        header_layout.addWidget(title)
+        self.title_label = QLabel("AURA")
+        self.title_label.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        header_layout.addWidget(self.title_label)
+
+        header_layout.addStretch()
+
+        self.toggle_button = QPushButton("◀")
+        self.toggle_button.setFixedSize(24, 24)
+        self.toggle_button.setObjectName("toggleButton")
+        self.toggle_button.setToolTip("Collapse Sidebar")
+        self.toggle_button.clicked.connect(self._toggle_collapse)
+        header_layout.addWidget(self.toggle_button)
 
         return header
+
+    def _toggle_collapse(self) -> None:
+        """Toggle the collapsed state of the sidebar."""
+        self.set_collapsed(not self._collapsed)
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Set the collapsed state of the sidebar and animate the change."""
+        if self._collapsed == collapsed:
+            return
+
+        self._collapsed = collapsed
+        self.state_changed.emit(self._collapsed)
+
+        start_width = self.width()
+        end_width = self._collapsed_width if self._collapsed else self._expanded_width
+
+        if self._collapsed:
+            self._content_widget.hide()
+            self.toggle_button.setText("▶")
+            self.toggle_button.setToolTip("Expand Sidebar")
+            self.title_label.hide()
+        else:
+            self.toggle_button.setText("◀")
+            self.toggle_button.setToolTip("Collapse Sidebar")
+            self.title_label.show()
+            self._content_widget.show()
+
+        self._animation.setStartValue(start_width)
+        self._animation.setEndValue(end_width)
+        self._animation.start()
 
     def _create_projects_section(self) -> QWidget:
         """Create the projects section with list and new button."""
@@ -296,6 +355,23 @@ class ProjectSidebar(QWidget):
 
             QFrame {{
                 color: {COLORS.border};
+            }}
+
+            #toggleButton {{
+                background-color: transparent;
+                border: 1px solid {COLORS.border};
+                border-radius: 12px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+
+            #toggleButton:hover {{
+                background-color: {hover_bg};
+                border-color: {COLORS.accent};
+            }}
+
+            #toggleButton:pressed {{
+                background-color: {sidebar_bg};
             }}
         """)
 

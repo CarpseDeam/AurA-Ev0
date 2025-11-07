@@ -6,14 +6,15 @@ import logging
 import os
 from typing import Optional
 
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtCore import Signal, Qt, QPropertyAnimation
+from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLineEdit,
     QMainWindow,
     QPushButton,
+    QSplitter,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -39,6 +40,7 @@ from aura.ui.project_sidebar import ProjectSidebar
 from aura.ui.project_panel import ProjectPanel
 from aura.ui.project_dialog import ProjectDialog
 from aura.models import Project, Conversation
+from aura.utils.settings import load_settings, save_settings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -87,8 +89,10 @@ class MainWindow(QMainWindow):
         )
 
         self._configure_window(); self._build_layout(); self._apply_styles(); self._build_toolbar()
-        self._connect_signals(); self._connect_handler_signals(); self._subscribe_to_events()
+        self._connect_signals(); self._connect_sidebar_signals(); self._connect_handler_signals(); self._subscribe_to_events()
         self._event_received.connect(self.orchestration_handler.handle_background_event)
+
+        self._load_and_apply_settings()
 
         self.status_bar_manager.update_status("Ready", config.COLORS.text, persist=True)
 
@@ -111,16 +115,20 @@ class MainWindow(QMainWindow):
         self.input_field.setFocus()
 
     def _build_layout(self) -> None:
-        """Build the main window layout with sidebars."""
+        """Build the main window layout with a splitter for resizable sidebars."""
         container = QWidget(self)
         main_layout = QHBoxLayout(container)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Left sidebar (project sidebar)
-        main_layout.addWidget(self.project_sidebar)
+        self.splitter = QSplitter(Qt.Horizontal, self)
+        self.splitter.setHandleWidth(1)
+        self.splitter.setStyleSheet("QSplitter::handle { background-color: #2c313a; }")
 
-        # Center panel (existing output and input)
+        # Left sidebar (project sidebar)
+        self.splitter.addWidget(self.project_sidebar)
+
+        # Center panel (output, input, etc.)
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
         center_layout.setContentsMargins(16, 16, 16, 16)
@@ -134,32 +142,62 @@ class MainWindow(QMainWindow):
         center_layout.addLayout(input_row)
         center_layout.setStretch(0, 1)
         center_layout.setStretch(1, 0)
+        self.splitter.addWidget(center_widget)
 
-        main_layout.addWidget(center_widget, 1)  # Give center widget stretch factor
+        # Configure splitter sizes
+        self.splitter.setStretchFactor(0, 0)  # Sidebar doesn't stretch
+        self.splitter.setStretchFactor(1, 1)  # Main content stretches
 
-        # Right sidebar (project panel)
+        main_layout.addWidget(self.splitter)
+
+        # Right sidebar (project panel) - outside the splitter for now
         main_layout.addWidget(self.project_panel)
 
         self.setCentralWidget(container)
 
     def _apply_styles(self) -> None:
-        self.setStyleSheet(
-            f"QMainWindow {{background: {config.COLORS.background}; color: {config.COLORS.text};}}"
-            f"QTextEdit {{background: {config.COLORS.background}; "
-            f"color: {config.COLORS.text}; border: none; padding: 16px; "
-            f"line-height: {config.LINE_HEIGHT}; letter-spacing: {config.LETTER_SPACING}; "
-            f"selection-background-color: {config.COLORS.accent};}}"
-            f"QLineEdit {{background: transparent; "
-            f"color: {config.COLORS.text}; border: none; border-bottom: 1px solid {config.COLORS.border}; "
-            f"padding: 12px 16px; font-size: {config.FONT_SIZE_INPUT}px;}}"
-            f"QLineEdit:focus {{background: #1a1a1a; border-bottom: 2px solid {config.COLORS.accent}; "
-            f"padding-bottom: 11px;}}"
-            f"QStatusBar {{background: {config.COLORS.background}; "
-            f"color: {config.COLORS.text}; border: none; border-top: 1px solid {config.COLORS.border}; "
-            f"padding: 6px; font-size: {config.FONT_SIZE_STATUS}px;}}"
-            f"QToolBar {{background: {config.COLORS.background}; "
-            "border: none; spacing: 8px; padding: 4px;}}"
-        )
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background: {config.COLORS.background};
+                color: {config.COLORS.text};
+            }}
+            QTextEdit {{
+                background: {config.COLORS.background};
+                color: {config.COLORS.text};
+                border: none;
+                padding: 16px;
+                line-height: {config.LINE_HEIGHT};
+                letter-spacing: {config.LETTER_SPACING};
+                selection-background-color: {config.COLORS.accent};
+            }}
+            QLineEdit {{
+                background: transparent;
+                color: {config.COLORS.text};
+                border: none;
+                border-bottom: 1px solid {config.COLORS.border};
+                padding: 12px 16px;
+                font-size: {config.FONT_SIZE_INPUT}px;
+            }}
+            QLineEdit:focus {{
+                background: #1a1a1a;
+                border-bottom: 2px solid {config.COLORS.accent};
+                padding-bottom: 11px;
+            }}
+            QStatusBar {{
+                background: {config.COLORS.background};
+                color: {config.COLORS.text};
+                border: none;
+                border-top: 1px solid {config.COLORS.border};
+                padding: 6px;
+                font-size: {config.FONT_SIZE_STATUS}px;
+            }}
+            QToolBar {{
+                background: {config.COLORS.background};
+                border: none;
+                spacing: 8px;
+                padding: 4px;
+            }}
+        """)
         self.clear_button.setStyleSheet(
             f"QPushButton {{background: {config.COLORS.background}; "
             f"color: {config.COLORS.text}; border: 1px solid {config.COLORS.border}; "
@@ -176,6 +214,11 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.input_field.returnPressed.connect(self._handle_submit); self.clear_button.clicked.connect(self.clear_output)
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        
+        # Keyboard shortcut for toggling sidebar
+        shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
+        shortcut.activated.connect(self.project_sidebar._toggle_collapse)
 
     def _connect_handler_signals(self) -> None:
         self.orchestration_handler.request_input_enabled.connect(self._set_input_enabled); self.orchestration_handler.request_input_focus.connect(self.input_field.setFocus)
@@ -185,6 +228,40 @@ class MainWindow(QMainWindow):
 
     def _emit_event_signal(self, event: Event) -> None:
         self._event_received.emit(event)
+
+    def _load_and_apply_settings(self) -> None:
+        """Load sidebar state from settings and apply it."""
+        settings = load_settings()
+        is_collapsed = settings.get("sidebar_collapsed", False)
+        self.project_sidebar.set_collapsed(is_collapsed)
+
+    def _on_sidebar_state_changed(self, is_collapsed: bool) -> None:
+        """Save the sidebar's collapsed state and adjust the splitter."""
+        settings = load_settings()
+        settings["sidebar_collapsed"] = is_collapsed
+        save_settings(settings)
+        LOGGER.info(f"Sidebar collapsed state saved: {is_collapsed}")
+
+        # Adjust splitter size
+        if is_collapsed:
+            self.splitter.setSizes([0, self.width()])
+        else:
+            sidebar_width = settings.get("sidebar_width", 280)
+            self.splitter.setSizes([sidebar_width, self.width() - sidebar_width])
+
+    def _on_splitter_moved(self, pos: int, index: int) -> None:
+        """Save the sidebar's width when the splitter is moved."""
+        # Only save if the sidebar is not collapsed and the splitter is not being animated
+        if not self.project_sidebar._collapsed and self.project_sidebar._animation.state() == QPropertyAnimation.State.NotRunning:
+            sizes = self.splitter.sizes()
+            if len(sizes) > 0:
+                sidebar_width = sizes[0]
+                # Add a reasonable minimum width to avoid saving a tiny width
+                if sidebar_width > 50:
+                    settings = load_settings()
+                    settings["sidebar_width"] = sidebar_width
+                    save_settings(settings)
+                    LOGGER.debug(f"Sidebar width saved: {sidebar_width}")
 
     def _connect_orchestrator_signals(self) -> None:
         from PySide6.QtCore import Qt
@@ -416,6 +493,7 @@ class MainWindow(QMainWindow):
         self.project_sidebar.conversation_selected.connect(self._on_conversation_selected)
         self.project_sidebar.new_project_clicked.connect(self._on_new_project)
         self.project_sidebar.new_conversation_clicked.connect(self._on_new_conversation)
+        self.project_sidebar.state_changed.connect(self._on_sidebar_state_changed)
 
         # Project panel signals
         self.project_panel.edit_project_clicked.connect(self._on_edit_project)
@@ -469,7 +547,7 @@ class MainWindow(QMainWindow):
                 messages = conv.get_messages()
                 for msg in messages:
                     if msg.role == 'user':
-                        self.output_panel.display_user_prompt(msg.content)
+                        self.output_panel.display_output(f"> {msg.content}", config.COLORS.prompt)
                     else:
                         self.output_panel.display_output(msg.content, config.COLORS.agent_output)
 
