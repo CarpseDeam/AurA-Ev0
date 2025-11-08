@@ -76,7 +76,7 @@ def generate_banner_html() -> str:
     # styling for the Aura GUI, ensuring perfect font and alignment.
     return (
         '<pre style="font-family: \'JetBrains Mono\', \'Consolas\', monospace; '
-        'font-size: 16px; line-height: 0.95; margin: 20px 0; color: #e6edf3;">'
+        'font-size: 16px; line-height: 1.0; margin: 20px 0; color: #e6edf3;">'
         f'{html_content}'
         '</pre>'
     )
