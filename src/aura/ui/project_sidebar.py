@@ -6,9 +6,9 @@ import logging
 from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QFrame
+    QListWidget, QListWidgetItem, QFrame, QMenu, QMessageBox
 )
-from PySide6.QtCore import Signal, Qt, QSize
+from PySide6.QtCore import Signal, Qt, QSize, QPoint
 from PySide6.QtGui import QFont
 
 from ..models import Project, Conversation
@@ -33,6 +33,7 @@ class ProjectSidebar(QWidget):
     conversation_selected = Signal(int)  # conversation_id
     new_project_clicked = Signal()
     new_conversation_clicked = Signal()
+    conversation_deleted = Signal(int)  # conversation_id
     state_changed = Signal(bool)  # collapsed
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -191,6 +192,8 @@ class ProjectSidebar(QWidget):
         # Recent conversations list
         self._recents_list = QListWidget()
         self._recents_list.itemClicked.connect(self._on_conversation_clicked)
+        self._recents_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._recents_list.customContextMenuRequested.connect(self._show_conversation_context_menu)
         layout.addWidget(self._recents_list, 1)  # Give it stretch factor
 
         return section
@@ -208,6 +211,52 @@ class ProjectSidebar(QWidget):
         if conversation_id:
             self._current_conversation_id = conversation_id
             self.conversation_selected.emit(conversation_id)
+
+    def _show_conversation_context_menu(self, pos: QPoint) -> None:
+        """Show context menu for conversation items."""
+        item = self._recents_list.itemAt(pos)
+        if not item:
+            return
+
+        conversation_id = item.data(Qt.UserRole)
+        if not conversation_id:
+            return
+
+        menu = QMenu(self)
+        delete_action = menu.addAction("Delete Conversation")
+        delete_action.triggered.connect(lambda: self._delete_conversation(item))
+
+        menu.exec(self._recents_list.mapToGlobal(pos))
+
+    def _delete_conversation(self, item: QListWidgetItem) -> None:
+        """Delete the selected conversation after confirmation."""
+        conversation_id = item.data(Qt.UserRole)
+        conversation = Conversation.get_by_id(conversation_id)
+        if not conversation:
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "Confirm Deletion",
+            "Are you sure you want to delete this conversation?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.No:
+            return
+
+        try:
+            conversation.delete()
+            logger.info(f"Deleted conversation ID: {conversation_id}")
+
+            # Emit signal and refresh
+            self.conversation_deleted.emit(conversation_id)
+            self.refresh_recent_conversations()
+
+        except Exception as e:
+            logger.error(f"Failed to delete conversation: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to delete conversation: {e}")
 
     def refresh_projects(self) -> None:
         """Reload and display all projects."""
@@ -233,25 +282,20 @@ class ProjectSidebar(QWidget):
         except Exception as e:
             logger.error(f"Failed to refresh projects: {e}")
 
-    def refresh_recent_conversations(self, limit: int = 20) -> None:
-        """Reload and display recent conversations."""
+    def refresh_recent_conversations(self, limit: int = 50) -> None:
+        """
+        Reload and display recent conversations for the current project.
+        If no project is selected, shows conversations not assigned to any project.
+        """
         self._recents_list.clear()
 
         try:
-            conversations = Conversation.get_recent(limit=limit)
+            # Fetch conversations for the current project, or unassigned ones if no project is selected
+            conversations = Conversation.get_by_project(self._current_project_id, limit=limit)
 
             for conv in conversations:
                 # Display title or "(Untitled)"
                 title = conv.title if conv.title else "(Untitled)"
-
-                # Add project name if available
-                if conv.project_id:
-                    try:
-                        project = Project.get_by_id(conv.project_id)
-                        if project:
-                            title = f"{project.name} • {title}"
-                    except Exception:
-                        pass
 
                 item = QListWidgetItem(title)
                 item.setData(Qt.UserRole, conv.id)
@@ -264,7 +308,8 @@ class ProjectSidebar(QWidget):
 
                 self._recents_list.addItem(item)
 
-            logger.info(f"Refreshed recent conversations: {len(conversations)} conversations")
+            logger.info(f"Refreshed recent conversations for project {self._current_project_id}: "
+                        f"{len(conversations)} conversations")
 
         except Exception as e:
             logger.error(f"Failed to refresh recent conversations: {e}")
@@ -276,13 +321,14 @@ class ProjectSidebar(QWidget):
 
     def set_current_project(self, project_id: Optional[int]) -> None:
         """
-        Set the currently selected project.
+        Set the currently selected project and refresh conversations.
 
         Args:
             project_id: Project ID to mark as current
         """
         self._current_project_id = project_id
         self.refresh_projects()
+        self.refresh_recent_conversations()
 
     def set_current_conversation(self, conversation_id: Optional[int]) -> None:
         """

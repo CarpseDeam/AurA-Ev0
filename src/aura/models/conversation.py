@@ -97,7 +97,7 @@ class Conversation:
 
     @staticmethod
     def get_by_project(
-        project_id: int,
+        project_id: Optional[int],
         order_by: str = "updated_at",
         ascending: bool = False,
         limit: Optional[int] = None
@@ -106,7 +106,8 @@ class Conversation:
         Retrieve all conversations for a project.
 
         Args:
-            project_id: The project ID to filter by
+            project_id: The project ID to filter by. If None, retrieves conversations
+                        without a project.
             order_by: Column to sort by (default: "updated_at")
             ascending: Sort order (default: False for descending)
             limit: Optional limit on number of results
@@ -119,14 +120,21 @@ class Conversation:
             raise ValueError(f"Invalid order_by column: {order_by}. Must be one of: {allowed}")
 
         order = "ASC" if ascending else "DESC"
+
+        params = []
+        if project_id is None:
+            where_clause = "WHERE project_id IS NULL"
+        else:
+            where_clause = "WHERE project_id = ?"
+            params.append(project_id)
+
         query = f"""
             SELECT id, project_id, title, created_at, updated_at
             FROM conversations
-            WHERE project_id = ?
+            {where_clause}
             ORDER BY {order_by} {order}
         """
 
-        params = [project_id]
         if limit is not None:
             if not isinstance(limit, int) or limit <= 0:
                 raise ValueError("limit must be a positive integer when provided")

@@ -584,6 +584,7 @@ class MainWindow(QMainWindow):
         self.project_sidebar.new_project_clicked.connect(self._on_new_project)
         self.project_sidebar.new_conversation_clicked.connect(self._on_new_conversation)
         self.project_sidebar.state_changed.connect(self._on_sidebar_state_changed)
+        self.project_sidebar.conversation_deleted.connect(self._on_conversation_deleted)
 
         # Project panel signals
         self.project_panel.edit_project_clicked.connect(self._on_edit_project)
@@ -649,6 +650,16 @@ class MainWindow(QMainWindow):
         except Exception as e:
             LOGGER.error(f"Failed to select conversation: {e}")
 
+    def _on_conversation_deleted(self, conversation_id: int) -> None:
+        """Handle cleanup after a conversation is deleted."""
+        LOGGER.info(f"Conversation {conversation_id} was deleted.")
+        if self.app_state.current_conversation_id == conversation_id:
+            self.app_state.set_current_conversation(None)
+            self.output_panel.clear()
+            if self.orchestrator:
+                self.orchestrator.reset_history()
+            LOGGER.info("Active conversation was deleted. Cleared panel and reset state.")
+
     def _on_new_project(self) -> None:
         """Handle new project button click."""
         dialog = ProjectDialog(parent=self)
@@ -708,17 +719,18 @@ class MainWindow(QMainWindow):
             # Hide panel
             self.project_panel.hide()
 
-            # Clear state
+            # Clear state and refresh sidebars
             self.app_state.set_current_project(None)
-
-            # Refresh sidebar
-            self.project_sidebar.refresh_projects()
+            self.project_sidebar.refresh_all()
 
             LOGGER.info(f"Deleted project: {project.name}")
 
     def _on_close_project_panel(self) -> None:
         """Handle project panel close button click."""
         self.project_panel.hide()
+        self.app_state.set_current_project(None)
+        self.project_sidebar.set_current_project(None)
+        LOGGER.info("Closed project panel and cleared current project.")
 
     def refresh_sidebars(self) -> None:
         """Refresh both sidebars (call after database changes)."""

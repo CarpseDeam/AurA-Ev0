@@ -7,7 +7,7 @@ from typing import Optional
 from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QTextEdit, QFileDialog, QFormLayout, QDialogButtonBox
+    QLineEdit, QTextEdit, QFileDialog, QFormLayout, QDialogButtonBox, QMessageBox
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -173,11 +173,22 @@ class ProjectDialog(QDialog):
             # TODO: Show error dialog
 
     def _on_delete_clicked(self) -> None:
-        """Handle delete button click."""
+        """Handle delete button click with confirmation."""
         if not self._is_edit_mode or not self._project:
             return
 
-        # TODO: Show confirmation dialog
+        reply = QMessageBox.warning(
+            self,
+            "Confirm Deletion",
+            "Are you sure you want to delete this project? This will also delete all of its "
+            "conversations and messages permanently. This action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.No:
+            return
+
         try:
             project_name = self._project.name
             project_id = self._project.id
@@ -189,7 +200,7 @@ class ProjectDialog(QDialog):
 
         except Exception as e:
             logger.error(f"Failed to delete project: {e}")
-            # TODO: Show error dialog
+            QMessageBox.critical(self, "Error", f"Failed to delete project: {e}")
 
     def get_project(self) -> Optional[Project]:
         """
