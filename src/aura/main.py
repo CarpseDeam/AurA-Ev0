@@ -255,10 +255,16 @@ class ApplicationController:
                 # Display conversation history
                 messages = conv.get_messages()
                 for msg in messages:
-                    if msg.role == 'user':
-                        self.main_window.output_panel.display_user_prompt(msg.content)
+                    if msg.role == "user":
+                        self.main_window.output_panel.display_output(
+                            f"> {msg.content}",
+                            config.COLORS.prompt,
+                        )
                     else:
-                        self.main_window.output_panel.display_output(msg.content, config.COLORS.agent_output)
+                        self.main_window.output_panel.display_output(
+                            msg.content,
+                            config.COLORS.agent_output,
+                        )
 
                 # Update sidebar highlighting
                 self.main_window.project_sidebar.set_current_conversation(conv.id)

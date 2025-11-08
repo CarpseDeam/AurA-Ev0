@@ -10,6 +10,7 @@ from PySide6.QtCore import Signal, Qt, QEasingCurve, QVariantAnimation, QAbstrac
 from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
+    QDialog,
     QHBoxLayout,
     QLineEdit,
     QMainWindow,
@@ -645,7 +646,7 @@ class MainWindow(QMainWindow):
         dialog = ProjectDialog(parent=self)
         result = dialog.exec()
 
-        if result == dialog.Accepted:
+        if result == QDialog.Accepted:
             project = dialog.get_project()
             if project:
                 # Refresh sidebar to show new project
