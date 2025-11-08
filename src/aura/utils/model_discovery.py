@@ -1,5 +1,6 @@
 
 import dataclasses
+import subprocess
 import time
 import logging
 from typing import List, Dict, Tuple
@@ -105,12 +106,60 @@ def discover_claude_models(api_key: str) -> List[ModelInfo]:
         return fallback_models
 
 
+def discover_ollama_models() -> List[ModelInfo]:
+    """
+    Discovers available Ollama models by running `ollama list`.
+    Caches results for 5 minutes.
+    """
+    if "ollama" in _model_cache:
+        models, timestamp = _model_cache["ollama"]
+        if time.time() - timestamp < CACHE_DURATION:
+            logger.debug("Returning cached Ollama models.")
+            return models
+
+    try:
+        result = subprocess.run(['ollama', 'list'], capture_output=True, text=True, check=True)
+        lines = result.stdout.strip().split('\n')
+        if not lines or len(lines) < 2:
+            _model_cache["ollama"] = ([], time.time())
+            return []
+
+        models = []
+        # Skip header line
+        for line in lines[1:]:
+            parts = line.split()
+            if parts:
+                model_name = parts[0]
+                models.append(ModelInfo(
+                    model_id=model_name,
+                    display_name=model_name,
+                    description=f"Provider: Ollama",
+                    provider="ollama"
+                ))
+        
+        _model_cache["ollama"] = (models, time.time())
+        logger.info(f"Discovered {len(models)} Ollama models.")
+        return models
+    except FileNotFoundError:
+        logger.warning("`ollama` command not found. Please make sure Ollama is installed and in your PATH.")
+        _model_cache["ollama"] = ([], time.time())
+        return []
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to execute `ollama list`: {e.stderr}")
+        _model_cache["ollama"] = ([], time.time())
+        return []
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while discovering Ollama models: {e}")
+        _model_cache["ollama"] = ([], time.time())
+        return []
+
+
 def get_available_models(
     gemini_api_key: str | None = None,
     claude_api_key: str | None = None,
 ) -> Dict[str, List[ModelInfo]]:
     """
-    Convenience helper that returns both Gemini and Claude models.
+    Convenience helper that returns available models from all providers.
 
     Args:
         gemini_api_key: Optional Gemini API key.
@@ -122,4 +171,5 @@ def get_available_models(
     return {
         "gemini": discover_gemini_models(gemini_api_key or ""),
         "claude": discover_claude_models(claude_api_key or ""),
+        "ollama": discover_ollama_models(),
     }

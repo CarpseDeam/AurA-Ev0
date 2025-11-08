@@ -23,7 +23,7 @@ import os
 from aura import config
 from aura.state import AppState
 from aura.utils.agent_finder import AgentInfo, find_cli_agents, validate_agent
-from aura.utils.model_discovery import discover_claude_models, discover_gemini_models
+from aura.utils.model_discovery import discover_claude_models, discover_gemini_models, discover_ollama_models
 from aura.utils.settings import save_settings
 
 
@@ -49,7 +49,8 @@ class AgentSettingsDialog(QDialog):
         self.claude_model_combo = QComboBox(self)
         self.claude_refresh_button = QPushButton("Refresh Models", self)
         self.specialist_model_combo = QComboBox(self)
-        self.specialist_model_combo.setEditable(True)
+        self.specialist_refresh_button = QPushButton("Refresh", self)
+        self.specialist_model_combo.setEditable(False)
         self.specialist_model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.specialist_model_combo.setCurrentText(self.app_state.specialist_model)
 
@@ -61,6 +62,7 @@ class AgentSettingsDialog(QDialog):
         self.refresh_agents()
         self._refresh_gemini_models()
         self._refresh_claude_models()
+        self._refresh_ollama_models()
 
     def _configure_dialog(self) -> None:
         """Configure dialog properties."""
@@ -112,6 +114,7 @@ class AgentSettingsDialog(QDialog):
 
         specialist_layout = QHBoxLayout()
         specialist_layout.addWidget(self.specialist_model_combo)
+        specialist_layout.addWidget(self.specialist_refresh_button)
         model_layout.addRow("Specialist Model (Local):", specialist_layout)
 
         layout.addLayout(model_layout)
@@ -186,6 +189,7 @@ class AgentSettingsDialog(QDialog):
         # Model selection signals
         self.gemini_refresh_button.clicked.connect(self._refresh_gemini_models)
         self.claude_refresh_button.clicked.connect(self._refresh_claude_models)
+        self.specialist_refresh_button.clicked.connect(self._refresh_ollama_models)
         self.gemini_model_combo.currentTextChanged.connect(self._on_gemini_model_selected)
         self.claude_model_combo.currentTextChanged.connect(self._on_claude_model_selected)
         self.specialist_model_combo.currentTextChanged.connect(self._on_specialist_model_selected)
@@ -315,36 +319,23 @@ class AgentSettingsDialog(QDialog):
         models = discover_claude_models(api_key)
         self._update_model_combo(self.claude_model_combo, models, "Unable to fetch models (check network/key)")
 
+    def _refresh_ollama_models(self) -> None:
+        """Fetch and display available Ollama models."""
+        models = discover_ollama_models()
+        self._update_model_combo(self.specialist_model_combo, models, "No local models found (is Ollama running?)")
+        # Try to set based on current app state text
+        current_model_text = self.app_state.specialist_model
+        index = self.specialist_model_combo.findText(current_model_text)
+        if index != -1:
+            self.specialist_model_combo.setCurrentIndex(index)
+        elif self.specialist_model_combo.count() > 0:
+            self.specialist_model_combo.setCurrentIndex(0)
+
     def _update_model_combo(self, combo: QComboBox, models: list, error_message: str) -> None:
         """Helper to populate a model combo box."""
         current_selection = combo.currentData()
         combo.clear()
-
-        if not models:
-            combo.addItem(error_message)
-            combo.setEnabled(False)
-            return
-
-        combo.setEnabled(True)
-        for model in models:
-            combo.addItem(model.display_name, model.model_id)
-
-        if current_selection:
-            index = combo.findData(current_selection)
-            if index != -1:
-                combo.setCurrentIndex(index)
-        else:
-            if combo.count() > 0:
-                combo.setCurrentIndex(0)
-
-    def _on_gemini_model_selected(self, text: str) -> None:
-        """Handle selection of a Gemini model."""
-        model_id = self.gemini_model_combo.currentData()
-        if not model_id:
-            model_id = text.strip()
-        if model_id:
-            self.app_state.set_analyst_model(model_id)
-
+...
     def _on_claude_model_selected(self, text: str) -> None:
         """Handle selection of a Claude model."""
         model_id = self.claude_model_combo.currentData()
@@ -354,8 +345,10 @@ class AgentSettingsDialog(QDialog):
             self.app_state.set_executor_model(model_id)
 
     def _on_specialist_model_selected(self, text: str) -> None:
-        """Handle edits to the specialist model."""
-        model_id = text.strip()
+        """Handle selection of a specialist model."""
+        model_id = self.specialist_model_combo.currentData()
+        if not model_id:
+            model_id = text.strip()
         if model_id:
             self.app_state.set_specialist_model(model_id)
 
