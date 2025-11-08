@@ -201,9 +201,12 @@ class Orchestrator(QObject):
         self._tool_manager = ToolManager(str(self._working_dir))
         self._conversation_lock = threading.Lock()
 
-        self._summarizer = LocalSummarizerService(
-            endpoint=self.app_state.local_model_endpoint,
-        )
+        endpoint = (self.app_state.local_model_endpoint or "").strip()
+        self._summarizer: LocalSummarizerService | None = None
+        if endpoint:
+            self._summarizer = LocalSummarizerService(endpoint=endpoint)
+        else:
+            LOGGER.debug("Local summarizer endpoint not configured; history summarization disabled.")
 
         effective_gemini_key = gemini_api_key or api_key
         effective_claude_key = claude_api_key
@@ -507,6 +510,27 @@ class Orchestrator(QObject):
             self._thread.deleteLater()
             self._thread = None
 
+    def _summarize_history(self, messages: List[Tuple[str, str]]) -> str:
+        """Summarize historical messages using the local summarizer service."""
+        if not self._summarizer or not messages:
+            return ""
+
+        try:
+            try:
+                return asyncio.run(self._summarizer.summarize_conversation(messages))
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                try:
+                    return loop.run_until_complete(
+                        self._summarizer.summarize_conversation(messages)
+                    )
+                finally:
+                    loop.close()
+        except Exception as exc:
+            LOGGER.error("Failed to summarize conversation history: %s", exc)
+            return ""
+
+
     def _build_prompt(self, goal: str) -> str:
         """Build the conversational prompt, summarizing old history if needed."""
         SUMMARY_THRESHOLD = 30  # 15 pairs of messages
@@ -515,6 +539,8 @@ class Orchestrator(QObject):
         lines: List[str] = []
         summary = ""
         project_instructions = ""
+        history = list(self._history)
+        recent_history: List[Tuple[str, str]] = history
 
         # Get project-specific instructions
         project_id = self.app_state.current_project_id
@@ -523,34 +549,38 @@ class Orchestrator(QObject):
             if project and project.custom_instructions:
                 project_instructions = project.custom_instructions
 
-        if len(self._history) > SUMMARY_THRESHOLD:
-            try:
-                # Split history
-                old_history = self._history[:-RECENT_MESSAGES_COUNT]
-                recent_history = self._history[-RECENT_MESSAGES_COUNT:]
-                
-                LOGGER.info(f"Summarizing {len(old_history)} old messages...")
-                # Run the async summarizer in the current event loop or a new one
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:  # 'RuntimeError: There is no current event loop...'
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-
-                summary = loop.run_until_complete(self._summarizer.summarize_conversation(old_history))
-                
-                if "Error:" in summary:
-                    LOGGER.warning(f"Summarization failed: {summary}. Proceeding without summary.")
-                    summary = "" # Don't include the error message in the prompt
+        history_length = len(history)
+        if history_length > SUMMARY_THRESHOLD:
+            if not self._summarizer:
+                LOGGER.debug(
+                    "History length %s exceeds threshold but no summarizer is configured.",
+                    history_length,
+                )
+            else:
+                split_index = max(history_length - RECENT_MESSAGES_COUNT, 0)
+                old_history = history[:split_index]
+                recent_history = history[split_index:] or history
+                if old_history:
+                    LOGGER.info("Summarizing %s old messages...", len(old_history))
+                    raw_summary = self._summarize_history(old_history)
+                    cleaned_summary = raw_summary.strip()
+                    if cleaned_summary and not cleaned_summary.lower().startswith("error:"):
+                        summary = cleaned_summary
+                        LOGGER.info("Summarization complete.")
+                    else:
+                        if cleaned_summary:
+                            LOGGER.warning(
+                                "Summarization returned an error. Falling back to full history: %s",
+                                cleaned_summary,
+                            )
+                        else:
+                            LOGGER.warning(
+                                "Summarization unavailable. Using full conversation history."
+                            )
+                        summary = ""
+                        recent_history = history
                 else:
-                    LOGGER.info("Summarization complete.")
-
-            except Exception as e:
-                LOGGER.error(f"An error occurred during history summarization: {e}")
-                # If summarization fails, fall back to using the full (truncated) history
-                recent_history = self._history
-        else:
-            recent_history = self._history
+                    recent_history = history
 
         if project_instructions:
             lines.append("Project Instructions:")
@@ -570,7 +600,7 @@ class Orchestrator(QObject):
             else:
                 prefix = role.title() if role else "Message"
             lines.append(f"{prefix}: {text}")
-        
+
         lines.append(f"User: {goal}")
         return "\n\n".join(lines)
 
