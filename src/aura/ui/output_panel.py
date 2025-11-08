@@ -15,6 +15,9 @@ from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
 from aura import config
 
 
+from aura.ui.banner import generate_banner_html
+
+
 class OutputPanel(QWidget):
     """Encapsulates the formatted transcript view for orchestration output."""
 
@@ -258,15 +261,8 @@ class OutputPanel(QWidget):
 
     def display_startup_header(self) -> None:
         """Render the startup ASCII art header."""
-        header_html = """
-<pre style="font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 16px; line-height: 0.95; margin: 20px 0;">
-<span style="color: #00CED1;">  █████╗ ██╗   ██╗██████╗  █████╗ </span>
-<span style="color: #20D5E0;"> ██╔══██╗██║   ██║██╔══██╗██╔══██╗</span>
-<span style="color: #40B5F5;"> ███████║██║   ██║██████╔╝███████║</span>
-<span style="color: #60A0F0;"> ██╔══██║██║   ██║██╔══██╗██╔══██║</span>
-<span style="color: #8080E8;"> ██║  ██║╚██████╔╝██║  ██║██║  ██║</span>
-<span style="color: #A060DD;"> ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝</span>
-</pre>
+        header_html = f"""
+{generate_banner_html()}
 <div style="color: #C090D0; font-size: 13px; margin: 10px 0 10px 16px; letter-spacing: 1px;">
 AI-Powered Development Assistant
 </div>
