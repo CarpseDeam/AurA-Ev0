@@ -353,7 +353,6 @@ class Orchestrator(QObject):
             self.session_output.emit(chunk)
 
         try:
-            self.session_output.emit("⋯ Analyzing request with Aura Chat...\n")
             engineered_prompt = self._gemini_analyst.analyze_and_plan(
                 goal, on_chunk=_on_chunk
             )
@@ -369,8 +368,7 @@ class Orchestrator(QObject):
                 self._finalize_conversation(session, outcome)
                 return
 
-            self.session_output.emit("\n📋 Execution plan ready\n")
-            self.session_output.emit("▶ Executing with Coding Agent...\n")
+            self.progress_update.emit("⋯ Claude executor - executing prompt...")
 
             result = self._claude_executor.execute_prompt(
                 engineered_prompt, on_chunk=_on_chunk

@@ -185,43 +185,6 @@ class OutputPanel(QWidget):
             accent_color=config.COLORS.accent,
         )
 
-    def display_thinking_block(self, thought: str) -> None:
-        """Render a thinking/reasoning block."""
-        body = self._build_action_body_html(thought, color=config.COLORS.secondary)
-        self.display_action_block(
-            config.ICONS.THINKING,
-            "Thinking",
-            body,
-            accent_color=config.COLORS.thinking,
-        )
-
-    def display_thinking(self, text: str) -> None:
-        """Render thinking/reasoning steps with a purple ellipsis."""
-        self.display_thinking_block(text)
-
-    def display_progress(self, message: str) -> None:
-        """Display progress message with animated indicator."""
-        self.display_thinking_block(message)
-
-    def display_tool_call(self, tool_name: str, args_summary: str) -> None:
-        """Render tool calls with a structured summary block."""
-        truncated = args_summary if len(args_summary) <= 200 else f"{args_summary[:197]}..."
-        safe_name = html.escape(tool_name)
-        safe_args = html.escape(truncated)
-        body = (
-            f'<p style="margin:2px 0; color:{config.COLORS.secondary};'
-            f' font-size:{config.FONT_SIZE_OUTPUT - 1}px;">Arguments</p>'
-            f'<pre style="margin:2px 0; padding:6px 10px; background:rgba(255,255,255,0.02);'
-            " border-radius:8px; white-space:pre-wrap; font-family:'JetBrains Mono','Consolas',monospace;"
-            f' color:{config.COLORS.text}; font-size:{config.FONT_SIZE_OUTPUT - 1}px;">{safe_args}</pre>'
-        )
-        self.display_action_block(
-            config.ICONS.TOOL,
-            f"Tool · {safe_name}",
-            body,
-            accent_color=config.COLORS.tool_call,
-        )
-
     def display_file_operation(self, action: str, path: str) -> None:
         """Render file operations with appropriate symbols and colors."""
         lower = action.lower()

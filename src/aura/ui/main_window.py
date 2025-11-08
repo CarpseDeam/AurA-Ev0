@@ -398,14 +398,21 @@ class MainWindow(QMainWindow):
         # IMMEDIATE FEEDBACK - happens instantly before any processing
         self.input_field.clear()
         self.output_panel.display_output(f"> {prompt}", config.COLORS.prompt)
-        self.status_bar_manager.update_status("⋯ Processing...", config.COLORS.thinking, persist=True)
+        has_orchestrator = self.orchestrator is not None
+        should_orchestrate = bool(has_orchestrator and self._should_orchestrate(prompt))
+        status_message = (
+            "⋯ Gemini Analyst - analyzing request..."
+            if should_orchestrate
+            else "⋯ Executing CLI agent..."
+        )
+        self.status_bar_manager.update_status(status_message, config.COLORS.thinking, persist=True)
         self._set_input_enabled(False)
 
         try:
-            if not self.orchestrator:
+            if not has_orchestrator:
                 self.execute_command(prompt)
                 return
-            if self._should_orchestrate(prompt):
+            if should_orchestrate:
                 import threading
 
                 LOGGER.info(
@@ -572,9 +579,6 @@ class MainWindow(QMainWindow):
         color = config.COLORS.thinking if "⋯" in message else config.COLORS.accent
         self.status_bar_manager.update_status(message, color, persist=True)
 
-        # Also show in output for visibility
-        if message.startswith("⋯"):
-            self.output_panel.display_thinking(message[1:].strip())
 
     def _connect_sidebar_signals(self) -> None:
         """Connect signals from project sidebars."""

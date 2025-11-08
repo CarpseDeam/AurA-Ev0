@@ -60,7 +60,6 @@ class OrchestrationHandler(QObject):
         try:
             self._set_running_state()
             self.request_input_enabled.emit(False)
-            self._output_panel.display_thinking("Analyzing request...")
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to handle planning start")
             self._output_panel.display_error("Unable to display planning status. Check logs for details.")
@@ -202,15 +201,9 @@ class OrchestrationHandler(QObject):
         if self._render_read_tool_call(tool_name, parsed_args):
             return
 
-        if isinstance(parsed_args, (dict, list)):
-            args_display = json.dumps(parsed_args, ensure_ascii=False, indent=2)
-        else:
-            args_display = str(parsed_args)
-
-        if len(args_display) > 240:
-            args_display = f"{args_display[:237]}..."
-
-        self._output_panel.display_tool_call(tool_name, args_display)
+        summary = self._summarize_tool_args(parsed_args)
+        line = f"⚙️ {tool_name}: {summary}" if summary else f"⚙️ {tool_name}"
+        self._output_panel.display_output(line, config.COLORS.secondary)
 
     def _render_text_with_diffs(self, text: str) -> None:
         """Split streamed text around diff fences and render accordingly."""
@@ -265,60 +258,100 @@ class OrchestrationHandler(QObject):
         self._output_panel.display_output(stripped)
 
     def _render_file_tool_call(self, tool_name: str, args: Any) -> bool:
-        """Render structured file operations when sufficient data is available."""
+        """Render concise summaries for file create/modify/delete tools."""
         if tool_name not in {"create_file", "modify_file", "delete_file"}:
             return False
         if not isinstance(args, dict):
             return False
 
-        path = str(args.get("path") or args.get("file_path") or "")
-        if not path:
-            return False
+        path = self._extract_path_argument(args) or "workspace file"
 
         if tool_name == "create_file":
-            content = args.get("content") or ""
-            self._output_panel.display_write_file_block(path, str(content))
+            content = str(args.get("content") or "")
+            size_label = self._format_file_size(len(content.encode("utf-8")))
+            line_count = self._count_lines(content)
+            line_label = "line" if line_count == 1 else "lines"
+            stats = f"{size_label} | {line_count} {line_label}"
+            self._output_panel.display_output(
+                f"⚙️ create_file: {path} ({stats})",
+                config.COLORS.accent,
+            )
             return True
 
         if tool_name == "modify_file":
+            self._output_panel.display_output(f"⚙️ modify_file: {path}", config.COLORS.accent)
             old_content = args.get("old_content") or ""
             new_content = args.get("new_content") or args.get("content") or ""
             diff_text = self._build_diff_from_contents(path, old_content, new_content)
             if not diff_text:
                 fallback = args.get("diff") or args.get("patch")
                 diff_text = str(fallback or "")
-            self._output_panel.display_edit_block(path, diff_text)
+            if diff_text:
+                self._output_panel.display_edit_block(path, diff_text)
             return True
 
-        if tool_name == "delete_file":
-            self._output_panel.display_file_deletion(path)
-            return True
-
-        return False
+        self._output_panel.display_output(f"⚙️ delete_file: {path}", config.COLORS.accent)
+        self._output_panel.display_file_deletion(path)
+        return True
 
     def _render_read_tool_call(self, tool_name: str, args: Any) -> bool:
-        """Render read/list operations with clearer descriptions."""
-        if tool_name not in {"read_project_file", "list_project_files"}:
+        """Render single-line status for read/list operations."""
+        read_tools = {"read_project_file", "read_multiple_files", "read_file"}
+        list_tools = {"list_project_files"}
+        if tool_name not in read_tools | list_tools:
             return False
 
-        if not isinstance(args, dict):
-            return False
-
-        target = str(
-            args.get("path")
-            or args.get("file")
-            or args.get("directory")
-            or args.get("root")
-            or ""
+        target = self._extract_path_argument(args) or "."
+        label = "read_file" if tool_name in read_tools else "list_files"
+        self._output_panel.display_output(
+            f"⚙️ {label}: {target}",
+            config.COLORS.secondary,
         )
-
-        description = (
-            f"Reading {target or 'file'}"
-            if tool_name == "read_project_file"
-            else f"Listing files in {target or '.'}"
-        )
-        self._output_panel.display_read_file_block(target or ".", description=description)
         return True
+
+    @staticmethod
+    def _extract_path_argument(args: Any) -> str:
+        """Return a path/directory argument from a parsed tool payload."""
+        if not isinstance(args, dict):
+            return ""
+        for key in ("path", "file_path", "file", "target", "directory", "root"):
+            value = args.get(key)
+            if value:
+                return str(value)
+        return ""
+
+    @staticmethod
+    def _count_lines(content: str) -> int:
+        """Return the number of newline-delimited lines in text."""
+        if not content:
+            return 0
+        return len(content.splitlines())
+
+    @staticmethod
+    def _format_file_size(byte_count: int) -> str:
+        """Return a human-readable file size label."""
+        if byte_count <= 0:
+            return "0 B"
+        units = ("B", "KB", "MB", "GB")
+        size = float(byte_count)
+        for unit in units:
+            if size < 1024 or unit == units[-1]:
+                if unit == "B":
+                    return f"{int(size)} {unit}"
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{int(size)} B"
+
+    @staticmethod
+    def _summarize_tool_args(args: Any) -> str:
+        """Return a compact JSON-ish summary suitable for a single line."""
+        if args is None:
+            return ""
+        if isinstance(args, (dict, list)):
+            summary = json.dumps(args, ensure_ascii=False, separators=(",", ":"))
+        else:
+            summary = str(args)
+        return summary if len(summary) <= 160 else f"{summary[:157]}..."
 
     def _build_diff_from_contents(
         self,
