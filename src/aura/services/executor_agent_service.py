@@ -11,7 +11,7 @@ from typing import Callable, Optional
 
 import anthropic
 
-from aura.prompts import CLAUDE_EXECUTOR_PROMPT
+from aura.prompts import EXECUTOR_PROMPT
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ class ExecutorAgentService:
                 response = client.messages.create(
                     model=self.model_name,
                     max_tokens=8096,
-                    system=CLAUDE_EXECUTOR_PROMPT,
+                    system=EXECUTOR_PROMPT,
                     messages=messages,
                     tools=tools,
                 )

@@ -12,7 +12,7 @@ from typing import Callable, Optional, Set
 from google import genai
 from google.genai import types
 
-from aura.prompts import GEMINI_ANALYST_PROMPT
+from aura.prompts import ANALYST_PROMPT
 from aura.tools.git_tools import get_git_status, git_diff
 from aura.tools.local_agent_tools import generate_commit_message
 from aura.tools.python_tools import (
@@ -86,7 +86,7 @@ class AnalystAgentService:
                     format_code,
                     generate_commit_message,
                 ],
-                system_instruction=GEMINI_ANALYST_PROMPT,
+                system_instruction=ANALYST_PROMPT,
             )
 
             stream = self._client.models.generate_content_stream(
