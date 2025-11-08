@@ -8,6 +8,14 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+from pathlib import Path
+from typing import Any
+
+try:
+    from git import GitCommandError, Repo
+except ImportError:  # pragma: no cover
+    GitCommandError = Exception  # type: ignore[misc,assignment]
+    Repo = None  # type: ignore[assignment]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -148,3 +156,94 @@ def git_diff(file_path: str = "", staged: bool = False) -> str:
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("Failed to get git diff: %s", exc)
         return f"Error getting diff: {exc}"
+
+
+def git_blame(file_path: str, line_number: int) -> dict[str, Any]:
+    """Return author and commit metadata for a specific file line."""
+    LOGGER.info("?? TOOL CALLED: git_blame(%s:%s)", file_path, line_number)
+    if line_number <= 0:
+        return {"error": "Line number must be greater than zero."}
+
+    repo = _load_repo()
+    if isinstance(repo, dict):
+        return repo
+
+    target_path = _resolve_repo_path(repo, file_path)
+    if target_path is None:
+        return {"error": f"File '{file_path}' is outside the repository."}
+
+    rel = os.fspath(target_path)
+    rel = rel.replace("\\", "/")
+
+    try:
+        blame_data = repo.blame("HEAD", rel)
+    except GitCommandError as exc:  # pragma: no cover
+        LOGGER.error("git blame failed: %s", exc)
+        return {"error": f"git blame failed: {exc}"}
+
+    counter = 0
+    for commit, lines in blame_data:
+        for line in lines:
+            counter += 1
+            if counter == line_number:
+                return {
+                    "file": rel,
+                    "line": line_number,
+                    "author": commit.author.name,
+                    "email": commit.author.email,
+                    "commit": commit.hexsha,
+                    "summary": commit.summary,
+                    "committed_datetime": commit.committed_datetime.isoformat(),
+                    "context": line.rstrip("\n"),
+                }
+
+    return {"error": f"Line {line_number} is beyond the end of {file_path}."}
+
+
+def create_new_branch(branch_name: str, start_point: str = "HEAD") -> dict[str, Any]:
+    """Create and check out a new git branch based on start_point."""
+    LOGGER.info("?? TOOL CALLED: create_new_branch(%s)", branch_name)
+    if not branch_name or branch_name.strip() == "":
+        return {"success": False, "error": "Branch name cannot be empty."}
+
+    repo = _load_repo()
+    if isinstance(repo, dict):
+        return repo
+
+    branch_name = branch_name.strip()
+    existing_names = {head.name for head in repo.branches}
+    if branch_name in existing_names:
+        return {"success": False, "error": f"Branch '{branch_name}' already exists."}
+
+    try:
+        new_branch = repo.create_head(branch_name, start_point)
+        new_branch.checkout()
+        return {
+            "success": True,
+            "branch": branch_name,
+            "start_point": start_point,
+        }
+    except GitCommandError as exc:  # pragma: no cover
+        LOGGER.error("Failed to create branch %s: %s", branch_name, exc)
+        return {"success": False, "error": f"Failed to create branch: {exc}"}
+
+
+def _load_repo() -> Repo | dict[str, Any]:
+    if Repo is None:
+        return {"error": "GitPython is not installed. Install it with: pip install GitPython"}
+    try:
+        return Repo(Path.cwd(), search_parent_directories=True)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.error("Failed to load git repository: %s", exc)
+        return {"error": f"Failed to open git repository: {exc}"}
+
+
+def _resolve_repo_path(repo: Repo, file_path: str) -> Path | None:
+    root = Path(repo.working_tree_dir or Path.cwd()).resolve()
+    candidate = Path(file_path)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        return candidate.resolve().relative_to(root)
+    except ValueError:
+        return None

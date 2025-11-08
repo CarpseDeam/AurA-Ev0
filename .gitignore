@@ -159,3 +159,4 @@ desktop.ini
 # Note: .venv, venv, __pycache__ already covered above
 /aura-workspace/
 /nul
+/TOOL-ADDS.md
