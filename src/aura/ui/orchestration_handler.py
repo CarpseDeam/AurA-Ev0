@@ -98,6 +98,14 @@ class OrchestrationHandler(QObject):
             if not raw_text:
                 return
 
+            stripped = raw_text.strip()
+            if not stripped:
+                return
+
+            if stripped.startswith("TOOL_CALL::"):
+                self._handle_tool_call_message(stripped)
+                return
+
             self._render_text_with_diffs(raw_text)
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to render session output")
@@ -251,14 +259,11 @@ class OrchestrationHandler(QObject):
         stripped_text = text.strip()
         if not stripped_text:
             return
-        if stripped_text.startswith("TOOL_CALL::"):
-            self._handle_tool_call_message(stripped_text)
-            return
         if stripped_text.startswith("⋯"):
-            self._output_panel.display_thinking(stripped_text[1:].strip())
+            self._output_panel.display_thinking_block(stripped_text[1:].strip())
             return
         if stripped_text.startswith("?"):
-            self._output_panel.display_output(stripped_text, config.COLORS.accent)
+            self._output_panel.display_thinking_block(stripped_text[1:].strip())
             return
         if stripped_text.startswith("�"):
             self._output_panel.display_success(stripped_text[1:].strip())
@@ -279,7 +284,7 @@ class OrchestrationHandler(QObject):
             else:
                 self._output_panel.display_file_operation(action, path)
             return
-        self._output_panel.display_output(text)
+        self._output_panel.display_thinking_block(stripped_text)
 
     def _render_file_tool_call(self, tool_name: str, args: Any) -> bool:
         """Render structured file operations when sufficient data is available."""
@@ -294,7 +299,7 @@ class OrchestrationHandler(QObject):
 
         if tool_name == "create_file":
             content = str(args.get("content", ""))
-            self._output_panel.display_file_creation(path, content)
+            self._output_panel.display_write_file_block(path, content)
             return True
 
         if tool_name == "modify_file":
@@ -305,7 +310,7 @@ class OrchestrationHandler(QObject):
                 or args.get("patch")
                 or ""
             )
-            self._output_panel.display_file_modification(path, str(content))
+            self._output_panel.display_edit_block(path, str(content))
             return True
 
         if tool_name == "delete_file":
@@ -330,12 +335,12 @@ class OrchestrationHandler(QObject):
             or ""
         )
 
-        if tool_name == "read_project_file":
-            message = f"Reading {target or 'file'}"
-        else:
-            message = f"Listing files in {target or '.'}"
-
-        self._output_panel.display_tool_call(tool_name, message)
+        description = (
+            f"Reading {target or 'file'}"
+            if tool_name == "read_project_file"
+            else f"Listing files in {target or '.'}"
+        )
+        self._output_panel.display_read_file_block(target or ".", description=description)
         return True
 
     @staticmethod

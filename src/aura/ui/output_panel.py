@@ -106,14 +106,94 @@ class OutputPanel(QWidget):
             if segment.strip():
                 self._render_formatted_block(segment, chosen_color, None)
 
+    def display_action_block(
+        self,
+        icon: str,
+        title: str,
+        content_html: str,
+        *,
+        accent_color: Optional[str] = None,
+    ) -> None:
+        """Render a reusable action block with icon, title, and body content."""
+        self._flush_stream_buffer()
+        self._ensure_leading_break()
+        accent = accent_color or config.COLORS.accent
+        safe_icon = html.escape(icon or "")
+        safe_title = html.escape(title or "")
+        body = content_html or ""
+        block = (
+            f'<div style="margin-bottom:{config.OUTPUT_BLOCK_SPACING_PX}px;'
+            f' border-left:3px solid {accent}; padding-left:12px; padding-top:4px;'
+            ' padding-bottom:8px;">'
+            f'<p style="margin:0; font-weight:600; color:{config.COLORS.text};">'
+            f'<span style="color:{accent}; margin-right:8px;">{safe_icon}</span>{safe_title}</p>'
+            f"{body}"
+            "</div>"
+        )
+        self._append_html(block)
+
+    def display_edit_block(self, file_path: str, diff_content: Optional[str]) -> None:
+        """Render an edit block with diff preview."""
+        content_parts: list[str] = []
+        if file_path:
+            content_parts.append(self._build_action_path_html(file_path))
+        if diff_content:
+            content_parts.append(self._build_diff_preview_html(diff_content))
+        block_body = "".join(content_parts)
+        self.display_action_block(
+            config.ICONS.EDIT,
+            "Edit",
+            block_body,
+            accent_color=config.COLORS.success,
+        )
+
+    def display_write_file_block(self, file_path: str, code_content: str) -> None:
+        """Render a write-file block with code preview."""
+        content_parts = [self._build_action_path_html(file_path)]
+        if code_content:
+            normalized = self._normalize_content(code_content)
+            content_parts.append(self._build_code_block_html(normalized))
+            content_parts.append(
+                self._build_action_body_html(self._format_file_stats(code_content), color=config.COLORS.secondary)
+            )
+        block_body = "".join(content_parts)
+        self.display_action_block(
+            config.ICONS.WRITE_FILE,
+            "WriteFile",
+            block_body,
+            accent_color=config.COLORS.success,
+        )
+
+    def display_read_file_block(self, file_path: str, *, description: Optional[str] = None) -> None:
+        """Render a read-file block."""
+        parts = [self._build_action_path_html(file_path or "workspace file")]
+        if description:
+            parts.append(self._build_action_body_html(description, color=config.COLORS.secondary))
+        block_body = "".join(parts)
+        self.display_action_block(
+            config.ICONS.READ_FILE,
+            "ReadFile",
+            block_body,
+            accent_color=config.COLORS.accent,
+        )
+
+    def display_thinking_block(self, thought: str) -> None:
+        """Render a thinking/reasoning block."""
+        body = self._build_action_body_html(thought, color=config.COLORS.secondary)
+        self.display_action_block(
+            config.ICONS.THINKING,
+            "Thinking",
+            body,
+            accent_color=config.COLORS.thinking,
+        )
+
     def display_thinking(self, text: str) -> None:
         """Render thinking/reasoning steps with a purple ellipsis."""
-        self.display_output(f"⋯ {text}", config.COLORS.thinking)
+        self.display_thinking_block(text)
 
     def display_progress(self, message: str) -> None:
         """Display progress message with animated indicator."""
-        # Use the thinking color with animation
-        self.display_output(f"⋯ {message}", config.COLORS.thinking)
+        self.display_thinking_block(message)
 
     def display_tool_call(self, tool_name: str, args_summary: str) -> None:
         """Render tool calls with a structured summary block."""
@@ -133,71 +213,45 @@ class OutputPanel(QWidget):
     def display_file_operation(self, action: str, path: str) -> None:
         """Render file operations with appropriate symbols and colors."""
         lower = action.lower()
-        icon = "+"
+        accent = config.COLORS.accent
+        icon = config.ICONS.EDIT
         if "delete" in lower:
-            icon = "−"
-        elif "modify" in lower or "update" in lower:
-            icon = "~"
-        self._render_file_operation_block(
-            title=action.upper(),
-            icon=icon,
-            path=path,
-            content=None,
-            footer=None,
-        )
+            accent = config.COLORS.error
+        elif "create" in lower or "add" in lower:
+            accent = config.COLORS.success
+        block_body = self._build_action_path_html(path)
+        self.display_action_block(icon, action.title(), block_body, accent_color=accent)
 
     def display_file_creation(self, path: str, content: str) -> None:
         """Render a newly created file with formatted code content."""
-        self._render_file_operation_block(
-            title="CREATE FILE",
-            icon="+",
-            path=path,
-            content=content,
-            footer=self._format_file_stats(content),
-        )
+        self.display_write_file_block(path, content)
 
     def display_file_modification(self, path: str, content: str) -> None:
         """Render a modified file preview."""
-        self._render_file_operation_block(
-            title="MODIFY FILE",
-            icon="~",
-            path=path,
-            content=content,
-            footer=self._format_file_stats(content),
-        )
+        self.display_edit_block(path, content)
 
     def display_file_deletion(self, path: str) -> None:
         """Render a deletion summary without file content."""
-        self._render_file_operation_block(
-            title="DELETE FILE",
-            icon="−",
-            path=path,
-            content=None,
-            footer="File removed from workspace.",
+        footer = self._build_action_body_html("File removed from workspace.", color=config.COLORS.secondary)
+        body = self._build_action_path_html(path) + footer
+        self.display_action_block(
+            config.ICONS.EDIT,
+            "DeleteFile",
+            body,
+            accent_color=config.COLORS.error,
         )
 
     def display_diff_block(self, diff_text: str) -> None:
         """Render a syntax-highlighted diff preview."""
-        if not diff_text:
+        diff_html = self._build_diff_preview_html(diff_text)
+        if not diff_html:
             return
-        self._flush_stream_buffer()
-        self._ensure_leading_break()
-        normalized = self._normalize_content(diff_text)
-        lines = normalized.splitlines() or [normalized]
-        rows = "".join(self._build_diff_line_html(line) for line in lines)
-        container = (
-            f'<div style="margin:{config.OUTPUT_BLOCK_SPACING_PX}px 0;">'
-            f'<div style="color:{config.COLORS.secondary};'
-            f' font-size:{config.FONT_SIZE_OUTPUT - 1}px; margin-bottom:4px;">'
-            "Diff preview</div>"
-            f'<div style="border:1px solid {config.COLORS.code_block_border};'
-            f' background:{config.COLORS.code_block_bg}; border-radius:8px;'
-            ' overflow:hidden;">'
-            f"{rows}"
-            "</div>"
-            "</div>"
+        self.display_action_block(
+            config.ICONS.EDIT,
+            "Diff",
+            diff_html,
+            accent_color=config.COLORS.accent,
         )
-        self._append_html(container)
 
     def display_success(self, text: str) -> None:
         """Render success messages with a green checkmark."""
@@ -295,7 +349,29 @@ AI-Powered Development Assistant
         ]
         if font_size is not None:
             style.append(f"font-size: {font_size}px")
-        return f'<div style="{"; ".join(style)}">{escaped}</div>'
+        styles = "; ".join(style)
+        return f'<div style="{styles}">{escaped}</div>'
+
+    def _build_action_body_html(self, text: str, *, color: Optional[str] = None) -> str:
+        """Return styled HTML for action block body text."""
+        if not text:
+            return ""
+        normalized = self._normalize_content(text)
+        escaped = html.escape(normalized).replace("\n", "<br>")
+        chosen_color = color or config.COLORS.text
+        return (
+            f'<p style="margin:2px 0; color:{chosen_color};'
+            f' font-size:{config.FONT_SIZE_OUTPUT - 1}px; line-height:1.5;">{escaped}</p>'
+        )
+
+    def _build_action_path_html(self, path: str) -> str:
+        """Return a monospace line for file paths inside action blocks."""
+        safe_path = html.escape(path or "workspace file")
+        return (
+            f'<p style="margin:4px 0 0 0; color:{config.COLORS.secondary};'
+            f' font-family:\'JetBrains Mono\',\'Consolas\',monospace;'
+            f' font-size:{config.FONT_SIZE_OUTPUT - 1}px;">{safe_path}</p>'
+        )
 
     def _build_list_html(self, paragraph: str) -> str:
         """Return HTML for bullet or ordered lists."""
@@ -406,6 +482,23 @@ AI-Powered Development Assistant
         lines = max(1, len(content.splitlines()))
         return f"{size} · {lines} lines"
 
+    def _build_diff_preview_html(self, diff_text: str) -> str:
+        """Return the reusable diff preview HTML."""
+        if not diff_text:
+            return ""
+        normalized = self._normalize_content(diff_text)
+        lines = normalized.splitlines() or [normalized]
+        rows = "".join(self._build_diff_line_html(line) for line in lines)
+        return (
+            f'<div style="margin-top:6px;">'
+            f'<div style="border:1px solid {config.COLORS.code_block_border};'
+            f' background:{config.COLORS.code_block_bg}; border-radius:8px;'
+            ' overflow:hidden;">'
+            f"{rows}"
+            "</div>"
+            "</div>"
+        )
+
     def _build_diff_line_html(self, line: str) -> str:
         """Return styled HTML for a single diff line."""
         background, color, weight = self._diff_line_style(line)
@@ -475,43 +568,6 @@ AI-Powered Development Assistant
             return
         self._render_formatted_block(self._stream_buffer, config.COLORS.agent_output, None)
         self._stream_buffer = ""
-
-    def _render_file_operation_block(
-        self,
-        title: str,
-        icon: str,
-        path: str,
-        content: Optional[str],
-        footer: Optional[str],
-    ) -> None:
-        """Render a structured file operation summary."""
-        safe_title = html.escape(title)
-        safe_path = html.escape(path)
-        header = (
-            f'<div style="margin:{config.OUTPUT_SECTION_SPACING_PX}px 0 '
-            f'{config.OUTPUT_BLOCK_SPACING_PX}px 0;">'
-            f'<div style="color:{config.COLORS.header}; font-size:{config.OUTPUT_HEADER_FONT_SIZE}px;'
-            ' font-weight:600;">'
-            f"{icon} {safe_title}</div>"
-            f'<div style="color:{config.COLORS.secondary}; font-size:{config.FONT_SIZE_OUTPUT - 1}px;'
-            ' margin-top:2px;">'
-            f"{safe_path}</div>"
-            "</div>"
-        )
-        parts = [header]
-        if content is not None:
-            normalized = self._normalize_content(content)
-            parts.append(self._build_code_block_html(normalized))
-            parts.append(
-                f'<div style="border-bottom:1px solid {config.COLORS.code_block_border};'
-                f' margin:{config.OUTPUT_BLOCK_SPACING_PX}px 0;"></div>'
-            )
-        if footer:
-            parts.append(
-                f'<div style="color:{config.COLORS.secondary}; font-size:{config.FONT_SIZE_OUTPUT - 2}px;'
-                f' margin-bottom:{config.OUTPUT_BLOCK_SPACING_PX}px;">{html.escape(footer)}</div>'
-            )
-        self._append_html("".join(parts))
 
     def _ensure_leading_break(self) -> None:
         """Insert a break if the previous append did not finish with one."""

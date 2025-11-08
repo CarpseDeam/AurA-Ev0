@@ -29,6 +29,18 @@ class ColorPalette:
     code_comment: str
 
 
+@dataclass(frozen=True)
+class Icons:
+    """Defines the iconography used throughout the UI."""
+
+    SUCCESS: str = "✓"
+    THINKING: str = "✨"
+    READ_FILE: str = "❖"
+    EDIT: str = "✓"
+    WRITE_FILE: str = "✓"
+    TOOL: str = "⚙"
+
+
 COLORS = ColorPalette(
     background="#0d0d0d",
     text="#e6edf3",
@@ -48,6 +60,8 @@ COLORS = ColorPalette(
     code_string="#a5d6ff",
     code_comment="#6a9955",
 )
+
+ICONS = Icons()
 
 FONT_FAMILY: str = "Cascadia Code, JetBrains Mono, Consolas, monospace"
 FONT_SIZE_OUTPUT: int = 14  # Increased from 13 for better readability
@@ -87,6 +101,7 @@ STREAM_CHUNK_FLUSH_THRESHOLD: int = 400
 
 __all__ = [
     "COLORS",
+    "ICONS",
     "FONT_FAMILY",
     "FONT_SIZE_OUTPUT",
     "FONT_SIZE_INPUT",
@@ -97,6 +112,7 @@ __all__ = [
     "LETTER_SPACING",
     "WINDOW_DIMENSIONS",
     "ColorPalette",
+    "Icons",
     "DEFAULT_AGENT",
     "STREAM_PREFIX",
     "AGENT_SEARCH_PATHS",

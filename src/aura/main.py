@@ -164,6 +164,9 @@ class ApplicationController:
                 self._on_working_directory_changed,
                 Qt.ConnectionType.UniqueConnection,
             )
+            self.app_state.working_directory_changed.connect(
+                self.orchestrator.update_working_directory
+            )
 
             self.main_window.execution_requested.connect(
                 self.orchestrator.execute_goal,
