@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Set
+from functools import wraps
+from typing import Any, Callable, Optional, Sequence
 
 from google import genai
 from google.genai import types
 
+from aura import config
+from aura.event_bus import get_event_bus
+from aura.events import (
+    ExecutionComplete,
+    FileOperation,
+    PhaseTransition,
+    StatusUpdate,
+    StreamingChunk,
+    ToolCallCompleted,
+    ToolCallStarted,
+)
 from aura.prompts import ANALYST_PROMPT
 from aura.tools.git_tools import get_git_status, git_diff
 from aura.tools.local_agent_tools import generate_commit_message
@@ -25,6 +35,14 @@ from aura.tools.symbol_tools import find_definition, find_usages, get_imports
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
+_ANALYST_SOURCE = "analyst"
+_FILE_TOOLS = {
+    "create_file",
+    "delete_file",
+    "modify_file",
+    "read_multiple_files",
+    "read_project_file",
+}
 
 
 @dataclass
@@ -40,10 +58,12 @@ class AnalystAgentService:
     tool_manager: ToolManager
     model_name: str
     _client: genai.Client = field(init=False, repr=False)
+    _event_bus: Any = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize the provider client."""
         self._client = genai.Client(api_key=self.api_key)
+        self._event_bus = get_event_bus()
 
     def analyze_and_plan(
         self,
@@ -67,25 +87,30 @@ class AnalystAgentService:
             prompt_length,
             bool(on_chunk),
         )
+        self._event_bus.emit(
+            PhaseTransition(from_phase="idle", to_phase="analyst", source=_ANALYST_SOURCE)
+        )
+        self._emit_status("Analyst agent: analyzing request...", "analyst.analyze")
 
         try:
+            tool_catalog = [
+                self.tool_manager.list_project_files,
+                self.tool_manager.read_project_file,
+                self.tool_manager.read_multiple_files,
+                self.tool_manager.search_in_files,
+                get_function_definitions,
+                find_definition,
+                find_usages,
+                get_imports,
+                get_git_status,
+                git_diff,
+                run_tests,
+                lint_code,
+                format_code,
+                generate_commit_message,
+            ]
             request_config = types.GenerateContentConfig(
-                tools=[
-                    self.tool_manager.list_project_files,
-                    self.tool_manager.read_project_file,
-                    self.tool_manager.read_multiple_files,
-                    self.tool_manager.search_in_files,
-                    get_function_definitions,
-                    find_definition,
-                    find_usages,
-                    get_imports,
-                    get_git_status,
-                    git_diff,
-                    run_tests,
-                    lint_code,
-                    format_code,
-                    generate_commit_message,
-                ],
+                tools=self._instrument_tools(tool_catalog, source=_ANALYST_SOURCE),
                 system_instruction=ANALYST_PROMPT,
             )
 
@@ -110,36 +135,47 @@ class AnalystAgentService:
                 final_text = getattr(fallback_response, "text", "")
                 if not final_text:
                     final_text = self._extract_text_from_parts(fallback_response)
-
-                streamed_any = self._emit_function_calls(
-                    fallback_response,
-                    on_chunk,
-                    set(),
-                )
                 duration = time.perf_counter() - started
+                if final_text:
+                    self._emit_streaming_chunk(
+                        final_text,
+                        source=_ANALYST_SOURCE,
+                        on_chunk=on_chunk,
+                    )
+                    self._emit_streaming_chunk(
+                        "",
+                        source=_ANALYST_SOURCE,
+                        on_chunk=on_chunk,
+                        is_final=True,
+                    )
+                self._emit_status("Analyst agent: plan ready", "analyst.complete")
+                self._event_bus.emit(
+                    PhaseTransition(from_phase="analyst", to_phase="idle", source=_ANALYST_SOURCE)
+                )
+                self._emit_completion(final_text, success=True)
                 LOGGER.info(
-                    "Analyst analysis completed (fallback) | duration=%.2fs | streamed=%s | text_length=%d",
+                    "Analyst analysis completed (fallback) | duration=%.2fs | text_length=%d",
                     duration,
-                    streamed_any,
                     len(final_text),
                 )
                 return final_text
 
             aggregated_text = ""
             collected_parts: list[str] = []
-            seen_calls: Set[str] = set()
-            streamed_any = False
+            streamed_text = False
 
             for chunk in iterator:
-                streamed_any = (
-                    self._emit_function_calls(chunk, on_chunk, seen_calls)
-                    or streamed_any
-                )
                 addition, aggregated_text = self._extract_stream_addition(
                     chunk, aggregated_text
                 )
                 if addition:
                     collected_parts.append(addition)
+                    self._emit_streaming_chunk(
+                        addition,
+                        source=_ANALYST_SOURCE,
+                        on_chunk=on_chunk,
+                    )
+                    streamed_text = True
 
             final_text = "".join(collected_parts) or aggregated_text
 
@@ -147,11 +183,24 @@ class AnalystAgentService:
             if not final_text and hasattr(stream, "text"):
                 final_text = getattr(stream, "text") or ""
 
+            if streamed_text:
+                self._emit_streaming_chunk(
+                    "",
+                    source=_ANALYST_SOURCE,
+                    on_chunk=on_chunk,
+                    is_final=True,
+                )
+
             duration = time.perf_counter() - started
+            self._emit_status("Analyst agent: plan ready", "analyst.complete")
+            self._event_bus.emit(
+                PhaseTransition(from_phase="analyst", to_phase="idle", source=_ANALYST_SOURCE)
+            )
+            self._emit_completion(final_text, success=True)
             LOGGER.info(
                 "Analyst analysis completed | duration=%.2fs | streamed=%s | text_length=%d",
                 duration,
-                streamed_any,
+                streamed_text,
                 len(final_text),
             )
 
@@ -170,10 +219,16 @@ class AnalystAgentService:
                 duration,
                 (user_request or "")[:80],
             )
-            return (
+            error_message = (
                 "Error: Unable to reach the analyst provider. Please verify "
                 "GEMINI_API_KEY and network connectivity."
             )
+            self._emit_status("Analyst agent: failed", "analyst.error")
+            self._event_bus.emit(
+                PhaseTransition(from_phase="analyst", to_phase="analyst.error", source=_ANALYST_SOURCE)
+            )
+            self._emit_completion(error_message, success=False)
+            return error_message
 
     @staticmethod
     def _extract_stream_addition(
@@ -249,42 +304,183 @@ class AnalystAgentService:
 
         return "".join(text_parts)
 
-    def _emit_function_calls(
+    def _instrument_tools(
         self,
-        chunk: types.GenerateContentResponse,
-        on_chunk: Optional[Callable[[str], None]],
-        seen_calls: Set[str],
-    ) -> bool:
-        """Emit tool call notifications for function calls."""
-        function_calls = getattr(chunk, "function_calls", None)
-        if not function_calls:
-            return False
+        tools: Sequence[Callable[..., Any]],
+        source: str,
+    ) -> list[Callable[..., Any]]:
+        """Wrap tool callables so they emit events and telemetry."""
+        wrapped: list[Callable[..., Any]] = []
+        for tool in tools:
+            if callable(tool):
+                wrapped.append(self._wrap_tool(tool, source))
+        return wrapped
 
-        emitted = False
-        for call in function_calls:
-            name = getattr(call, "name", "")
-            args_json = self._serialize_args(getattr(call, "args", None))
-            signature = hashlib.md5(f"{name}:{args_json}".encode("utf-8")).hexdigest()
-            if signature in seen_calls:
-                continue
-            seen_calls.add(signature)
-            log_preview = args_json if len(args_json) <= 240 else f"{args_json[:237]}..."
-            LOGGER.debug(
-                "Analyst tool call | name=%s | args=%s",
-                name,
-                log_preview,
+    def _wrap_tool(
+        self,
+        tool: Callable[..., Any],
+        source: str,
+    ) -> Callable[..., Any]:
+        """Return a callable that emits ToolCall events around execution."""
+        tool_name = getattr(tool, "__name__", tool.__class__.__name__)
+        if not tool_name:
+            tool_name = tool.__class__.__name__
+
+        @wraps(tool)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            params = self._sanitize_parameters(args, kwargs)
+            self._event_bus.emit(
+                ToolCallStarted(tool_name=tool_name, parameters=params, source=source)
             )
-            if on_chunk:
-                on_chunk(f"TOOL_CALL::{name}::{args_json}")
-            emitted = True
-        return emitted
+            started = time.perf_counter()
+            try:
+                result = tool(*args, **kwargs)
+            except Exception as exc:
+                duration = time.perf_counter() - started
+                self._event_bus.emit(
+                    ToolCallCompleted(
+                        tool_name=tool_name,
+                        result=f"error: {exc}",
+                        duration=duration,
+                        source=source,
+                    )
+                )
+                raise
+
+            duration = time.perf_counter() - started
+            self._event_bus.emit(
+                ToolCallCompleted(
+                    tool_name=tool_name,
+                    result=self._summarize_result(result),
+                    duration=duration,
+                    source=source,
+                )
+            )
+            self._maybe_emit_file_operation(tool_name, args, kwargs, source)
+            return result
+
+        return wrapper
+
+    def _sanitize_parameters(
+        self,
+        args: Sequence[Any],
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Convert args/kwargs into a JSON-friendly payload."""
+        return {
+            "args": [self._safe_value(value) for value in args],
+            "kwargs": {key: self._safe_value(value) for key, value in kwargs.items()},
+        }
+
+    def _safe_value(self, value: Any, limit: int = 160) -> Any:
+        """Return a compact, serializable value for event payloads."""
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            return value if len(value) <= limit else f"{value[:limit]}..."
+        text = str(value)
+        return text if len(text) <= limit else f"{text[:limit]}..."
+
+    def _summarize_result(self, result: Any) -> Any:
+        """Summarize tool results for event payloads."""
+        return self._safe_value(result, limit=320)
+
+    def _maybe_emit_file_operation(
+        self,
+        tool_name: str,
+        args: Sequence[Any],
+        kwargs: dict[str, Any],
+        source: str,
+    ) -> None:
+        """Emit a FileOperation event for relevant tools."""
+        if tool_name not in _FILE_TOOLS:
+            return
+
+        if tool_name == "read_multiple_files":
+            paths = kwargs.get("paths") or (args[0] if args else None)
+            if paths is None:
+                return
+            if isinstance(paths, (str, bytes)):
+                paths_iterable = [paths]
+            elif isinstance(paths, Sequence):
+                paths_iterable = list(paths)
+            else:
+                return
+            paths_list = [str(path) for path in paths_iterable]
+            if not paths_list:
+                return
+            details = {"count": len(paths_list)}
+            filepath = paths_list[0]
+        else:
+            filepath = self._extract_path(args, kwargs)
+            details = None
+
+        if not filepath:
+            return
+
+        self._event_bus.emit(
+            FileOperation(
+                operation=tool_name,
+                filepath=str(filepath),
+                details=details,
+                source=source,
+            )
+        )
 
     @staticmethod
-    def _serialize_args(args: object) -> str:
-        """Return a JSON payload describing function call arguments."""
-        if args is None:
-            return "{}"
+    def _extract_path(
+        args: Sequence[Any],
+        kwargs: dict[str, Any],
+    ) -> str | None:
+        """Best-effort extraction of a file path argument."""
+        candidate = kwargs.get("path")
+        if isinstance(candidate, str):
+            return candidate
+        if args:
+            first = args[0]
+            if isinstance(first, str):
+                return first
+        return None
+
+    def _emit_streaming_chunk(
+        self,
+        text: str,
+        *,
+        source: str,
+        on_chunk: Optional[Callable[[str], None]],
+        is_final: bool = False,
+    ) -> None:
+        """Emit a typed streaming event and forward to legacy callbacks."""
+        if not text and not is_final:
+            return
+        payload = text or ""
+        self._event_bus.emit(
+            StreamingChunk(text=payload, source=source, is_final=is_final)
+        )
+        if not on_chunk:
+            return
+        callback_payload = (
+            f"{config.STREAM_PREFIX}\n"
+            if is_final and not payload
+            else f"{config.STREAM_PREFIX}{payload}"
+        )
         try:
-            return json.dumps(args, ensure_ascii=False, separators=(",", ":"))
-        except TypeError:
-            return json.dumps(str(args), ensure_ascii=False)
+            on_chunk(callback_payload)
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Streaming callback failed (analyst)", exc_info=True)
+
+    def _emit_status(self, message: str, phase: str) -> None:
+        """Emit a status update tied to this service."""
+        self._event_bus.emit(
+            StatusUpdate(message=message, phase=phase, source=_ANALYST_SOURCE)
+        )
+
+    def _emit_completion(self, summary: str, success: bool) -> None:
+        """Emit an execution completion summary."""
+        self._event_bus.emit(
+            ExecutionComplete(
+                summary=summary or "",
+                source=_ANALYST_SOURCE,
+                success=success,
+            )
+        )

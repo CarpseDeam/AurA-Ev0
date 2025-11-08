@@ -13,7 +13,14 @@ from typing import Any, Optional
 from PySide6.QtCore import QObject, Signal, QTimer
 
 from aura import config
-from aura.events import Event, EventType
+from aura.events import (
+    ExecutionComplete,
+    FileOperation,
+    StatusUpdate,
+    StreamingChunk,
+    ToolCallCompleted,
+    ToolCallStarted,
+)
 from aura.orchestrator import SessionResult
 from aura.state import AppState
 from aura.ui.output_panel import OutputPanel
@@ -188,36 +195,38 @@ class OrchestrationHandler(QObject):
             self.request_input_enabled.emit(True)
             self.request_input_focus.emit()
 
-    def handle_background_event(self, event: Event) -> None:
-        """Process events forwarded from the background event bus."""
+    def handle_feedback_event(self, event: object) -> None:
+        """Process typed feedback events from the event bus."""
         try:
-            if not isinstance(event, Event):
-                return
-
-            if event.type is EventType.SESSION_OUTPUT:
-                text = str(event.data.get("text", ""))
+            if isinstance(event, StreamingChunk):
+                text = (event.text or "").rstrip("\r")
                 if not text:
                     return
+                _log_handler_recv(text)
+                self._output_panel.display_stream_chunk(text, config.COLORS.agent_output)
+                return
 
-                # Strip STREAM prefix if present (for streaming output)
-                if text.startswith(config.STREAM_PREFIX):
-                    chunk = text[len(config.STREAM_PREFIX):]
-                    self._output_panel.display_stream_chunk(chunk, config.COLORS.agent_output)
-                    return
+            if isinstance(event, ToolCallStarted):
+                self._handle_tool_call_event(event)
+                return
 
-                self._render_text_with_diffs(text)
+            if isinstance(event, ToolCallCompleted):
+                # Reserved for future use (e.g., telemetry)
+                return
 
-            elif event.type is EventType.ERROR:
-                error = str(event.data.get("error", "")).strip()
-                if not error:
-                    return
-                if error == self._last_error_message:
-                    self._last_error_message = None
-                    return
-                self._output_panel.display_error(self._format_user_error(error))
-                self._last_error_message = None
+            if isinstance(event, FileOperation):
+                self._handle_file_operation_event(event)
+                return
+
+            if isinstance(event, StatusUpdate):
+                self._handle_status_update_event(event)
+                return
+
+            if isinstance(event, ExecutionComplete):
+                self._handle_execution_complete_event(event)
+                return
         except Exception:  # noqa: BLE001
-            LOGGER.exception("Failed to handle background event")
+            LOGGER.exception("Failed to handle feedback event")
             self._output_panel.display_error("Background event processing failed. See aura.log for details.")
 
     def _handle_tool_call_message(self, payload: str) -> None:
@@ -229,6 +238,15 @@ class OrchestrationHandler(QObject):
             return
 
         parsed_args = self._parse_tool_args(raw_args)
+        self._render_tool_call(tool_name, parsed_args)
+
+    def _handle_tool_call_event(self, event: ToolCallStarted) -> None:
+        """Render tool call feedback emitted from the event bus."""
+        parsed_args = self._normalize_parameters(event.parameters)
+        self._render_tool_call(event.tool_name or "tool", parsed_args)
+
+    def _render_tool_call(self, tool_name: str, parsed_args: Any) -> None:
+        """Shared rendering pipeline for tool call events."""
         announcement = self._build_tool_announcement(tool_name, parsed_args)
         if announcement:
             self._queue_tool_announcement(announcement)
@@ -238,9 +256,8 @@ class OrchestrationHandler(QObject):
             return
 
         summary = self._summarize_tool_args(parsed_args)
-        line = f"⚙️ {tool_name}: {summary}" if summary else f"⚙️ {tool_name}"
+        line = f"?? {tool_name}: {summary}" if summary else f"?? {tool_name}"
         self._output_panel.display_output(line, config.COLORS.secondary)
-
     def _render_text_with_diffs(self, text: str) -> None:
         """Split streamed text around diff fences and render accordingly."""
         if not text:
@@ -498,6 +515,71 @@ class OrchestrationHandler(QObject):
             except (ValueError, SyntaxError):
                 return candidate
 
+    @staticmethod
+    def _normalize_parameters(parameters: object) -> dict[str, Any]:
+        """Normalize event parameters into a dict for rendering helpers."""
+        if parameters is None:
+            return {}
+        if isinstance(parameters, dict):
+            args = parameters.get("args")
+            kwargs = parameters.get("kwargs")
+            if isinstance(kwargs, dict):
+                merged = dict(kwargs)
+                if args is not None:
+                    merged.setdefault("args", args)
+                return merged
+            return dict(parameters)
+        return {"value": parameters}
+
+    def _handle_file_operation_event(self, event: FileOperation) -> None:
+        """Render file operation completions."""
+        operation = (event.operation or "").lower()
+        filepath = event.filepath or ""
+        if not operation or not filepath:
+            return
+        verb_map = {
+            "create_file": "Created",
+            "modify_file": "Modified",
+            "delete_file": "Deleted",
+            "read_project_file": "Read",
+        }
+        icon_map = {
+            "create_file": "??",
+            "modify_file": "??",
+            "delete_file": "???",
+            "read_project_file": "??",
+        }
+        verb = verb_map.get(operation, operation.replace("_", " ").title())
+        icon = icon_map.get(operation, "??")
+        color = config.COLORS.success
+        if operation == "delete_file":
+            color = config.COLORS.error
+        elif operation.startswith("read"):
+            color = config.COLORS.secondary
+        message = f"{icon} {verb}: {filepath}"
+        self._output_panel.display_output(message, color)
+
+    def _handle_status_update_event(self, event: StatusUpdate) -> None:
+        """Display status updates from services."""
+        message = event.message or "Status update"
+        phase = (event.phase or "").lower()
+        color = config.COLORS.accent
+        if "error" in phase:
+            color = config.COLORS.error
+        elif "complete" in phase or "success" in phase:
+            color = config.COLORS.success
+        self._status_manager.update_status(message, color, persist=True)
+
+    def _handle_execution_complete_event(self, event: ExecutionComplete) -> None:
+        """Show execution summaries when agents finish."""
+        summary = (event.summary or "").strip()
+        success = event.success is not False
+        color = config.COLORS.success if success else config.COLORS.error
+        message = summary or ("Execution complete." if success else "Execution failed.")
+        self._output_panel.display_output(message, color)
+        if not success:
+            self._last_error_message = message
+
     def _format_user_error(self, error: str) -> str:
         """Return a user-friendly error message with actionable guidance."""
         if not error:
@@ -524,3 +606,4 @@ class OrchestrationHandler(QObject):
     def _set_error_state(self) -> None:
         """Set the error state through the status manager."""
         self._status_manager.update_status("Error", config.COLORS.error, persist=True)
+

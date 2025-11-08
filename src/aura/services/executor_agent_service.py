@@ -3,18 +3,28 @@
 from __future__ import annotations
 
 import difflib
-import json
 import logging
 import time
-from dataclasses import dataclass
-from typing import Callable, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 
 import anthropic
 
+from aura.event_bus import get_event_bus
+from aura.events import (
+    ExecutionComplete,
+    FileOperation,
+    PhaseTransition,
+    StatusUpdate,
+    StreamingChunk,
+    ToolCallCompleted,
+    ToolCallStarted,
+)
 from aura.prompts import EXECUTOR_PROMPT
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
+_EXECUTOR_SOURCE = "executor"
 
 
 @dataclass
@@ -29,6 +39,10 @@ class ExecutorAgentService:
     api_key: str
     tool_manager: ToolManager
     model_name: str
+    _event_bus: Any = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._event_bus = get_event_bus()
 
     def execute_prompt(
         self,
@@ -52,6 +66,10 @@ class ExecutorAgentService:
             prompt_length,
             bool(on_chunk),
         )
+        self._event_bus.emit(
+            PhaseTransition(from_phase="idle", to_phase="executor", source=_EXECUTOR_SOURCE)
+        )
+        self._emit_status("Executor agent: dispatching micro-actions...", "executor.run")
 
         try:
             client = anthropic.Anthropic(api_key=self.api_key)
@@ -80,17 +98,44 @@ class ExecutorAgentService:
 
                     for block in response.content:
                         if block.type == "tool_use":
-                            tool_name = block.name
-                            tool_input = block.input
+                            tool_name = block.name or "tool"
+                            tool_input = dict(block.input or {})
                             tool_id = block.id
 
-                            # Stream tool call notification
-                            if on_chunk:
-                                serialized = json.dumps(tool_input, ensure_ascii=False)
-                                on_chunk(f"TOOL_CALL::{tool_name}::{serialized}")
+                            params = self._sanitize_tool_args(tool_input)
+                            self._event_bus.emit(
+                                ToolCallStarted(
+                                    tool_name=tool_name,
+                                    parameters=params,
+                                    source=_EXECUTOR_SOURCE,
+                                )
+                            )
+                            tool_started = time.perf_counter()
+                            try:
+                                result = self._execute_tool(tool_name, tool_input)
+                            except Exception as exc:
+                                duration = time.perf_counter() - tool_started
+                                self._event_bus.emit(
+                                    ToolCallCompleted(
+                                        tool_name=tool_name,
+                                        result=f"error: {exc}",
+                                        duration=duration,
+                                        source=_EXECUTOR_SOURCE,
+                                    )
+                                )
+                                self._maybe_emit_file_operation(tool_name, tool_input)
+                                raise
 
-                            # Execute the tool
-                            result = self._execute_tool(tool_name, tool_input)
+                            duration = time.perf_counter() - tool_started
+                            self._event_bus.emit(
+                                ToolCallCompleted(
+                                    tool_name=tool_name,
+                                    result=self._safe_value(result, limit=320),
+                                    duration=duration,
+                                    source=_EXECUTOR_SOURCE,
+                                )
+                            )
+                            self._maybe_emit_file_operation(tool_name, tool_input)
 
                             # Build tool result for the executor provider
                             tool_results.append(
@@ -120,12 +165,20 @@ class ExecutorAgentService:
                         len(final_text),
                     )
 
-                    if on_chunk:
-                        if final_text:
-                            on_chunk(final_text + "\n")
-                        on_chunk("✓ Execution complete\n")
-
-                    return final_text or "Execution complete."
+                    if final_text:
+                        self._emit_streaming_chunk(final_text, on_chunk=on_chunk)
+                    self._emit_streaming_chunk(
+                        "✓ Execution complete",
+                        on_chunk=on_chunk,
+                        is_final=True,
+                    )
+                    self._emit_status("Executor agent: execution complete", "executor.complete")
+                    self._event_bus.emit(
+                        PhaseTransition(from_phase="executor", to_phase="idle", source=_EXECUTOR_SOURCE)
+                    )
+                    summary = final_text or "Execution complete."
+                    self._emit_completion(summary, success=True)
+                    return summary
 
                 else:
                     # Unexpected stop reason
@@ -142,17 +195,29 @@ class ExecutorAgentService:
                 duration,
                 str(exc),
             )
-            return (
+            error_message = (
                 f"Error: Unable to reach the executor provider. Please verify ANTHROPIC_API_KEY "
                 f"and network connectivity. Detail: {exc}"
             )
+            self._emit_status("Executor agent: failed", "executor.error")
+            self._event_bus.emit(
+                PhaseTransition(from_phase="executor", to_phase="executor.error", source=_EXECUTOR_SOURCE)
+            )
+            self._emit_completion(error_message, success=False)
+            return error_message
         except Exception as exc:  # noqa: BLE001
             duration = time.perf_counter() - started
             LOGGER.exception(
                 "Executor execution failed unexpectedly | duration=%.2fs",
                 duration,
             )
-            return f"Error: Execution failed: {exc}"
+            error_message = f"Error: Execution failed: {exc}"
+            self._emit_status("Executor agent: failed", "executor.error")
+            self._event_bus.emit(
+                PhaseTransition(from_phase="executor", to_phase="executor.error", source=_EXECUTOR_SOURCE)
+            )
+            self._emit_completion(error_message, success=False)
+            return error_message
 
     def _build_anthropic_tools(self) -> list[dict]:
         """Build Anthropic tool definitions for write operations."""
@@ -282,3 +347,87 @@ class ExecutorAgentService:
             return ""
         diff_text = "\n".join(diff_lines)
         return f"```diff\n{diff_text}\n```"
+
+    def _sanitize_tool_args(self, payload: dict[str, Any] | None) -> dict[str, Any]:
+        """Return a sanitized copy of the provided tool arguments."""
+        if not payload:
+            return {}
+        return {key: self._safe_value(value) for key, value in payload.items()}
+
+    def _safe_value(self, value: Any, limit: int = 160) -> Any:
+        """Return a compact representation suitable for event payloads."""
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            return value if len(value) <= limit else f"{value[:limit]}..."
+        text = str(value)
+        return text if len(text) <= limit else f"{text[:limit]}..."
+
+    def _maybe_emit_file_operation(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any] | None,
+    ) -> None:
+        """Emit FileOperation events for write tools."""
+        if tool_name not in {"create_file", "modify_file", "delete_file"}:
+            return
+        if not tool_input:
+            return
+        path = tool_input.get("path")
+        if not isinstance(path, str) or not path:
+            return
+        details: dict[str, Any] | None = None
+        if tool_name == "create_file":
+            content = tool_input.get("content", "")
+            if isinstance(content, str):
+                details = {"bytes": len(content.encode("utf-8"))}
+        elif tool_name == "modify_file":
+            old_len = len(tool_input.get("old_content", "") or "")
+            new_len = len(tool_input.get("new_content", "") or "")
+            details = {"old_length": old_len, "new_length": new_len}
+        self._event_bus.emit(
+            FileOperation(
+                operation=tool_name,
+                filepath=path,
+                details=details,
+                source=_EXECUTOR_SOURCE,
+            )
+        )
+
+    def _emit_streaming_chunk(
+        self,
+        text: str,
+        *,
+        on_chunk: Optional[Callable[[str], None]],
+        is_final: bool = False,
+    ) -> None:
+        """Emit streaming chunks for executor output."""
+        if not text and not is_final:
+            return
+        payload = text or ""
+        self._event_bus.emit(
+            StreamingChunk(text=payload, source=_EXECUTOR_SOURCE, is_final=is_final)
+        )
+        if not on_chunk:
+            return
+        message = f"{payload}\n" if payload else "\n"
+        try:
+            on_chunk(message)
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Executor streaming callback failed", exc_info=True)
+
+    def _emit_status(self, message: str, phase: str) -> None:
+        """Emit a StatusUpdate for the executor."""
+        self._event_bus.emit(
+            StatusUpdate(message=message, phase=phase, source=_EXECUTOR_SOURCE)
+        )
+
+    def _emit_completion(self, summary: str, success: bool) -> None:
+        """Emit an ExecutionComplete event."""
+        self._event_bus.emit(
+            ExecutionComplete(
+                summary=summary or "",
+                source=_EXECUTOR_SOURCE,
+                success=success,
+            )
+        )

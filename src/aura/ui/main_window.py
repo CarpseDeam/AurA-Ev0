@@ -25,7 +25,15 @@ from PySide6.QtWidgets import (
 )
 
 from aura import config
-from aura.events import Event, EventType, get_event_bus
+from aura.event_bus import get_event_bus
+from aura.events import (
+    ExecutionComplete,
+    FileOperation,
+    StatusUpdate,
+    StreamingChunk,
+    ToolCallCompleted,
+    ToolCallStarted,
+)
 from aura.exceptions import (
     AuraConfigurationError,
     AuraError,
@@ -98,7 +106,7 @@ class MainWindow(QMainWindow):
 
         self._configure_window(); self._build_layout(); self._configure_sidebar_animation(); self._apply_styles(); self._build_toolbar()
         self._connect_signals(); self._connect_sidebar_signals(); self._connect_handler_signals(); self._subscribe_to_events()
-        self._event_received.connect(self.orchestration_handler.handle_background_event)
+        self._event_received.connect(self.orchestration_handler.handle_feedback_event)
 
         self._load_and_apply_settings()
 
@@ -348,9 +356,19 @@ class MainWindow(QMainWindow):
         self.orchestration_handler.request_input_enabled.connect(self._set_input_enabled); self.orchestration_handler.request_input_focus.connect(self.input_field.setFocus)
 
     def _subscribe_to_events(self) -> None:
-        self._event_bus.subscribe(EventType.ERROR, self._emit_event_signal)
+        """Subscribe UI to backend feedback events."""
+        event_types = (
+            StreamingChunk,
+            ToolCallStarted,
+            ToolCallCompleted,
+            FileOperation,
+            StatusUpdate,
+            ExecutionComplete,
+        )
+        for event_type in event_types:
+            self._event_bus.subscribe(event_type, self._emit_event_signal)
 
-    def _emit_event_signal(self, event: Event) -> None:
+    def _emit_event_signal(self, event: object) -> None:
         self._event_received.emit(event)
 
     def _load_and_apply_settings(self) -> None:
