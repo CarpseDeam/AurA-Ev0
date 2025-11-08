@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_LOCAL_MODEL_ENDPOINT = "http://localhost:11434/api/generate"
 
 def get_settings_path() -> Path:
     """
@@ -35,6 +36,7 @@ def load_settings() -> Dict[str, Any]:
         return {
             "gemini_model": DEFAULT_GEMINI_MODEL,
             "claude_model": DEFAULT_CLAUDE_MODEL,
+            "local_model_endpoint": DEFAULT_LOCAL_MODEL_ENDPOINT,
             "selected_agent": None,
             "agent_executable": None,
             "sidebar_collapsed": False,
@@ -47,6 +49,7 @@ def load_settings() -> Dict[str, Any]:
             # Ensure all keys are present, providing defaults for any missing ones
             settings.setdefault("gemini_model", DEFAULT_GEMINI_MODEL)
             settings.setdefault("claude_model", DEFAULT_CLAUDE_MODEL)
+            settings.setdefault("local_model_endpoint", DEFAULT_LOCAL_MODEL_ENDPOINT)
             settings.setdefault("selected_agent", None)
             settings.setdefault("agent_executable", None)
             settings.setdefault("sidebar_collapsed", False)
@@ -57,6 +60,7 @@ def load_settings() -> Dict[str, Any]:
         return {
             "gemini_model": DEFAULT_GEMINI_MODEL,
             "claude_model": DEFAULT_CLAUDE_MODEL,
+            "local_model_endpoint": DEFAULT_LOCAL_MODEL_ENDPOINT,
             "selected_agent": None,
             "agent_executable": None,
             "sidebar_collapsed": False,

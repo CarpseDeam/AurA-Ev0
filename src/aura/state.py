@@ -26,6 +26,7 @@ class AppState(QObject):
     status_changed = Signal(str, str)  # message, color
     gemini_model_changed = Signal(str)
     claude_model_changed = Signal(str)
+    local_model_endpoint_changed = Signal(str)
     current_project_changed = Signal(object)  # project_id (int or None)
     current_conversation_changed = Signal(object)  # conversation_id (int or None)
 
@@ -39,6 +40,7 @@ class AppState(QObject):
         self._status_color: str = "#ffffff"
         self._selected_gemini_model: str = "gemini-1.5-pro-latest"
         self._selected_claude_model: str = "claude-3-sonnet-20240229"
+        self._local_model_endpoint: str = ""
         self._current_project_id: Optional[int] = None
         self._current_conversation_id: Optional[int] = None
 
@@ -140,6 +142,17 @@ class AppState(QObject):
         if self._selected_claude_model != model_id:
             self._selected_claude_model = model_id
             self.claude_model_changed.emit(model_id)
+
+    @property
+    def local_model_endpoint(self) -> str:
+        """Get the local model endpoint."""
+        return self._local_model_endpoint
+
+    def set_local_model_endpoint(self, endpoint: str) -> None:
+        """Set the local model endpoint and emit change signal."""
+        if self._local_model_endpoint != endpoint:
+            self._local_model_endpoint = endpoint
+            self.local_model_endpoint_changed.emit(endpoint)
 
     @property
     def current_project_id(self) -> Optional[int]:

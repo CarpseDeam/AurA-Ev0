@@ -11,6 +11,7 @@ import logging
 import os
 import threading
 import time
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
@@ -22,9 +23,10 @@ from aura.exceptions import AuraConfigurationError, AuraExecutionError
 from aura.services.chat_service import ChatService
 from aura.services.gemini_analyst_service import GeminiAnalystService
 from aura.services.claude_executor_service import ClaudeExecutorService
+from aura.services.local_summarizer_service import LocalSummarizerService
 from aura.state import AppState
 from aura.tools.tool_manager import ToolManager
-from aura.models import Conversation, Message, MessageRole
+from aura.models import Conversation, Message, MessageRole, Project
 
 LOGGER = logging.getLogger(__name__)
 
@@ -198,6 +200,10 @@ class Orchestrator(QObject):
         self._worker: _ConversationWorker | _TwoAgentWorker | None = None
         self._tool_manager = ToolManager(str(self._working_dir))
         self._conversation_lock = threading.Lock()
+
+        self._summarizer = LocalSummarizerService(
+            endpoint=self.app_state.local_model_endpoint,
+        )
 
         effective_gemini_key = gemini_api_key or api_key
         effective_claude_key = claude_api_key
@@ -502,12 +508,61 @@ class Orchestrator(QObject):
             self._thread = None
 
     def _build_prompt(self, goal: str) -> str:
-        """Build the conversational prompt including prior turns."""
-        if not self._history:
-            return goal
+        """Build the conversational prompt, summarizing old history if needed."""
+        SUMMARY_THRESHOLD = 30  # 15 pairs of messages
+        RECENT_MESSAGES_COUNT = 10  # 5 pairs of messages
 
         lines: List[str] = []
-        for role, text in self._history:
+        summary = ""
+        project_instructions = ""
+
+        # Get project-specific instructions
+        project_id = self.app_state.current_project_id
+        if project_id:
+            project = Project.get_by_id(project_id)
+            if project and project.custom_instructions:
+                project_instructions = project.custom_instructions
+
+        if len(self._history) > SUMMARY_THRESHOLD:
+            try:
+                # Split history
+                old_history = self._history[:-RECENT_MESSAGES_COUNT]
+                recent_history = self._history[-RECENT_MESSAGES_COUNT:]
+                
+                LOGGER.info(f"Summarizing {len(old_history)} old messages...")
+                # Run the async summarizer in the current event loop or a new one
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:  # 'RuntimeError: There is no current event loop...'
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                summary = loop.run_until_complete(self._summarizer.summarize_conversation(old_history))
+                
+                if "Error:" in summary:
+                    LOGGER.warning(f"Summarization failed: {summary}. Proceeding without summary.")
+                    summary = "" # Don't include the error message in the prompt
+                else:
+                    LOGGER.info("Summarization complete.")
+
+            except Exception as e:
+                LOGGER.error(f"An error occurred during history summarization: {e}")
+                # If summarization fails, fall back to using the full (truncated) history
+                recent_history = self._history
+        else:
+            recent_history = self._history
+
+        if project_instructions:
+            lines.append("Project Instructions:")
+            lines.append(project_instructions)
+            lines.append("\n---")
+
+        if summary:
+            lines.append("Here is a summary of the conversation so far:")
+            lines.append(summary)
+            lines.append("\nContinuing the conversation:")
+
+        for role, text in recent_history:
             if role == MessageRole.USER:
                 prefix = "User"
             elif role == MessageRole.ASSISTANT:
@@ -515,6 +570,7 @@ class Orchestrator(QObject):
             else:
                 prefix = role.title() if role else "Message"
             lines.append(f"{prefix}: {text}")
+        
         lines.append(f"User: {goal}")
         return "\n\n".join(lines)
 

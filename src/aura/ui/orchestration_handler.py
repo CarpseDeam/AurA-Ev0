@@ -98,24 +98,7 @@ class OrchestrationHandler(QObject):
             if not raw_text:
                 return
 
-            stripped_text = raw_text.strip()
-
-            if stripped_text.startswith("TOOL_CALL::"):
-                self._handle_tool_call_message(stripped_text)
-            elif stripped_text.startswith("⋯"):
-                self._output_panel.display_thinking(stripped_text[1:].strip())
-            elif stripped_text.startswith("▶"):
-                self._output_panel.display_output(stripped_text, config.COLORS.accent)
-            elif stripped_text.startswith("✓"):
-                self._output_panel.display_success(stripped_text[1:].strip())
-            elif stripped_text.startswith("+"):
-                action, path = stripped_text[1:].strip().split(maxsplit=1)
-                self._output_panel.display_file_operation(action, path)
-            elif stripped_text.startswith("~"):
-                action, path = stripped_text[1:].strip().split(maxsplit=1)
-                self._output_panel.display_file_operation(action, path)
-            else:
-                self._output_panel.display_output(raw_text)
+            self._render_text_with_diffs(raw_text)
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to render session output")
             self._output_panel.display_error("Unable to display part of the response. See logs for details.")
@@ -181,14 +164,7 @@ class OrchestrationHandler(QObject):
                     self._output_panel.display_stream_chunk(chunk, config.COLORS.agent_output)
                     return
 
-                stripped_text = text.strip()
-                if not stripped_text:
-                    return
-
-                if stripped_text.startswith("TOOL_CALL::"):
-                    self._handle_tool_call_message(stripped_text)
-                else:
-                    self._output_panel.display_output(stripped_text)
+                self._render_text_with_diffs(text)
 
             elif event.type is EventType.ERROR:
                 error = str(event.data.get("error", "")).strip()
@@ -226,6 +202,84 @@ class OrchestrationHandler(QObject):
             args_display = f"{args_display[:237]}..."
 
         self._output_panel.display_tool_call(tool_name, args_display)
+
+    def _render_text_with_diffs(self, text: str) -> None:
+        """Split streamed text around diff fences and render accordingly."""
+        if not text:
+            return
+        for segment, is_diff in self._split_diff_segments(text):
+            if is_diff:
+                diff_body = segment.strip("\n")
+                if diff_body:
+                    self._output_panel.display_diff_block(diff_body)
+                continue
+            self._render_standard_output(segment)
+
+    def _split_diff_segments(self, text: str) -> list[tuple[str, bool]]:
+        """Return a list of (segment, is_diff) tuples for a payload."""
+        if not text:
+            return []
+        marker = "```diff"
+        fence = "```"
+        segments: list[tuple[str, bool]] = []
+        cursor = 0
+        length = len(text)
+        while cursor < length:
+            start = text.find(marker, cursor)
+            if start == -1:
+                trailing = text[cursor:]
+                if trailing:
+                    segments.append((trailing, False))
+                break
+            if start > cursor:
+                segments.append((text[cursor:start], False))
+            close = text.find(fence, start + len(marker))
+            if close == -1:
+                segments.append((text[start:], False))
+                break
+            diff_body = text[start + len(marker):close]
+            if diff_body.startswith("\n"):
+                diff_body = diff_body[1:]
+            segments.append((diff_body, True))
+            cursor = close + len(fence)
+        return segments or [(text, False)]
+
+    def _render_standard_output(self, text: str) -> None:
+        """Apply the legacy rendering rules to non-diff text."""
+        if not text:
+            return
+        stripped_text = text.strip()
+        if not stripped_text:
+            return
+        if stripped_text.startswith("TOOL_CALL::"):
+            self._handle_tool_call_message(stripped_text)
+            return
+        if stripped_text.startswith("⋯"):
+            self._output_panel.display_thinking(stripped_text[1:].strip())
+            return
+        if stripped_text.startswith("?"):
+            self._output_panel.display_output(stripped_text, config.COLORS.accent)
+            return
+        if stripped_text.startswith("�"):
+            self._output_panel.display_success(stripped_text[1:].strip())
+            return
+        if stripped_text.startswith("+"):
+            try:
+                action, path = stripped_text[1:].strip().split(maxsplit=1)
+            except ValueError:
+                self._output_panel.display_output(text)
+            else:
+                self._output_panel.display_file_operation(action, path)
+            return
+        if stripped_text.startswith("~"):
+            try:
+                action, path = stripped_text[1:].strip().split(maxsplit=1)
+            except ValueError:
+                self._output_panel.display_output(text)
+            else:
+                self._output_panel.display_file_operation(action, path)
+            return
+        self._output_panel.display_output(text)
 
     def _render_file_tool_call(self, tool_name: str, args: Any) -> bool:
         """Render structured file operations when sufficient data is available."""

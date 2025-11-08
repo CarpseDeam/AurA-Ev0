@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import logging
 import time
 from dataclasses import dataclass
@@ -251,8 +252,12 @@ class ClaudeExecutorService:
             path = tool_input.get("path", "")
             old_content = tool_input.get("old_content", "")
             new_content = tool_input.get("new_content", "")
+            diff_block = self._build_diff_block(path, old_content, new_content)
             result = self.tool_manager.modify_file(path, old_content, new_content)
-            return f"~ Modified {path}\n{result}"
+            parts = [f"~ Modified {path}", result]
+            if diff_block:
+                parts.append(diff_block)
+            return "\n".join(parts)
 
         elif tool_name == "delete_file":
             path = tool_input.get("path", "")
@@ -261,3 +266,21 @@ class ClaudeExecutorService:
 
         else:
             return f"Error: Unknown tool '{tool_name}'"
+
+    def _build_diff_block(self, path: str, old_content: str, new_content: str) -> str:
+        """Return a fenced unified diff block for modify_file operations."""
+        old_lines = old_content.splitlines(keepends=True)
+        new_lines = new_content.splitlines(keepends=True)
+        diff_lines = list(
+            difflib.unified_diff(
+                old_lines,
+                new_lines,
+                fromfile=f"a/{path}" if path else "a/file",
+                tofile=f"b/{path}" if path else "b/file",
+                lineterm="",
+            )
+        )
+        if not diff_lines:
+            return ""
+        diff_text = "\n".join(diff_lines)
+        return f"```diff\n{diff_text}\n```"

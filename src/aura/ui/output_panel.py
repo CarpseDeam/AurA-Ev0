@@ -176,6 +176,29 @@ class OutputPanel(QWidget):
             footer="File removed from workspace.",
         )
 
+    def display_diff_block(self, diff_text: str) -> None:
+        """Render a syntax-highlighted diff preview."""
+        if not diff_text:
+            return
+        self._flush_stream_buffer()
+        self._ensure_leading_break()
+        normalized = self._normalize_content(diff_text)
+        lines = normalized.splitlines() or [normalized]
+        rows = "".join(self._build_diff_line_html(line) for line in lines)
+        container = (
+            f'<div style="margin:{config.OUTPUT_BLOCK_SPACING_PX}px 0;">'
+            f'<div style="color:{config.COLORS.secondary};'
+            f' font-size:{config.FONT_SIZE_OUTPUT - 1}px; margin-bottom:4px;">'
+            "Diff preview</div>"
+            f'<div style="border:1px solid {config.COLORS.code_block_border};'
+            f' background:{config.COLORS.code_block_bg}; border-radius:8px;'
+            ' overflow:hidden;">'
+            f"{rows}"
+            "</div>"
+            "</div>"
+        )
+        self._append_html(container)
+
     def display_success(self, text: str) -> None:
         """Render success messages with a green checkmark."""
         self.display_output(f"✓ {text}", config.COLORS.success)
@@ -382,6 +405,38 @@ AI-Powered Development Assistant
             size = f"{byte_count} B"
         lines = max(1, len(content.splitlines()))
         return f"{size} · {lines} lines"
+
+    def _build_diff_line_html(self, line: str) -> str:
+        """Return styled HTML for a single diff line."""
+        background, color, weight = self._diff_line_style(line)
+        safe_line = html.escape(line or "")
+        return (
+            "<div style="font-family:'JetBrains Mono','Consolas',monospace;""
+            f' white-space:pre; padding:4px 12px; background:{background};'
+            f' color:{color}; font-weight:{weight};">'
+            f"{safe_line}</div>"
+        )
+
+    def _diff_line_style(self, line: str) -> tuple[str, str, str]:
+        """Return diff styling metadata."""
+        addition_bg = 'rgba(63, 185, 80, 0.18)'
+        addition_color = '#c2f4cf'
+        deletion_bg = 'rgba(248, 81, 73, 0.18)'
+        deletion_color = '#f8c0ba'
+        context_bg = '#1f2a37'
+        neutral_bg = 'transparent'
+        neutral_color = config.COLORS.text
+        secondary_color = config.COLORS.secondary
+
+        if line.startswith('@@'):
+            return context_bg, config.COLORS.accent, '600'
+        if line.startswith('+') and not line.startswith('+++'):
+            return addition_bg, addition_color, '500'
+        if line.startswith('-') and not line.startswith('---'):
+            return deletion_bg, deletion_color, '500'
+        if line.startswith(('---', '+++')):
+            return neutral_bg, secondary_color, '500'
+        return neutral_bg, neutral_color, '400'
 
     def _normalize_content(self, text: str) -> str:
         """Normalize newlines and unescape common sequences for readability."""
