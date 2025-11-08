@@ -411,7 +411,7 @@ AI-Powered Development Assistant
         background, color, weight = self._diff_line_style(line)
         safe_line = html.escape(line or "")
         return (
-            "<div style="font-family:'JetBrains Mono','Consolas',monospace;""
+            '<div style="font-family:\'JetBrains Mono\',\'Consolas\',monospace;'
             f' white-space:pre; padding:4px 12px; background:{background};'
             f' color:{color}; font-weight:{weight};">'
             f"{safe_line}</div>"
