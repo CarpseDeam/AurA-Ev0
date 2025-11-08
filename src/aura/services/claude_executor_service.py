@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -85,14 +86,11 @@ class ClaudeExecutorService:
 
                             # Stream tool call notification
                             if on_chunk:
-                                on_chunk(f"TOOL_CALL::{tool_name}::{tool_input}\n")
+                                serialized = json.dumps(tool_input, ensure_ascii=False)
+                                on_chunk(f"TOOL_CALL::{tool_name}::{serialized}")
 
                             # Execute the tool
                             result = self._execute_tool(tool_name, tool_input)
-
-                            # Stream the result
-                            if on_chunk:
-                                on_chunk(result + "\n")
 
                             # Build tool result for Claude
                             tool_results.append(

@@ -127,7 +127,6 @@ class _TwoAgentWorker(QObject):
             self.chunk_emitted.emit(chunk)
 
         try:
-            self.chunk_emitted.emit("⋯ Analyzing request with Aura Chat...\n")
             engineered_prompt = self._gemini_analyst.analyze_and_plan(
                 self._goal, on_chunk=_on_chunk
             )
@@ -136,9 +135,6 @@ class _TwoAgentWorker(QObject):
                 error_msg = engineered_prompt or "Analysis failed"
                 self.failed.emit(error_msg)
                 return
-
-            self.chunk_emitted.emit("\n📋 Execution plan ready\n")
-            self.chunk_emitted.emit("▶ Executing with Coding Agent...\n")
 
             result = self._claude_executor.execute_prompt(
                 engineered_prompt, on_chunk=_on_chunk

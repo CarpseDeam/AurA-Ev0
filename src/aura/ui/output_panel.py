@@ -122,12 +122,14 @@ class OutputPanel(QWidget):
         safe_title = html.escape(title or "")
         body = content_html or ""
         block = (
-            f'<div style="margin-bottom:{config.OUTPUT_BLOCK_SPACING_PX}px;'
-            f' border-left:3px solid {accent}; padding-left:12px; padding-top:4px;'
-            ' padding-bottom:8px;">'
-            f'<p style="margin:0; font-weight:600; color:{config.COLORS.text};">'
-            f'<span style="color:{accent}; margin-right:8px;">{safe_icon}</span>{safe_title}</p>'
-            f"{body}"
+            f'<div style="margin-bottom:{config.OUTPUT_BLOCK_SPACING_PX + 4}px;'
+            f' border-left:4px solid {accent}; border-radius:10px;'
+            ' background:rgba(255, 255, 255, 0.02); padding:12px 16px 12px 18px;">'
+            '<div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">'
+            f'<span style="font-size:15px; color:{accent};">{safe_icon}</span>'
+            f'<span style="font-weight:600; color:{config.COLORS.text};">{safe_title}</span>'
+            "</div>"
+            f'<div style="margin-left:26px;">{body}</div>'
             "</div>"
         )
         self._append_html(block)
@@ -139,27 +141,33 @@ class OutputPanel(QWidget):
             content_parts.append(self._build_action_path_html(file_path))
         if diff_content:
             content_parts.append(self._build_diff_preview_html(diff_content))
+        else:
+            content_parts.append(
+                self._build_action_body_html(
+                    "No diff available for this change.",
+                    color=config.COLORS.secondary,
+                )
+            )
         block_body = "".join(content_parts)
         self.display_action_block(
             config.ICONS.EDIT,
             "Edit",
             block_body,
-            accent_color=config.COLORS.success,
+            accent_color=config.COLORS.accent,
         )
 
     def display_write_file_block(self, file_path: str, code_content: str) -> None:
         """Render a write-file block with code preview."""
         content_parts = [self._build_action_path_html(file_path)]
-        if code_content:
-            normalized = self._normalize_content(code_content)
-            content_parts.append(self._build_code_block_html(normalized))
+        stats = self._format_file_stats(code_content or "")
+        if stats:
             content_parts.append(
-                self._build_action_body_html(self._format_file_stats(code_content), color=config.COLORS.secondary)
+                self._build_action_body_html(stats, color=config.COLORS.secondary)
             )
         block_body = "".join(content_parts)
         self.display_action_block(
             config.ICONS.WRITE_FILE,
-            "WriteFile",
+            "Create",
             block_body,
             accent_color=config.COLORS.success,
         )
@@ -200,15 +208,19 @@ class OutputPanel(QWidget):
         truncated = args_summary if len(args_summary) <= 200 else f"{args_summary[:197]}..."
         safe_name = html.escape(tool_name)
         safe_args = html.escape(truncated)
-        payload = (
-            f'<div style="margin:{config.OUTPUT_BLOCK_SPACING_PX}px 0;'
-            f' color:{config.COLORS.tool_call};">'
-            f'<div style="font-weight:600;">⚙ {safe_name}</div>'
-            f'<div style="color:{config.COLORS.secondary}; font-size:{config.FONT_SIZE_OUTPUT - 1}px;'
-            f' margin-left:14px; white-space:pre-wrap;">{safe_args}</div>'
-            "</div>"
+        body = (
+            f'<p style="margin:2px 0; color:{config.COLORS.secondary};'
+            f' font-size:{config.FONT_SIZE_OUTPUT - 1}px;">Arguments</p>'
+            f'<pre style="margin:2px 0; padding:6px 10px; background:rgba(255,255,255,0.02);'
+            " border-radius:8px; white-space:pre-wrap; font-family:'JetBrains Mono','Consolas',monospace;"
+            f' color:{config.COLORS.text}; font-size:{config.FONT_SIZE_OUTPUT - 1}px;">{safe_args}</pre>'
         )
-        self._append_html(payload)
+        self.display_action_block(
+            config.ICONS.TOOL,
+            f"Tool · {safe_name}",
+            body,
+            accent_color=config.COLORS.tool_call,
+        )
 
     def display_file_operation(self, action: str, path: str) -> None:
         """Render file operations with appropriate symbols and colors."""
@@ -255,11 +267,23 @@ class OutputPanel(QWidget):
 
     def display_success(self, text: str) -> None:
         """Render success messages with a green checkmark."""
-        self.display_output(f"✓ {text}", config.COLORS.success)
+        body = self._build_action_body_html(text, color=config.COLORS.text)
+        self.display_action_block(
+            config.ICONS.SUCCESS,
+            "Success",
+            body,
+            accent_color=config.COLORS.success,
+        )
 
     def display_error(self, text: str) -> None:
         """Render error messages with a red X mark."""
-        self.display_output(f"✗ {text}", config.COLORS.error)
+        body = self._build_action_body_html(text, color=config.COLORS.text)
+        self.display_action_block(
+            "!",
+            "Error",
+            body,
+            accent_color=config.COLORS.error,
+        )
 
     def append_to_log(self, text: str, color: Optional[str] = None) -> None:
         """Append streaming output without timestamp metadata."""
@@ -474,13 +498,18 @@ AI-Powered Development Assistant
 
     def _format_file_stats(self, content: str) -> str:
         """Return a concise human-readable size summary."""
+        content = content or ""
         byte_count = len(content.encode("utf-8"))
         if byte_count >= 1024:
             size = f"{byte_count / 1024:.1f} KB"
         else:
             size = f"{byte_count} B"
-        lines = max(1, len(content.splitlines()))
-        return f"{size} · {lines} lines"
+        if content:
+            lines = len(content.splitlines()) or 1
+        else:
+            lines = 0
+        line_label = "line" if lines == 1 else "lines"
+        return f"{size} | {lines} {line_label}"
 
     def _build_diff_preview_html(self, diff_text: str) -> str:
         """Return the reusable diff preview HTML."""
@@ -490,46 +519,99 @@ AI-Powered Development Assistant
         lines = normalized.splitlines() or [normalized]
         rows = "".join(self._build_diff_line_html(line) for line in lines)
         return (
-            f'<div style="margin-top:6px;">'
+            '<div style="margin-top:10px;">'
             f'<div style="border:1px solid {config.COLORS.code_block_border};'
-            f' background:{config.COLORS.code_block_bg}; border-radius:8px;'
-            ' overflow:hidden;">'
+            f' background:{config.COLORS.code_block_bg}; border-radius:10px;'
+            ' overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.35);">'
             f"{rows}"
-            "</div>"
-            "</div>"
+            "</div></div>"
         )
 
     def _build_diff_line_html(self, line: str) -> str:
         """Return styled HTML for a single diff line."""
-        background, color, weight = self._diff_line_style(line)
-        safe_line = html.escape(line or "")
+        style = self._diff_line_style(line or "")
+        safe_glyph = html.escape(style["glyph"])
+        safe_text = html.escape(style["text"])
         return (
-            '<div style="font-family:\'JetBrains Mono\',\'Consolas\',monospace;'
-            f' white-space:pre; padding:4px 12px; background:{background};'
-            f' color:{color}; font-weight:{weight};">'
-            f"{safe_line}</div>"
+            '<div style="display:flex; font-family:\'JetBrains Mono\',\'Consolas\',monospace;'
+            " font-size:13px; white-space:pre; border-bottom:1px solid rgba(255,255,255,0.03);"
+            f' background:{style["background"]}; color:{style["color"]}; font-weight:{style["weight"]};">'
+            f'<div style="width:34px; padding:4px 0; text-align:center;'
+            f' background:{style["gutter_bg"]}; color:{style["glyph_color"]};">{safe_glyph}</div>'
+            f'<div style="flex:1; padding:4px 12px;">{safe_text}</div>'
+            "</div>"
         )
 
-    def _diff_line_style(self, line: str) -> tuple[str, str, str]:
-        """Return diff styling metadata."""
-        addition_bg = 'rgba(63, 185, 80, 0.18)'
-        addition_color = '#c2f4cf'
-        deletion_bg = 'rgba(248, 81, 73, 0.18)'
-        deletion_color = '#f8c0ba'
-        context_bg = '#1f2a37'
-        neutral_bg = 'transparent'
-        neutral_color = config.COLORS.text
-        secondary_color = config.COLORS.secondary
+    def _diff_line_style(self, line: str) -> dict[str, str]:
+        """Return diff styling metadata for the preview rows."""
+        defaults = {
+            "background": "transparent",
+            "color": config.COLORS.text,
+            "weight": "400",
+            "glyph": " ",
+            "glyph_color": config.COLORS.secondary,
+            "gutter_bg": "rgba(255,255,255,0.02)",
+            "text": line,
+        }
 
-        if line.startswith('@@'):
-            return context_bg, config.COLORS.accent, '600'
-        if line.startswith('+') and not line.startswith('+++'):
-            return addition_bg, addition_color, '500'
-        if line.startswith('-') and not line.startswith('---'):
-            return deletion_bg, deletion_color, '500'
-        if line.startswith(('---', '+++')):
-            return neutral_bg, secondary_color, '500'
-        return neutral_bg, neutral_color, '400'
+        if not line:
+            return defaults
+
+        if line.startswith("@@"):
+            defaults.update(
+                {
+                    "background": "rgba(88, 166, 255, 0.12)",
+                    "color": config.COLORS.accent,
+                    "weight": "600",
+                    "glyph": "@@",
+                    "glyph_color": config.COLORS.accent,
+                    "gutter_bg": "rgba(88, 166, 255, 0.18)",
+                    "text": line,
+                }
+            )
+            return defaults
+
+        if line.startswith("+") and not line.startswith("+++"):
+            defaults.update(
+                {
+                    "background": "rgba(63, 185, 80, 0.18)",
+                    "color": "#c2f4cf",
+                    "weight": "500",
+                    "glyph": "+",
+                    "glyph_color": "#3fb950",
+                    "text": line[1:] or "",
+                }
+            )
+            return defaults
+
+        if line.startswith("-") and not line.startswith("---"):
+            defaults.update(
+                {
+                    "background": "rgba(248, 81, 73, 0.18)",
+                    "color": "#f8c0ba",
+                    "weight": "500",
+                    "glyph": "-",
+                    "glyph_color": config.COLORS.error,
+                    "text": line[1:] or "",
+                }
+            )
+            return defaults
+
+        if line.startswith(("---", "+++")):
+            defaults.update(
+                {
+                    "background": "rgba(255,255,255,0.01)",
+                    "color": config.COLORS.secondary,
+                    "weight": "500",
+                    "glyph": line[:3],
+                    "glyph_color": config.COLORS.secondary,
+                    "text": line,
+                }
+            )
+            return defaults
+
+        defaults["text"] = line
+        return defaults
 
     def _normalize_content(self, text: str) -> str:
         """Normalize newlines and unescape common sequences for readability."""

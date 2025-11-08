@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -11,7 +12,6 @@ from typing import Callable, Optional, Set
 from google import genai
 from google.genai import types
 
-from aura import config
 from aura.prompts import GEMINI_ANALYST_PROMPT
 from aura.tools.git_tools import get_git_status, git_diff
 from aura.tools.python_tools import (
@@ -104,14 +104,16 @@ class GeminiAnalystService:
                     config=request_config,
                 )
                 final_text = fallback_response.text or ""
-                if final_text and on_chunk:
-                    on_chunk(f"{config.STREAM_PREFIX}{final_text}")
-                    on_chunk(f"{config.STREAM_PREFIX}\n")
+                streamed_any = self._emit_function_calls(
+                    fallback_response,
+                    on_chunk,
+                    set(),
+                )
                 duration = time.perf_counter() - started
                 LOGGER.info(
                     "Gemini analysis completed (fallback) | duration=%.2fs | streamed=%s",
                     duration,
-                    bool(final_text),
+                    streamed_any,
                 )
                 return final_text
 
@@ -130,16 +132,10 @@ class GeminiAnalystService:
                 )
                 if addition:
                     collected_parts.append(addition)
-                    if on_chunk:
-                        on_chunk(f"{config.STREAM_PREFIX}{addition}")
-                    streamed_any = True
 
             final_text = "".join(collected_parts) or aggregated_text
             if not final_text and hasattr(stream, "text"):
                 final_text = getattr(stream, "text") or ""
-
-            if streamed_any and on_chunk:
-                on_chunk(f"{config.STREAM_PREFIX}\n")
 
             duration = time.perf_counter() - started
             LOGGER.info(
@@ -194,30 +190,28 @@ class GeminiAnalystService:
         emitted = False
         for call in function_calls:
             name = getattr(call, "name", "")
-            args_summary = self._summarize_args(getattr(call, "args", None))
-            signature = f"{name}:{args_summary}"
+            args_json = self._serialize_args(getattr(call, "args", None))
+            signature = hashlib.md5(f"{name}:{args_json}".encode("utf-8")).hexdigest()
             if signature in seen_calls:
                 continue
             seen_calls.add(signature)
+            log_preview = args_json if len(args_json) <= 240 else f"{args_json[:237]}..."
             LOGGER.debug(
                 "Gemini tool call | name=%s | args=%s",
                 name,
-                args_summary,
+                log_preview,
             )
             if on_chunk:
-                on_chunk(f"TOOL_CALL::{name}::{args_summary}")
+                on_chunk(f"TOOL_CALL::{name}::{args_json}")
             emitted = True
         return emitted
 
     @staticmethod
-    def _summarize_args(args: object) -> str:
-        """Return a compact JSON summary of function call arguments."""
-        if not args:
+    def _serialize_args(args: object) -> str:
+        """Return a JSON payload describing function call arguments."""
+        if args is None:
             return "{}"
         try:
-            summary = json.dumps(args, ensure_ascii=False)
+            return json.dumps(args, ensure_ascii=False, separators=(",", ":"))
         except TypeError:
-            summary = str(args)
-        if len(summary) > 160:
-            summary = f"{summary[:157]}..."
-        return summary
+            return json.dumps(str(args), ensure_ascii=False)

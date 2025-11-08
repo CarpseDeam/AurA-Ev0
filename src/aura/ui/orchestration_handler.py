@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import difflib
 import hashlib
 import json
 import logging
@@ -253,38 +254,15 @@ class OrchestrationHandler(QObject):
         return segments or [(text, False)]
 
     def _render_standard_output(self, text: str) -> None:
-        """Apply the legacy rendering rules to non-diff text."""
+        """Render non-tool output as simple paragraphs."""
         if not text:
             return
-        stripped_text = text.strip()
-        if not stripped_text:
+        stripped = text.strip()
+        if not stripped:
             return
-        if stripped_text.startswith("⋯"):
-            self._output_panel.display_thinking_block(stripped_text[1:].strip())
-            return
-        if stripped_text.startswith("?"):
-            self._output_panel.display_thinking_block(stripped_text[1:].strip())
-            return
-        if stripped_text.startswith("�"):
-            self._output_panel.display_success(stripped_text[1:].strip())
-            return
-        if stripped_text.startswith("+"):
-            try:
-                action, path = stripped_text[1:].strip().split(maxsplit=1)
-            except ValueError:
-                self._output_panel.display_output(text)
-            else:
-                self._output_panel.display_file_operation(action, path)
-            return
-        if stripped_text.startswith("~"):
-            try:
-                action, path = stripped_text[1:].strip().split(maxsplit=1)
-            except ValueError:
-                self._output_panel.display_output(text)
-            else:
-                self._output_panel.display_file_operation(action, path)
-            return
-        self._output_panel.display_thinking_block(stripped_text)
+        if stripped.startswith("?"):
+            stripped = stripped[1:].strip() or stripped
+        self._output_panel.display_output(stripped)
 
     def _render_file_tool_call(self, tool_name: str, args: Any) -> bool:
         """Render structured file operations when sufficient data is available."""
@@ -298,19 +276,18 @@ class OrchestrationHandler(QObject):
             return False
 
         if tool_name == "create_file":
-            content = str(args.get("content", ""))
-            self._output_panel.display_write_file_block(path, content)
+            content = args.get("content") or ""
+            self._output_panel.display_write_file_block(path, str(content))
             return True
 
         if tool_name == "modify_file":
-            content = (
-                args.get("new_content")
-                or args.get("content")
-                or args.get("diff")
-                or args.get("patch")
-                or ""
-            )
-            self._output_panel.display_edit_block(path, str(content))
+            old_content = args.get("old_content") or ""
+            new_content = args.get("new_content") or args.get("content") or ""
+            diff_text = self._build_diff_from_contents(path, old_content, new_content)
+            if not diff_text:
+                fallback = args.get("diff") or args.get("patch")
+                diff_text = str(fallback or "")
+            self._output_panel.display_edit_block(path, diff_text)
             return True
 
         if tool_name == "delete_file":
@@ -342,6 +319,30 @@ class OrchestrationHandler(QObject):
         )
         self._output_panel.display_read_file_block(target or ".", description=description)
         return True
+
+    def _build_diff_from_contents(
+        self,
+        path: str,
+        old_content: Any,
+        new_content: Any,
+    ) -> str:
+        """Return a unified diff between two text blobs."""
+        old_text = old_content if isinstance(old_content, str) else str(old_content or "")
+        new_text = new_content if isinstance(new_content, str) else str(new_content or "")
+        if not old_text and not new_text:
+            return ""
+        old_lines = old_text.splitlines(keepends=True)
+        new_lines = new_text.splitlines(keepends=True)
+        diff_lines = list(
+            difflib.unified_diff(
+                old_lines,
+                new_lines,
+                fromfile=f"a/{path}" if path else "a/file",
+                tofile=f"b/{path}" if path else "b/file",
+                lineterm="",
+            )
+        )
+        return "\n".join(diff_lines)
 
     @staticmethod
     def _parse_tool_args(raw_args: str) -> Any:
