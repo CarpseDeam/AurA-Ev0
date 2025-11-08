@@ -14,7 +14,7 @@ import time
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 from PySide6.QtCore import QObject, QThread, Signal
 
@@ -30,6 +30,14 @@ from aura.models import Conversation, Message, MessageRole, Project
 
 LOGGER = logging.getLogger(__name__)
 
+RUN_START_MESSAGE = "⚡ Kickstarting Aura run..."
+WORKSPACE_CHECK_MESSAGE = "📁 Validating workspace..."
+ANALYST_START_MESSAGE = "🧠 Analyst agent: drafting plan..."
+EXECUTOR_START_MESSAGE = "⚙️ Executor agent: dispatching micro-actions..."
+CONTEXT_BUILD_MESSAGE = "🧱 Compiling workspace context..."
+MICRO_AGENT_START_MESSAGE = "🤖 Micro-agent: engaging tools..."
+SUCCESS_MESSAGE = "✅ Conversation complete"
+FAILURE_MESSAGE = "❌ Conversation failed"
 
 @dataclass(frozen=True)
 class SessionResult:
@@ -66,15 +74,31 @@ class _ConversationWorker(QObject):
     finished = Signal(_ConversationOutcome)
     failed = Signal(str)
 
-    def __init__(self, chat_service: ChatService, prompt: str) -> None:
+    def __init__(
+        self,
+        chat_service: ChatService,
+        prompt: str,
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
         super().__init__()
         self._chat_service = chat_service
         self._prompt = prompt
+        self._progress_callback = progress_callback
+
+    def _notify_progress(self, message: str) -> None:
+        if not message or self._progress_callback is None:
+            return
+        try:
+            self._progress_callback(message)
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Progress callback failed for conversation worker", exc_info=True)
 
     def run(self) -> None:
         """Execute the chat request and stream chunks to listeners."""
         started = time.perf_counter()
         streamed = {"value": False}
+        self._notify_progress(MICRO_AGENT_START_MESSAGE)
 
         def _on_chunk(chunk: str) -> None:
             streamed["value"] = True
@@ -111,11 +135,22 @@ class _TwoAgentWorker(QObject):
         analyst_agent: AnalystAgentService,
         executor_agent: ExecutorAgentService,
         goal: str,
+        *,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
         self._analyst_agent = analyst_agent
         self._executor_agent = executor_agent
         self._goal = goal
+        self._progress_callback = progress_callback
+
+    def _notify_progress(self, message: str) -> None:
+        if not message or self._progress_callback is None:
+            return
+        try:
+            self._progress_callback(message)
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Progress callback failed for two-agent worker", exc_info=True)
 
     def run(self) -> None:
         """Execute two-agent flow: analysis then execution."""
@@ -127,6 +162,7 @@ class _TwoAgentWorker(QObject):
             self.chunk_emitted.emit(chunk)
 
         try:
+            self._notify_progress(ANALYST_START_MESSAGE)
             engineered_prompt = self._analyst_agent.analyze_and_plan(
                 self._goal, on_chunk=_on_chunk
             )
@@ -136,6 +172,7 @@ class _TwoAgentWorker(QObject):
                 self.failed.emit(error_msg)
                 return
 
+            self._notify_progress(EXECUTOR_START_MESSAGE)
             result = self._executor_agent.execute_prompt(
                 engineered_prompt, on_chunk=_on_chunk
             )
@@ -220,6 +257,7 @@ class Orchestrator(QObject):
             self._chat_service = ChatService(
                 api_key=effective_analyst_key,
                 tool_manager=self._tool_manager,
+                model_name=self.app_state.analyst_model,
             )
 
         self._analyst_agent: AnalystAgentService | None = None
@@ -240,9 +278,10 @@ class Orchestrator(QObject):
     def execute_goal(self, goal: str) -> None:
         """Execute a single conversational turn for the provided goal."""
         # IMMEDIATE progress update
-        self.progress_update.emit("⋯ Starting...")
+        self.progress_update.emit(RUN_START_MESSAGE)
 
         try:
+            self.progress_update.emit(WORKSPACE_CHECK_MESSAGE)
             self._validate_environment()
         except AuraConfigurationError as exc:
             LOGGER.error("Cannot execute goal: %s", exc)
@@ -268,13 +307,12 @@ class Orchestrator(QObject):
         self.session_started.emit(0, session)
 
         if self._analyst_agent and self._executor_agent:
-            self.progress_update.emit("⋯ Analyzing with Aura Chat...")
             if self._use_background_thread:
                 self._start_two_agent_execution(session, sanitized)
             else:
                 self._run_two_agent_execution(session, sanitized)
         else:
-            self.progress_update.emit("⋯ Starting conversation...")
+            self.progress_update.emit(CONTEXT_BUILD_MESSAGE)
             prompt = self._build_prompt(sanitized)
             if self._use_background_thread:
                 self._start_background_conversation(session, prompt)
@@ -327,6 +365,7 @@ class Orchestrator(QObject):
             self._analyst_agent,
             self._executor_agent,
             goal,
+            progress_callback=self.progress_update.emit,
         )
         self._worker.moveToThread(self._thread)
         self._worker.chunk_emitted.connect(self.session_output.emit)
@@ -353,6 +392,7 @@ class Orchestrator(QObject):
             self.session_output.emit(chunk)
 
         try:
+            self.progress_update.emit(ANALYST_START_MESSAGE)
             engineered_prompt = self._analyst_agent.analyze_and_plan(
                 goal, on_chunk=_on_chunk
             )
@@ -368,8 +408,7 @@ class Orchestrator(QObject):
                 self._finalize_conversation(session, outcome)
                 return
 
-            self.progress_update.emit("⋯ Executor agent - executing prompt...")
-
+            self.progress_update.emit(EXECUTOR_START_MESSAGE)
             result = self._executor_agent.execute_prompt(
                 engineered_prompt, on_chunk=_on_chunk
             )
@@ -398,7 +437,11 @@ class Orchestrator(QObject):
     ) -> None:
         """Execute the conversation on a background QThread."""
         self._thread = QThread(self)
-        self._worker = _ConversationWorker(self._chat_service, prompt)
+        self._worker = _ConversationWorker(
+            self._chat_service,
+            prompt,
+            progress_callback=self.progress_update.emit,
+        )
         self._worker.moveToThread(self._thread)
         self._worker.chunk_emitted.connect(self.session_output.emit)
         self._worker.finished.connect(
@@ -424,6 +467,7 @@ class Orchestrator(QObject):
             self.session_output.emit(chunk)
 
         try:
+            self.progress_update.emit(MICRO_AGENT_START_MESSAGE)
             response = self._chat_service.send_message(prompt, on_chunk=_on_chunk)
             if not streamed["value"] and response:
                 self.session_output.emit(f"{config.STREAM_PREFIX}{response}")
@@ -472,7 +516,7 @@ class Orchestrator(QObject):
 
         self.session_complete.emit(0, result)
         self.all_sessions_complete.emit()
-        status_message = "Conversation complete" if outcome.success else "Conversation failed"
+        status_message = SUCCESS_MESSAGE if outcome.success else FAILURE_MESSAGE
         self.progress_update.emit(status_message)
         LOGGER.info(
             "Conversation finished | success=%s | duration=%.2fs",
@@ -491,7 +535,7 @@ class Orchestrator(QObject):
             or "Unable to contact the analyst agent. Verify GEMINI_API_KEY and your connection, then try again."
         )
         self.all_sessions_complete.emit()
-        self.progress_update.emit("Conversation failed")
+        self.progress_update.emit(FAILURE_MESSAGE)
         if self._thread and self._thread.isRunning():
             self._thread.quit()
 

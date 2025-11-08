@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QDialog,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMainWindow,
     QPushButton,
@@ -66,6 +67,10 @@ class MainWindow(QMainWindow):
         self.input_field = QLineEdit(self); self.clear_button = QPushButton("Clear", self)
         self.toolbar = self.addToolBar("Project")
         self.current_runner: Optional[AgentRunner] = None
+
+        # Model status badges
+        self.analyst_badge = QLabel(self)
+        self.executor_badge = QLabel(self)
         self._event_bus = get_event_bus()
         self._prompting_for_directory = False
 
@@ -289,13 +294,54 @@ class MainWindow(QMainWindow):
         dir_action = QAction("Set Working Directory", self); dir_action.triggered.connect(self._select_working_directory); self.toolbar.addAction(dir_action)
         agent_action = QAction("Agent Settings...", self); agent_action.triggered.connect(self._open_agent_settings); self.toolbar.addAction(agent_action)
 
+        # Add spacer to push badges to the right
+        spacer = QWidget()
+        spacer.setSizePolicy(QWidget.SizePolicy.Expanding, QWidget.SizePolicy.Preferred)
+        self.toolbar.addWidget(spacer)
+
+        # Add model status badges
+        self._update_analyst_badge(self.app_state.analyst_model)
+        self._update_executor_badge(self.app_state.executor_model)
+        self._style_model_badges()
+        self.toolbar.addWidget(self.analyst_badge)
+        self.toolbar.addWidget(self.executor_badge)
+
     def _connect_signals(self) -> None:
         self.input_field.returnPressed.connect(self._handle_submit); self.clear_button.clicked.connect(self.clear_output)
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
-        
+
+        # Connect model change signals to update badges
+        self.app_state.analyst_model_changed.connect(self._update_analyst_badge)
+        self.app_state.executor_model_changed.connect(self._update_executor_badge)
+
         # Keyboard shortcut for toggling sidebar
         shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
         shortcut.activated.connect(self.project_sidebar._toggle_collapse)
+
+    def _update_analyst_badge(self, model_name: str) -> None:
+        """Update the analyst model badge display."""
+        self.analyst_badge.setText(f"Analyst: {model_name}")
+
+    def _update_executor_badge(self, model_name: str) -> None:
+        """Update the executor model badge display."""
+        self.executor_badge.setText(f"Executor: {model_name}")
+
+    def _style_model_badges(self) -> None:
+        """Apply styling to the model status badges."""
+        badge_style = f"""
+            QLabel {{
+                background-color: {config.COLORS.background};
+                color: {config.COLORS.text};
+                border: 1px solid {config.COLORS.border};
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 500;
+                margin-left: 6px;
+            }}
+        """
+        self.analyst_badge.setStyleSheet(badge_style)
+        self.executor_badge.setStyleSheet(badge_style)
 
     def _connect_handler_signals(self) -> None:
         self.orchestration_handler.request_input_enabled.connect(self._set_input_enabled); self.orchestration_handler.request_input_focus.connect(self.input_field.setFocus)

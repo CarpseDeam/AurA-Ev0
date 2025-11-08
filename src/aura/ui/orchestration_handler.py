@@ -7,9 +7,10 @@ import difflib
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QTimer
 
 from aura import config
 from aura.events import Event, EventType
@@ -19,6 +20,29 @@ from aura.ui.output_panel import OutputPanel
 from aura.ui.status_bar_manager import StatusBarManager
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ToolAnnouncement:
+    """Represents a single-line summary for an incoming tool call."""
+
+    icon: str
+    action: str
+    target: str
+    color: str
+    meta: str = ""
+
+    def render(self) -> str:
+        """Return the fully formatted line for display."""
+        core = f"{self.icon} {self.action}"
+        if self.target:
+            core = f"{core}: {self.target}"
+        return f"{core} {self.meta}".strip()
+
+
+GENERIC_TOOL_ICON = "⚙️"
+TOOL_BATCH_WINDOW_MS = 160
+TOOL_PREVIEW_LIMIT = 3
 
 
 def _log_handler_recv(message: str) -> None:
@@ -54,6 +78,10 @@ class OrchestrationHandler(QObject):
         self._status_manager = status_manager
         self._app_state = app_state
         self._last_error_message: Optional[str] = None
+        self._pending_tool_announcements: list[ToolAnnouncement] = []
+        self._tool_batch_timer = QTimer(self)
+        self._tool_batch_timer.setSingleShot(True)
+        self._tool_batch_timer.timeout.connect(self._flush_tool_announcements)
 
     def handle_planning_started(self) -> None:
         """Reset state and display planning message."""
@@ -106,6 +134,8 @@ class OrchestrationHandler(QObject):
                 self._handle_tool_call_message(stripped)
                 return
 
+            if self._pending_tool_announcements:
+                self._flush_tool_announcements()
             self._render_text_with_diffs(raw_text)
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to render session output")
@@ -114,6 +144,7 @@ class OrchestrationHandler(QObject):
     def handle_session_complete(self, index: int, result: SessionResult) -> None:
         """Summarize the result of a completed session."""
         try:
+            self._flush_tool_announcements()
             if result is None:
                 return
 
@@ -131,6 +162,7 @@ class OrchestrationHandler(QObject):
     def handle_all_complete(self) -> None:
         """Mark orchestration as complete."""
         try:
+            self._flush_tool_announcements()
             self._set_completed_state()
             self._output_panel.display_output("")  # Spacer
             self._output_panel.display_success("Conversation finished")
@@ -143,6 +175,7 @@ class OrchestrationHandler(QObject):
     def handle_error(self, error: str) -> None:
         """Surface orchestration errors."""
         try:
+            self._flush_tool_announcements()
             self._last_error_message = error
             self._set_error_state()
             user_message = self._format_user_error(error)
@@ -196,6 +229,9 @@ class OrchestrationHandler(QObject):
             return
 
         parsed_args = self._parse_tool_args(raw_args)
+        announcement = self._build_tool_announcement(tool_name, parsed_args)
+        if announcement:
+            self._queue_tool_announcement(announcement)
         if self._render_file_tool_call(tool_name, parsed_args):
             return
         if self._render_read_tool_call(tool_name, parsed_args):
@@ -267,19 +303,9 @@ class OrchestrationHandler(QObject):
         path = self._extract_path_argument(args) or "workspace file"
 
         if tool_name == "create_file":
-            content = str(args.get("content") or "")
-            size_label = self._format_file_size(len(content.encode("utf-8")))
-            line_count = self._count_lines(content)
-            line_label = "line" if line_count == 1 else "lines"
-            stats = f"{size_label} | {line_count} {line_label}"
-            self._output_panel.display_output(
-                f"⚙️ create_file: {path} ({stats})",
-                config.COLORS.accent,
-            )
             return True
 
         if tool_name == "modify_file":
-            self._output_panel.display_output(f"⚙️ modify_file: {path}", config.COLORS.accent)
             old_content = args.get("old_content") or ""
             new_content = args.get("new_content") or args.get("content") or ""
             diff_text = self._build_diff_from_contents(path, old_content, new_content)
@@ -290,7 +316,6 @@ class OrchestrationHandler(QObject):
                 self._output_panel.display_edit_block(path, diff_text)
             return True
 
-        self._output_panel.display_output(f"⚙️ delete_file: {path}", config.COLORS.accent)
         self._output_panel.display_file_deletion(path)
         return True
 
@@ -301,13 +326,6 @@ class OrchestrationHandler(QObject):
         if tool_name not in read_tools | list_tools:
             return False
 
-        target = self._extract_path_argument(args) or "."
-        label = "read_file" if tool_name in read_tools else "list_files"
-        icon = config.ICONS.READ_FILE
-        self._output_panel.display_output(
-            f"{icon} {label}: {target}",
-            config.COLORS.tool_call,
-        )
         return True
 
     @staticmethod
@@ -353,6 +371,94 @@ class OrchestrationHandler(QObject):
         else:
             summary = str(args)
         return summary if len(summary) <= 160 else f"{summary[:157]}..."
+
+    def _build_tool_announcement(self, tool_name: str, args: Any) -> ToolAnnouncement | None:
+        """Return a ToolAnnouncement describing the requested action."""
+        if not tool_name:
+            return None
+
+        color = config.COLORS.tool_call
+        icon = GENERIC_TOOL_ICON
+        action = "Running"
+        meta = ""
+        path_hint = ""
+        if isinstance(args, dict):
+            path_hint = self._extract_path_argument(args)
+
+        read_tools = {"read_project_file", "read_multiple_files", "read_file"}
+        list_tools = {"list_project_files"}
+
+        if tool_name == "create_file":
+            action = "Creating"
+            icon = "🆕"
+            content = str((args or {}).get("content", ""))
+            size_label = self._format_file_size(len(content.encode("utf-8")))
+            line_count = self._count_lines(content)
+            if line_count and size_label:
+                meta = f"({line_count} lines • {size_label})"
+            elif line_count:
+                meta = f"({line_count} lines)"
+            elif size_label:
+                meta = f"({size_label})"
+        elif tool_name == "modify_file":
+            action = "Modifying"
+            icon = "✏️"
+        elif tool_name == "delete_file":
+            action = "Deleting"
+            icon = "🗑️"
+        elif tool_name in read_tools:
+            action = "Reading"
+            icon = "📖"
+        elif tool_name in list_tools:
+            action = "Listing"
+            icon = "📂"
+        else:
+            path_hint = path_hint or tool_name
+
+        target = self._shorten_target(path_hint) if path_hint else tool_name
+        return ToolAnnouncement(icon=icon, action=action, target=target, color=color, meta=meta)
+
+    def _queue_tool_announcement(self, announcement: ToolAnnouncement) -> None:
+        """Display a live status line for a tool action."""
+        if not announcement:
+            return
+        self._pending_tool_announcements.append(announcement)
+        if self._tool_batch_timer.isActive():
+            self._tool_batch_timer.stop()
+        self._tool_batch_timer.start(TOOL_BATCH_WINDOW_MS)
+
+    def _flush_tool_announcements(self) -> None:
+        """Flush queued tool announcements with optional batching."""
+        if not self._pending_tool_announcements:
+            return
+        if self._tool_batch_timer.isActive():
+            self._tool_batch_timer.stop()
+        pending = self._pending_tool_announcements
+        self._pending_tool_announcements = []
+        if len(pending) == 1:
+            announcement = pending[0]
+            self._output_panel.display_output(announcement.render(), announcement.color)
+            return
+
+        preview = ", ".join(
+            f"{item.icon} {item.action}" for item in pending[:TOOL_PREVIEW_LIMIT]
+        )
+        if len(pending) > TOOL_PREVIEW_LIMIT:
+            preview = f"{preview}, …" if preview else "…"
+
+        summary = f"{GENERIC_TOOL_ICON} Running {len(pending)} tools..."
+        if preview:
+            summary = f"{summary} ({preview})"
+        self._output_panel.display_output(summary, config.COLORS.tool_call)
+
+    @staticmethod
+    def _shorten_target(value: str, limit: int = 60) -> str:
+        """Truncate long targets so they fit on a single line."""
+        if not value:
+            return ""
+        if len(value) <= limit:
+            return value
+        return f"...{value[-(limit - 3):]}"
 
     def _build_diff_from_contents(
         self,

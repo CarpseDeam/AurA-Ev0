@@ -33,7 +33,7 @@ class ChatService:
 
     api_key: str
     tool_manager: ToolManager
-    model_name: str = "gemini-2.5-pro"
+    model_name: str
     _client: genai.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:

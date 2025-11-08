@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
+from aura.utils.settings import DEFAULT_ANALYST_MODEL, DEFAULT_EXECUTOR_MODEL, DEFAULT_SPECIALIST_MODEL
 
 _APP_STATE: "AppState | None" = None
 
@@ -46,9 +47,9 @@ class AppState(QObject):
         self._agent_path: str = ""
         self._status_message: str = "Ready"
         self._status_color: str = "#ffffff"
-        self._analyst_model: str = "gemini-1.5-pro-latest"
-        self._executor_model: str = "claude-3-sonnet-20240229"
-        self._specialist_model: str = "phi-3-mini"
+        self._analyst_model: str = DEFAULT_ANALYST_MODEL
+        self._executor_model: str = DEFAULT_EXECUTOR_MODEL
+        self._specialist_model: str = DEFAULT_SPECIALIST_MODEL
         self._local_model_endpoint: str = ""
         self._current_project_id: Optional[int] = None
         self._current_conversation_id: Optional[int] = None

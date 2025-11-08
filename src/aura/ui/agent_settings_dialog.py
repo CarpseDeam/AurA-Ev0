@@ -247,7 +247,7 @@ class AgentSettingsDialog(QDialog):
         
         self.app_state.set_selected_agent(agent.name)
         if agent.executable_path:
-            self.app_state.set_agent_executable(agent.name, agent.executable_path)
+            self.app_state.set_agent_path(agent.executable_path)
 
         QMessageBox.information(
             self,
@@ -262,7 +262,7 @@ class AgentSettingsDialog(QDialog):
             "executor_model": self.app_state.executor_model,
             "specialist_model": self.app_state.specialist_model,
             "selected_agent": self.app_state.selected_agent,
-            "agent_executable": self.app_state.agent_executable.get(self.app_state.selected_agent)
+            "agent_executable": self.app_state.agent_path
         }
         save_settings(settings)
         QMessageBox.information(self, "Settings Saved", "Your settings have been saved successfully.")

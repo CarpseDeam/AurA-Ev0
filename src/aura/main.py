@@ -120,7 +120,7 @@ class ApplicationController:
         
         self.app_state.set_selected_agent(selected_agent)
         if agent_executable:
-            self.app_state.set_agent_executable(selected_agent, agent_executable)
+            self.app_state.set_agent_path(agent_executable)
 
         orchestrator_warning: str | None = None
 
