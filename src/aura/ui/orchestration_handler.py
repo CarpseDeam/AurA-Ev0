@@ -303,9 +303,10 @@ class OrchestrationHandler(QObject):
 
         target = self._extract_path_argument(args) or "."
         label = "read_file" if tool_name in read_tools else "list_files"
+        icon = config.ICONS.READ_FILE
         self._output_panel.display_output(
-            f"⚙️ {label}: {target}",
-            config.COLORS.secondary,
+            f"{icon} {label}: {target}",
+            config.COLORS.tool_call,
         )
         return True
 

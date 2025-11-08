@@ -1,9 +1,6 @@
 # src/aura/ui/banner.py
 
-from rich.console import Console
-from rich.style import Style
-from rich.text import Text
-from rich.theme import Theme
+# No more 'rich' import! This is pure Python.
 
 AURA_ART = """
   █████╗ ██╗   ██╗██████╗  █████╗ 
@@ -28,55 +25,51 @@ def _rgb_to_hex(r: int, g: int, b: int) -> str:
 
 def generate_banner_html() -> str:
     """
-    Generates a self-contained HTML string for the AURA banner with a smooth
-    color gradient, ready to be displayed in a Qt widget.
+    Generates a self-contained HTML string for the AURA banner by manually
+    building the styles for each character. This gives us total control.
     """
     lines = AURA_ART.strip('\n').split('\n')
     max_len = max(len(line) for line in lines) if lines else 0
 
-    start_color_hex = "#00CED1"  # A nice, bright cyan
-    end_color_hex = "#A060DD"  # A beautiful magenta/purple
+    start_color_hex = "#00CED1"  # Cyan
+    end_color_hex = "#A060DD"  # Purple
 
     start_r, start_g, start_b = _hex_to_rgb(start_color_hex)
     end_r, end_g, end_b = _hex_to_rgb(end_color_hex)
 
-    # Use Rich's Text object to build the styled text in memory
-    rich_text = Text()
+    # We will build the HTML line by line
+    html_lines = []
 
     for line in lines:
-        padded_line = line.ljust(max_len)
-        for i, char in enumerate(padded_line):
+        line_html = ""
+        # IMPORTANT: Iterate up to max_len to handle padding for alignment
+        for i, char in enumerate(line.ljust(max_len)):
+            # Only color non-whitespace characters
             if char.strip():
-                # Calculate the ratio for linear interpolation
-                # Use max(1, max_len - 1) to avoid division by zero
                 ratio = i / max(1, max_len - 1)
 
-                # Interpolate each color component
+                # Interpolate the color
                 r = int(start_r * (1 - ratio) + end_r * ratio)
                 g = int(start_g * (1 - ratio) + end_g * ratio)
                 b = int(start_b * (1 - ratio) + end_b * ratio)
 
                 color_hex = _rgb_to_hex(r, g, b)
-                rich_text.append(char, style=Style(color=color_hex, bold=True))
+
+                # Each colored character is a <span> tag
+                line_html += f'<span style="color: {color_hex};">{char}</span>'
             else:
-                rich_text.append(char)  # Append whitespace without style
-        rich_text.append('\n')
+                # Add spaces as-is
+                line_html += " "
+        html_lines.append(line_html)
 
-    # Create a console with a minimal theme to prevent default styles
-    # from interfering with our gradient.
-    minimal_theme = Theme({"default": Style()})
-    console = Console(record=True, width=max_len, theme=minimal_theme)
+    # Join all our styled lines with <br> tags
+    inner_html = "<br>".join(html_lines)
 
-    console.print(rich_text)
-
-    # Export the recorded content to HTML with inline styles
-    html_content = console.export_html(inline_styles=True)
-
-    # **THE FIX!** Wrap the exported HTML in our own <pre> tag with guaranteed
-    # styling for the Aura GUI, ensuring perfect font and alignment.
+    # Wrap the entire thing in a SINGLE <pre> tag with our bulletproof styling.
+    # This is the secret sauce for perfect alignment.
     return (
-        '<pre style="font-family: \'JetBrains Mono\', \'Consolas\', monospace; '
-        'font-size: 16px; line-height: 1.0; margin: 20px 0; color: #e6edf3;">'
-        f'{html_content}'
+        f'<pre style="font-family: \'JetBrains Mono\', \'Consolas\', monospace; '
+        'font-size: 16px; font-weight: bold; line-height: 1.0; margin: 20px 0;">'
+        f'{inner_html}'
         '</pre>'
     )
