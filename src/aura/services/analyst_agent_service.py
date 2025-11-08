@@ -20,6 +20,7 @@ from aura.events import (
     StatusUpdate,
     StreamingChunk,
     ToolCallCompleted,
+    ToolCallFailed,
     ToolCallStarted,
 )
 from aura.prompts import ANALYST_PROMPT
@@ -87,6 +88,9 @@ class AnalystAgentService:
             prompt_length,
             bool(on_chunk),
         )
+        workspace = getattr(self.tool_manager, "workspace_dir", None)
+        if workspace:
+            LOGGER.info("Analyst tool workspace: %s", workspace)
         self._event_bus.emit(
             PhaseTransition(from_phase="idle", to_phase="analyst", source=_ANALYST_SOURCE)
         )
@@ -343,6 +347,18 @@ class AnalystAgentService:
                         result=f"error: {exc}",
                         duration=duration,
                         source=source,
+                    )
+                )
+                LOGGER.exception(
+                    "Tool %s failed after %.2fs | params=%s", tool_name, duration, params
+                )
+                self._event_bus.emit(
+                    ToolCallFailed(
+                        tool_name=tool_name,
+                        error=str(exc),
+                        duration=duration,
+                        source=source,
+                        parameters=params,
                     )
                 )
                 raise

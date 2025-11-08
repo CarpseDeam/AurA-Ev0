@@ -625,9 +625,34 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Working Directory", self.app_state.working_directory)
         if not path:
             return
+        self._apply_project_working_directory(path)
+
+    def _apply_project_working_directory(self, raw_path: str) -> None:
+        """Resolve and propagate a project-provided working directory."""
+        if not raw_path:
+            return
         try:
-            self.agent_manager.set_working_directory(path)
+            resolved_path = Path(raw_path).expanduser().resolve()
+            resolved = str(resolved_path)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Invalid project working directory '%s': %s", raw_path, exc)
+            self._display_user_error(f"Project working directory is invalid: {raw_path}")
+            return
+
+        current = self.app_state.working_directory
+        if current:
+            try:
+                if Path(current).resolve() == resolved_path:
+                    LOGGER.debug("Workspace already set to %s; skipping update", resolved)
+                    return
+            except Exception:  # noqa: BLE001
+                LOGGER.debug("Unable to compare workspace paths; continuing", exc_info=True)
+
+        LOGGER.info("Applying workspace %s (requested=%s)", resolved, raw_path)
+        try:
+            self.agent_manager.set_working_directory(resolved)
         except AuraConfigurationError as exc:
+            LOGGER.warning("Failed to apply project workspace %s: %s", resolved, exc)
             self._display_user_error(str(exc))
 
     def _open_agent_settings(self) -> None:
@@ -675,12 +700,8 @@ class MainWindow(QMainWindow):
                 self.app_state.set_current_project(project_id)
 
                 # Update working directory if project has one
-                if project.working_directory and self.orchestrator:
-                    try:
-                        self.orchestrator.update_working_directory(project.working_directory)
-                        self.app_state.set_working_directory(project.working_directory)
-                    except Exception as e:
-                        LOGGER.warning(f"Failed to set working directory: {e}")
+                if project.working_directory:
+                    self._apply_project_working_directory(project.working_directory)
 
                 # Show project panel
                 self.project_panel.set_project(project)

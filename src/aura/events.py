@@ -29,6 +29,17 @@ class ToolCallCompleted:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolCallFailed:
+    """Emitted when a tool callable raises or aborts execution."""
+
+    tool_name: str
+    error: str
+    duration: float | None = None
+    source: str | None = None
+    parameters: _Params = None
+
+
+@dataclass(frozen=True, slots=True)
 class StatusUpdate:
     """Describes a high-level status message and associated phase."""
 
@@ -77,6 +88,7 @@ class ExecutionComplete:
 FeedbackEvent = (
     ToolCallStarted
     | ToolCallCompleted
+    | ToolCallFailed
     | StatusUpdate
     | PhaseTransition
     | FileOperation
@@ -92,5 +104,6 @@ __all__ = [
     "StatusUpdate",
     "StreamingChunk",
     "ToolCallCompleted",
+    "ToolCallFailed",
     "ToolCallStarted",
 ]

@@ -16,6 +16,7 @@ class ToolManager:
         if not resolved.is_dir():
             raise ValueError(f"Workspace directory does not exist: {workspace_dir}")
         self.workspace_dir = resolved
+        LOGGER.info("ToolManager workspace set to %s", self.workspace_dir)
 
     # ------------------------------------------------------------------ #
     # File operation helpers
@@ -90,13 +91,19 @@ class ToolManager:
         try:
             target = self._resolve_path(path)
         except PermissionError as exc:
-            LOGGER.warning("Denied read_project_file outside workspace: %s", exc)
+            LOGGER.warning(
+                "Denied read_project_file outside workspace: %s | workspace=%s",
+                exc,
+                self.workspace_dir,
+            )
             return f"Error reading '{path}': {exc}"
 
         if not target.exists():
+            LOGGER.warning("read_project_file missing path: %s", target)
             return f"Error: file '{path}' does not exist."
 
         try:
+            LOGGER.debug("Reading file at %s", target)
             return target.read_text(encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to read file %s: %s", path, exc)
@@ -108,18 +115,29 @@ class ToolManager:
         try:
             base = self._resolve_directory(directory)
         except PermissionError as exc:
-            LOGGER.warning("Denied list_project_files outside workspace: %s", exc)
+            LOGGER.warning(
+                "Denied list_project_files outside workspace: %s | workspace=%s",
+                exc,
+                self.workspace_dir,
+            )
             return [f"Error: {exc}"]
 
         if not base.exists():
+            LOGGER.warning("list_project_files base missing: %s", base)
             return []
 
         suffix = extension if extension.startswith(".") else f".{extension}"
+        LOGGER.debug(
+            "Scanning %s for *%s (workspace=%s)", base, suffix, self.workspace_dir
+        )
         files = [
             self._relative_path(path)
             for path in base.rglob(f"*{suffix}")
             if path.is_file() and self._is_within_workspace(path)
         ]
+        LOGGER.info(
+            "list_project_files returning %d paths from %s", len(files), base
+        )
         return sorted(files)
 
     def search_in_files(
@@ -133,7 +151,11 @@ class ToolManager:
         try:
             base = self._resolve_directory(directory)
         except PermissionError as exc:
-            LOGGER.warning("Denied search_in_files outside workspace: %s", exc)
+            LOGGER.warning(
+                "Denied search_in_files outside workspace: %s | workspace=%s",
+                exc,
+                self.workspace_dir,
+            )
             return {"matches": [], "error": str(exc)}
 
         if not base.exists():
@@ -180,19 +202,26 @@ class ToolManager:
             try:
                 target = self._resolve_path(user_path)
             except PermissionError as exc:
-                LOGGER.warning("Denied read_multiple_files outside workspace: %s", exc)
+                LOGGER.warning(
+                    "Denied read_multiple_files outside workspace: %s | workspace=%s",
+                    exc,
+                    self.workspace_dir,
+                )
                 results[user_path] = f"Error reading '{user_path}': {exc}"
                 continue
 
             if not target.exists():
+                LOGGER.warning("read_multiple_files missing path: %s", target)
                 results[user_path] = f"Error: file '{user_path}' does not exist."
                 continue
 
             if not target.is_file():
+                LOGGER.warning("read_multiple_files non-file path: %s", target)
                 results[user_path] = f"Error: '{user_path}' is not a file."
                 continue
 
             try:
+                LOGGER.debug("Reading multiple file entry: %s", target)
                 results[user_path] = target.read_text(encoding="utf-8")
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("Failed to read %s: %s", user_path, exc)
@@ -210,8 +239,12 @@ class ToolManager:
             candidate = self.workspace_dir / candidate
         resolved = candidate.resolve(strict=False)
         if not self._is_within_workspace(resolved):
-            message = f"Access to '{user_path}' is outside the workspace directory."
+            message = (
+                f"Access to '{user_path}' is outside the workspace directory "
+                f"({self.workspace_dir})."
+            )
             raise PermissionError(message)
+        LOGGER.debug("Resolved %s -> %s (workspace=%s)", user_path, resolved, self.workspace_dir)
         return resolved
 
     def _resolve_directory(self, directory: str) -> Path:
