@@ -595,6 +595,13 @@ class MainWindow(QMainWindow):
         try:
             project = Project.get_by_id(project_id)
             if project:
+                # Clear any existing conversation context as we switch projects
+                self.app_state.set_current_conversation(None)
+                if self.orchestrator:
+                    self.orchestrator.reset_history()
+                self.output_panel.clear()
+                self.output_panel.display_output(f"Loaded project: {project.name}", config.COLORS.success)
+
                 # Update app state
                 self.app_state.set_current_project(project_id)
 
