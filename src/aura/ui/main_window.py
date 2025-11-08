@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Signal, Qt, QEasingCurve, QVariantAnimation, QAbstractAnimation
-from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut, QIcon
 from PySide6.QtWidgets import (
     QFileDialog,
     QDialog,
@@ -114,6 +115,13 @@ class MainWindow(QMainWindow):
         self.input_field.setClearButtonEnabled(True)
         self.input_field.setFont(input_font)
         self.input_field.setFocus()
+
+        # Set window icon
+        icon_path = Path(__file__).resolve().parent.parent / "assets" / "logo.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+        else:
+            LOGGER.warning("Logo icon not found at %s", icon_path)
 
     def _build_layout(self) -> None:
         """Build the main window layout with a splitter for resizable sidebars."""
