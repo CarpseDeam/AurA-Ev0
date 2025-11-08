@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Optional
 
-from PySide6.QtCore import Signal, Qt, QPropertyAnimation
+from PySide6.QtCore import Signal, Qt, QEasingCurve, QVariantAnimation, QAbstractAnimation
 from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -88,7 +88,7 @@ class MainWindow(QMainWindow):
             orchestrator=self.orchestrator,
         )
 
-        self._configure_window(); self._build_layout(); self._apply_styles(); self._build_toolbar()
+        self._configure_window(); self._build_layout(); self._configure_sidebar_animation(); self._apply_styles(); self._build_toolbar()
         self._connect_signals(); self._connect_sidebar_signals(); self._connect_handler_signals(); self._subscribe_to_events()
         self._event_received.connect(self.orchestration_handler.handle_background_event)
 
@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Horizontal, self)
         self.splitter.setHandleWidth(1)
         self.splitter.setStyleSheet("QSplitter::handle { background-color: #2c313a; }")
+        self.splitter.setCollapsible(0, False)
 
         # Left sidebar (project sidebar)
         self.splitter.addWidget(self.project_sidebar)
@@ -154,6 +155,73 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.project_panel)
 
         self.setCentralWidget(container)
+
+    def _configure_sidebar_animation(self) -> None:
+        """Prepare the animation used when collapsing/expanding the project sidebar."""
+        self._sidebar_animation = QVariantAnimation(self)
+        self._sidebar_animation.setDuration(250)
+        self._sidebar_animation.setEasingCurve(QEasingCurve.InOutQuad)
+        self._sidebar_animation.valueChanged.connect(self._on_sidebar_animation_value_changed)
+        self._sidebar_animation.finished.connect(self._on_sidebar_animation_finished)
+        self._sidebar_animation_total = 0
+
+    def _animate_sidebar_width(self, target_width: int) -> None:
+        """Animate the splitter so the project sidebar reaches the requested width."""
+        if not self.splitter:
+            return
+
+        target_width = max(int(target_width), 0)
+        sizes = self.splitter.sizes()
+        current_width = sizes[0] if sizes else self.project_sidebar.width()
+
+        if current_width == target_width:
+            self._apply_sidebar_width(target_width)
+            return
+
+        total = sum(sizes) if sizes else self.splitter.size().width()
+        if total <= 0:
+            total = max(self.width(), target_width + 1)
+
+        self._sidebar_animation_total = max(total, target_width + 1)
+
+        if self._sidebar_animation.state() == QAbstractAnimation.State.Running:
+            self._sidebar_animation.stop()
+
+        self._sidebar_animation.setStartValue(current_width)
+        self._sidebar_animation.setEndValue(target_width)
+        self._sidebar_animation.start()
+
+    def _apply_sidebar_width(self, width: int) -> None:
+        """Apply a splitter width without animation."""
+        if not self.splitter:
+            return
+
+        width = max(int(width), 0)
+        total = self.splitter.size().width()
+        if total <= 0:
+            total = sum(self.splitter.sizes())
+        if total <= 0:
+            total = max(self.width(), width + 1)
+
+        main_width = max(total - width, 1)
+        self.splitter.setSizes([width, main_width])
+
+    def _on_sidebar_animation_value_changed(self, value: float) -> None:
+        """Adjust splitter sizes on each animation tick."""
+        width = max(int(value), 0)
+        total = self._sidebar_animation_total or self.splitter.size().width()
+        if total <= 0:
+            total = max(self.width(), width + 1)
+        main_width = max(total - width, 1)
+        self.splitter.setSizes([width, main_width])
+
+    def _on_sidebar_animation_finished(self) -> None:
+        """Ensure the final animation frame snaps exactly to the requested width."""
+        if self._sidebar_animation.state() != QAbstractAnimation.State.Stopped:
+            return
+        final_width = int(self._sidebar_animation.endValue() or 0)
+        self._apply_sidebar_width(final_width)
+        self._sidebar_animation_total = 0
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(f"""
@@ -232,36 +300,49 @@ class MainWindow(QMainWindow):
     def _load_and_apply_settings(self) -> None:
         """Load sidebar state from settings and apply it."""
         settings = load_settings()
-        is_collapsed = settings.get("sidebar_collapsed", False)
-        self.project_sidebar.set_collapsed(is_collapsed)
+        sidebar_width = int(settings.get("sidebar_width", self.project_sidebar.sizeHint().width()))
+        self.project_sidebar.expanded_width = sidebar_width
+        sidebar_width = self.project_sidebar.expanded_width
+
+        is_collapsed = bool(settings.get("sidebar_collapsed", False))
+        self.project_sidebar.set_collapsed(is_collapsed, emit_signal=False)
+
+        initial_width = self.project_sidebar.collapsed_width if is_collapsed else sidebar_width
+        self._apply_sidebar_width(initial_width)
 
     def _on_sidebar_state_changed(self, is_collapsed: bool) -> None:
         """Save the sidebar's collapsed state and adjust the splitter."""
         settings = load_settings()
         settings["sidebar_collapsed"] = is_collapsed
+        expanded_width = int(settings.get("sidebar_width", self.project_sidebar.expanded_width))
+        self.project_sidebar.expanded_width = expanded_width
+        expanded_width = self.project_sidebar.expanded_width
         save_settings(settings)
         LOGGER.info(f"Sidebar collapsed state saved: {is_collapsed}")
 
-        # Adjust splitter size
-        if is_collapsed:
-            self.splitter.setSizes([0, self.width()])
-        else:
-            sidebar_width = settings.get("sidebar_width", 280)
-            self.splitter.setSizes([sidebar_width, self.width() - sidebar_width])
+        target_width = self.project_sidebar.collapsed_width if is_collapsed else expanded_width
+        self._animate_sidebar_width(target_width)
 
-    def _on_splitter_moved(self, pos: int, index: int) -> None:
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
         """Save the sidebar's width when the splitter is moved."""
-        # Only save if the sidebar is not collapsed and the splitter is not being animated
-        if not self.project_sidebar._collapsed and self.project_sidebar._animation.state() == QPropertyAnimation.State.NotRunning:
-            sizes = self.splitter.sizes()
-            if len(sizes) > 0:
-                sidebar_width = sizes[0]
-                # Add a reasonable minimum width to avoid saving a tiny width
-                if sidebar_width > 50:
-                    settings = load_settings()
-                    settings["sidebar_width"] = sidebar_width
-                    save_settings(settings)
-                    LOGGER.debug(f"Sidebar width saved: {sidebar_width}")
+        if self.project_sidebar.is_collapsed():
+            return
+        if self._sidebar_animation.state() == QAbstractAnimation.State.Running:
+            return
+
+        sizes = self.splitter.sizes()
+        if not sizes:
+            return
+
+        sidebar_width = sizes[0]
+        if sidebar_width <= self.project_sidebar.collapsed_width + 4:
+            return
+
+        settings = load_settings()
+        settings["sidebar_width"] = sidebar_width
+        save_settings(settings)
+        self.project_sidebar.expanded_width = sidebar_width
+        LOGGER.debug(f"Sidebar width saved: {sidebar_width}")
 
     def _connect_orchestrator_signals(self) -> None:
         from PySide6.QtCore import Qt

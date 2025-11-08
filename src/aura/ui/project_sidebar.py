@@ -3,12 +3,12 @@ Project sidebar UI component for displaying projects and recent conversations.
 """
 
 import logging
-from typing import Optional, List
+from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QFrame, QScrollArea
+    QListWidget, QListWidgetItem, QFrame
 )
-from PySide6.QtCore import Signal, Qt, QSize, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Signal, Qt, QSize
 from PySide6.QtGui import QFont
 
 from ..models import Project, Conversation
@@ -40,17 +40,12 @@ class ProjectSidebar(QWidget):
         self._current_project_id: Optional[int] = None
         self._current_conversation_id: Optional[int] = None
         self._collapsed = False
-        self._collapsed_width = 40
+        self._collapsed_width = 48
         self._expanded_width = 280
-
-        # Animation for smooth collapse/expand
-        self._animation = QPropertyAnimation(self, b"minimumWidth")
-        self._animation.setDuration(250)
-        self._animation.setEasingCurve(QEasingCurve.InOutQuad)
 
         self._setup_ui()
         self._apply_styling()
-        self.setMinimumWidth(self._expanded_width)
+        self.setMinimumWidth(self._collapsed_width)
 
     def _setup_ui(self) -> None:
         """Create and layout UI components."""
@@ -97,9 +92,10 @@ class ProjectSidebar(QWidget):
         header_layout.addStretch()
 
         self.toggle_button = QPushButton("◀")
-        self.toggle_button.setFixedSize(24, 24)
+        self.toggle_button.setFixedSize(28, 28)
         self.toggle_button.setObjectName("toggleButton")
-        self.toggle_button.setToolTip("Collapse Sidebar")
+        self.toggle_button.setToolTip("Collapse sidebar")
+        self.toggle_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.toggle_button.clicked.connect(self._toggle_collapse)
         header_layout.addWidget(self.toggle_button)
 
@@ -109,31 +105,32 @@ class ProjectSidebar(QWidget):
         """Toggle the collapsed state of the sidebar."""
         self.set_collapsed(not self._collapsed)
 
-    def set_collapsed(self, collapsed: bool) -> None:
-        """Set the collapsed state of the sidebar and animate the change."""
+    def set_collapsed(self, collapsed: bool, *, emit_signal: bool = True) -> None:
+        """
+        Set the collapsed state of the sidebar.
+
+        Args:
+            collapsed: Whether the sidebar should be collapsed.
+            emit_signal: When False, suppresses the state_changed signal (useful during startup restore).
+        """
         if self._collapsed == collapsed:
             return
 
         self._collapsed = collapsed
-        self.state_changed.emit(self._collapsed)
-
-        start_width = self.width()
-        end_width = self._collapsed_width if self._collapsed else self._expanded_width
 
         if self._collapsed:
             self._content_widget.hide()
             self.toggle_button.setText("▶")
-            self.toggle_button.setToolTip("Expand Sidebar")
+            self.toggle_button.setToolTip("Expand sidebar")
             self.title_label.hide()
         else:
-            self.toggle_button.setText("◀")
-            self.toggle_button.setToolTip("Collapse Sidebar")
-            self.title_label.show()
             self._content_widget.show()
+            self.title_label.show()
+            self.toggle_button.setText("◀")
+            self.toggle_button.setToolTip("Collapse sidebar")
 
-        self._animation.setStartValue(start_width)
-        self._animation.setEndValue(end_width)
-        self._animation.start()
+        if emit_signal:
+            self.state_changed.emit(self._collapsed)
 
     def _create_projects_section(self) -> QWidget:
         """Create the projects section with list and new button."""
@@ -378,3 +375,23 @@ class ProjectSidebar(QWidget):
     def sizeHint(self) -> QSize:
         """Provide a reasonable default size for the sidebar."""
         return QSize(280, 600)
+
+    @property
+    def expanded_width(self) -> int:
+        """Width that should be restored when the sidebar is expanded."""
+        return self._expanded_width
+
+    @expanded_width.setter
+    def expanded_width(self, width: int) -> None:
+        """Persist the width that should be used the next time the sidebar expands."""
+        width = max(int(width), self._collapsed_width)
+        self._expanded_width = width
+
+    @property
+    def collapsed_width(self) -> int:
+        """Return the minimal width when collapsed."""
+        return self._collapsed_width
+
+    def is_collapsed(self) -> bool:
+        """Indicate whether the sidebar is currently collapsed."""
+        return self._collapsed
