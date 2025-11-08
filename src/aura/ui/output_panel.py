@@ -40,8 +40,9 @@ class OutputPanel(QWidget):
 
         # Set font with configured size for better readability
         font = QFont(config.FONT_FAMILY)
-        font.setPointSize(config.FONT_SIZE_OUTPUT)
+        font.setPixelSize(config.FONT_SIZE_OUTPUT)
         self._text_edit.setFont(font)
+        self._text_edit.document().setDefaultFont(font)
 
         # Custom scrollbar styling
         self._text_edit.setStyleSheet(
@@ -325,13 +326,13 @@ AI-Powered Development Assistant
     def _build_plain_paragraph(self, text: str, color: str, font_size: Optional[int]) -> str:
         """Return HTML for standard paragraphs."""
         escaped = html.escape(text).replace("\n", "<br>")
+        resolved_font_size = font_size if font_size is not None else config.FONT_SIZE_OUTPUT
         style = [
             f"color: {color}",
             f"margin: {config.OUTPUT_BLOCK_SPACING_PX}px 0",
             f"line-height: {config.LINE_HEIGHT}",
         ]
-        if font_size is not None:
-            style.append(f"font-size: {font_size}px")
+        style.append(f"font-size: {resolved_font_size}px")
         styles = "; ".join(style)
         return f'<div style="{styles}">{escaped}</div>'
 
@@ -367,12 +368,12 @@ AI-Powered Development Assistant
             cleaned = re.sub(r"^(\d+[.)]|[-*•])\s+", "", line)
             cleaned_items.append(f"<li>{html.escape(cleaned)}</li>")
         tag = "ol" if ordered else "ul"
-        return (
-            f'<{tag} style="margin:{config.OUTPUT_BLOCK_SPACING_PX}px 0 '
-            f'{config.OUTPUT_BLOCK_SPACING_PX}px 22px; color:{config.COLORS.text};'
-            ' padding-left:12px;">'
-            f'{"".join(cleaned_items)}</{tag}>'
+        list_style = (
+            f"margin:{config.OUTPUT_BLOCK_SPACING_PX}px 0 "
+            f"{config.OUTPUT_BLOCK_SPACING_PX}px 22px; color:{config.COLORS.text}; "
+            f"font-size:{config.FONT_SIZE_OUTPUT}px; padding-left:12px;"
         )
+        return f'<{tag} style="{list_style}">{"".join(cleaned_items)}</{tag}>'
 
     def _is_header_line(self, text: str) -> bool:
         """Determine whether a paragraph looks like a section header."""
@@ -420,7 +421,8 @@ AI-Powered Development Assistant
             f' border-radius:6px; padding:{config.CODE_BLOCK_PADDING_PX}px;'
             " font-family: 'JetBrains Mono','Consolas',monospace; margin:"
             f'{config.OUTPUT_BLOCK_SPACING_PX}px 0; white-space:normal;">'
-            f'<pre style="margin:0; white-space:pre-wrap; color:{config.COLORS.text};">'
+            f'<pre style="margin:0; white-space:pre-wrap; color:{config.COLORS.text};'
+            f' font-size:{config.FONT_SIZE_OUTPUT - 1}px;">'
             f"{highlighted}</pre></div>"
         )
 
@@ -493,7 +495,7 @@ AI-Powered Development Assistant
         safe_text = html.escape(style["text"])
         return (
             '<div style="display:flex; font-family:\'JetBrains Mono\',\'Consolas\',monospace;'
-            " font-size:13px; white-space:pre; border-bottom:1px solid rgba(255,255,255,0.03);"
+            f" font-size:{config.FONT_SIZE_OUTPUT - 1}px; white-space:pre; border-bottom:1px solid rgba(255,255,255,0.03);"
             f' background:{style["background"]}; color:{style["color"]}; font-weight:{style["weight"]};">'
             f'<div style="width:34px; padding:4px 0; text-align:center;'
             f' background:{style["gutter_bg"]}; color:{style["glyph_color"]};">{safe_glyph}</div>'

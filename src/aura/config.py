@@ -64,7 +64,7 @@ COLORS = ColorPalette(
 ICONS = Icons()
 
 FONT_FAMILY: str = "Cascadia Code, JetBrains Mono, Consolas, monospace"
-FONT_SIZE_OUTPUT: int = 14  # Increased from 13 for better readability
+FONT_SIZE_OUTPUT: int = 13  # Default output panel font size
 FONT_SIZE_INPUT: int = 14  # Input field font size
 FONT_SIZE_HEADER: int = 16
 OUTPUT_HEADER_FONT_SIZE: int = 15
