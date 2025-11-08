@@ -23,7 +23,12 @@ import os
 from aura import config
 from aura.state import AppState
 from aura.utils.agent_finder import AgentInfo, find_cli_agents, validate_agent
-from aura.utils.model_discovery import discover_claude_models, discover_gemini_models, discover_ollama_models
+from aura.utils.model_discovery import (
+    ModelInfo,
+    discover_claude_models,
+    discover_gemini_models,
+    discover_ollama_models,
+)
 from aura.utils.settings import save_settings
 
 
@@ -332,10 +337,93 @@ class AgentSettingsDialog(QDialog):
             self.specialist_model_combo.setCurrentIndex(0)
 
     def _update_model_combo(self, combo: QComboBox, models: list, error_message: str) -> None:
-        """Helper to populate a model combo box."""
+        """Populate the supplied combo box with the discovered models."""
         current_selection = combo.currentData()
-        combo.clear()
-...
+        if not current_selection:
+            stripped_text = combo.currentText().strip()
+            current_selection = stripped_text or None
+
+        if not current_selection:
+            if combo is self.gemini_model_combo:
+                current_selection = self.app_state.analyst_model
+            elif combo is self.claude_model_combo:
+                current_selection = self.app_state.executor_model
+            elif combo is self.specialist_model_combo:
+                current_selection = self.app_state.specialist_model
+
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+
+            if not models:
+                combo.addItem(error_message, None)
+                combo.setItemData(0, error_message, Qt.ItemDataRole.ToolTipRole)
+                combo.setEnabled(False)
+                combo.setCurrentIndex(0)
+                return
+
+            combo.setEnabled(True)
+            for model in models:
+                model_id = ""
+                display_text = ""
+                tooltip_text: str | None = None
+
+                if isinstance(model, ModelInfo):
+                    model_id = model.model_id
+                    display_text = model.display_name or model.model_id
+                    tooltip_text = model.description
+                elif isinstance(model, dict):
+                    model_id = str(
+                        model.get("model_id")
+                        or model.get("id")
+                        or model.get("name")
+                        or model.get("value")
+                        or ""
+                    ).strip()
+                    display_text = (
+                        model.get("display_name")
+                        or model.get("name")
+                        or model.get("title")
+                        or model_id
+                    )
+                    tooltip_text = model.get("description")
+                else:
+                    model_id = str(model).strip()
+                    display_text = model_id
+
+                if not model_id:
+                    continue
+
+                item_index = combo.count()
+                combo.addItem(display_text, model_id)
+                if tooltip_text:
+                    combo.setItemData(item_index, tooltip_text, Qt.ItemDataRole.ToolTipRole)
+
+            if combo.count() == 0:
+                combo.addItem(error_message, None)
+                combo.setItemData(0, error_message, Qt.ItemDataRole.ToolTipRole)
+                combo.setEnabled(False)
+                combo.setCurrentIndex(0)
+                return
+
+            target_index = -1
+            if current_selection:
+                target_index = combo.findData(current_selection)
+                if target_index == -1 and isinstance(current_selection, str):
+                    target_index = combo.findText(current_selection)
+
+            combo.setCurrentIndex(target_index if target_index != -1 else 0)
+        finally:
+            combo.blockSignals(False)
+
+    def _on_gemini_model_selected(self, text: str) -> None:
+        """Handle selection of a Gemini analyst model."""
+        model_id = self.gemini_model_combo.currentData()
+        if not model_id:
+            model_id = text.strip()
+        if model_id:
+            self.app_state.set_analyst_model(model_id)
+
     def _on_claude_model_selected(self, text: str) -> None:
         """Handle selection of a Claude model."""
         model_id = self.claude_model_combo.currentData()

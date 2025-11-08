@@ -41,19 +41,21 @@ def get_git_status() -> str:
     return result.stdout.strip() or "clean"
 
 
-def git_commit(message: str) -> str:
+def git_commit(message: str = "") -> str:
     """Commit all changes with the given message.
 
+    If message is not provided or is empty, a specialized local AI will automatically
+    generate a conventional commit message based on the staged changes.
+
     Args:
-        message: Commit message
+        message: Commit message (optional). If omitted, auto-generates using local AI.
 
     Returns:
         Success message or error message
     """
-    LOGGER.info("🔧 TOOL CALLED: git_commit(%s)", message)
-    if not message or not message.strip():
-        return "Error: commit message cannot be empty"
+    LOGGER.info("🔧 TOOL CALLED: git_commit(%s)", message or "(auto-generate)")
 
+    # Stage all changes first
     add_result = subprocess.run(
         ["git", "add", "."],
         cwd=os.getcwd(),
@@ -65,6 +67,39 @@ def git_commit(message: str) -> str:
         error = add_result.stderr.strip() or "git add failed"
         LOGGER.error("git add failed: %s", error)
         return f"Error staging files: {error}"
+
+    # Auto-generate message if not provided
+    if not message or not message.strip():
+        LOGGER.info("No commit message provided; auto-generating via local AI...")
+
+        # Get the staged diff
+        diff_result = subprocess.run(
+            ["git", "diff", "--staged"],
+            cwd=os.getcwd(),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        if diff_result.returncode != 0:
+            error = diff_result.stderr.strip() or "git diff failed"
+            LOGGER.error("git diff --staged failed: %s", error)
+            return f"Error getting staged changes: {error}"
+
+        staged_diff = diff_result.stdout.strip()
+        if not staged_diff:
+            return "Error: No staged changes to commit"
+
+        # Import here to avoid circular dependency
+        from aura.tools.local_agent_tools import generate_commit_message
+
+        message = generate_commit_message(staged_diff)
+
+        # Check if generation failed
+        if message.startswith("Error:"):
+            return message
+
+        LOGGER.info("Auto-generated commit message: %s", message[:100])
 
     commit_result = subprocess.run(
         ["git", "commit", "-m", message.strip()],

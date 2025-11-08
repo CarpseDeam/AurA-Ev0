@@ -106,7 +106,11 @@ class AnalystAgentService:
                     contents=user_request,
                     config=request_config,
                 )
-                final_text = fallback_response.text or ""
+                # Use robust text extraction
+                final_text = getattr(fallback_response, "text", "")
+                if not final_text:
+                    final_text = self._extract_text_from_parts(fallback_response)
+
                 streamed_any = self._emit_function_calls(
                     fallback_response,
                     on_chunk,
@@ -114,9 +118,10 @@ class AnalystAgentService:
                 )
                 duration = time.perf_counter() - started
                 LOGGER.info(
-                    "Analyst analysis completed (fallback) | duration=%.2fs | streamed=%s",
+                    "Analyst analysis completed (fallback) | duration=%.2fs | streamed=%s | text_length=%d",
                     duration,
                     streamed_any,
+                    len(final_text),
                 )
                 return final_text
 
@@ -137,15 +142,25 @@ class AnalystAgentService:
                     collected_parts.append(addition)
 
             final_text = "".join(collected_parts) or aggregated_text
+
+            # Last resort: try to get text from the stream object itself
             if not final_text and hasattr(stream, "text"):
                 final_text = getattr(stream, "text") or ""
 
             duration = time.perf_counter() - started
             LOGGER.info(
-                "Analyst analysis completed | duration=%.2fs | streamed=%s",
+                "Analyst analysis completed | duration=%.2fs | streamed=%s | text_length=%d",
                 duration,
                 streamed_any,
+                len(final_text),
             )
+
+            if not final_text:
+                LOGGER.warning(
+                    "Analyst returned empty text despite successful execution. "
+                    "This may indicate a response parsing issue."
+                )
+
             return final_text
 
         except Exception as exc:  # noqa: BLE001
@@ -165,11 +180,23 @@ class AnalystAgentService:
         chunk: types.GenerateContentResponse,
         aggregated_text: str,
     ) -> tuple[str, str]:
-        """Return the new text produced by this chunk."""
-        text = getattr(chunk, "text", "") or ""
+        """Return the new text produced by this chunk.
+
+        This method robustly extracts text from API responses, even when they
+        contain complex multi-part content (e.g., after tool calls).
+        """
+        # Try the simple .text property first (fast path)
+        text = getattr(chunk, "text", "")
+
+        # If that didn't work, manually extract from all text parts
+        if not text:
+            text = AnalystAgentService._extract_text_from_parts(chunk)
+
+        # Still no text? Return early
         if not text:
             return "", aggregated_text
 
+        # Handle incremental streaming logic
         if aggregated_text and aggregated_text.startswith(text):
             return "", aggregated_text
 
@@ -178,6 +205,49 @@ class AnalystAgentService:
             return addition, text
 
         return text, aggregated_text + text
+
+    @staticmethod
+    def _extract_text_from_parts(chunk: types.GenerateContentResponse) -> str:
+        """Extract text from all text parts in a complex response.
+
+        When the API returns multi-part content (common after tool calls),
+        the .text property may be empty. This method manually walks through
+        all parts to extract text content.
+        """
+        text_parts = []
+
+        try:
+            # Access candidates array
+            candidates = getattr(chunk, "candidates", None)
+            if not candidates:
+                return ""
+
+            # Get the first candidate
+            candidate = candidates[0] if len(candidates) > 0 else None
+            if not candidate:
+                return ""
+
+            # Access the content within the candidate
+            content = getattr(candidate, "content", None)
+            if not content:
+                return ""
+
+            # Extract text from all parts
+            parts = getattr(content, "parts", None)
+            if not parts:
+                return ""
+
+            for part in parts:
+                # Each part might have a 'text' field
+                part_text = getattr(part, "text", None)
+                if part_text:
+                    text_parts.append(part_text)
+
+        except (AttributeError, IndexError, TypeError) as exc:
+            LOGGER.debug("Could not extract text from response parts: %s", exc)
+            return ""
+
+        return "".join(text_parts)
 
     def _emit_function_calls(
         self,

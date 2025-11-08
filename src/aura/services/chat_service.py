@@ -14,6 +14,7 @@ from google.genai import types
 from aura import config
 from aura.prompt import AURA_SYSTEM_PROMPT
 from aura.tools.git_tools import git_commit, git_diff, git_push, get_git_status
+from aura.tools.local_agent_tools import generate_commit_message
 from aura.tools.python_tools import (
     format_code,
     get_function_definitions,
@@ -72,6 +73,7 @@ class ChatService:
                     git_commit,
                     git_push,
                     git_diff,
+                    generate_commit_message,
                     find_definition,
                     find_usages,
                     get_imports,

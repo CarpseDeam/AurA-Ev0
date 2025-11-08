@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -296,7 +297,7 @@ class MainWindow(QMainWindow):
 
         # Add spacer to push badges to the right
         spacer = QWidget()
-        spacer.setSizePolicy(QWidget.SizePolicy.Expanding, QWidget.SizePolicy.Preferred)
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.toolbar.addWidget(spacer)
 
         # Add model status badges
