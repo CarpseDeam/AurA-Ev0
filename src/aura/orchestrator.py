@@ -21,8 +21,8 @@ from PySide6.QtCore import QObject, QThread, Signal
 from aura import config
 from aura.exceptions import AuraConfigurationError, AuraExecutionError
 from aura.services.chat_service import ChatService
-from aura.services.gemini_analyst_service import GeminiAnalystService
-from aura.services.claude_executor_service import ClaudeExecutorService
+from aura.services.analyst_agent_service import AnalystAgentService
+from aura.services.executor_agent_service import ExecutorAgentService
 from aura.services.local_summarizer_service import LocalSummarizerService
 from aura.state import AppState
 from aura.tools.tool_manager import ToolManager
@@ -108,13 +108,13 @@ class _TwoAgentWorker(QObject):
 
     def __init__(
         self,
-        gemini_analyst: GeminiAnalystService,
-        claude_executor: ClaudeExecutorService,
+        analyst_agent: AnalystAgentService,
+        executor_agent: ExecutorAgentService,
         goal: str,
     ) -> None:
         super().__init__()
-        self._gemini_analyst = gemini_analyst
-        self._claude_executor = claude_executor
+        self._analyst_agent = analyst_agent
+        self._executor_agent = executor_agent
         self._goal = goal
 
     def run(self) -> None:
@@ -127,7 +127,7 @@ class _TwoAgentWorker(QObject):
             self.chunk_emitted.emit(chunk)
 
         try:
-            engineered_prompt = self._gemini_analyst.analyze_and_plan(
+            engineered_prompt = self._analyst_agent.analyze_and_plan(
                 self._goal, on_chunk=_on_chunk
             )
 
@@ -136,7 +136,7 @@ class _TwoAgentWorker(QObject):
                 self.failed.emit(error_msg)
                 return
 
-            result = self._claude_executor.execute_prompt(
+            result = self._executor_agent.execute_prompt(
                 engineered_prompt, on_chunk=_on_chunk
             )
 
@@ -171,8 +171,8 @@ class Orchestrator(QObject):
         app_state: AppState,
         *,
         api_key: str | None = None,
-        gemini_api_key: str | None = None,
-        claude_api_key: str | None = None,
+        analyst_api_key: str | None = None,
+        executor_api_key: str | None = None,
         chat_service: ChatService | None = None,
         use_background_thread: bool = True,
         parent: QObject | None = None,
@@ -204,37 +204,37 @@ class Orchestrator(QObject):
         else:
             LOGGER.debug("Local summarizer endpoint not configured; history summarization disabled.")
 
-        effective_gemini_key = gemini_api_key or api_key
-        effective_claude_key = claude_api_key
+        effective_analyst_key = analyst_api_key or api_key
+        effective_executor_key = executor_api_key
 
         if chat_service is not None:
             if hasattr(chat_service, "tool_manager"):
                 chat_service.tool_manager = self._tool_manager
             self._chat_service = chat_service
         else:
-            if not effective_gemini_key:
+            if not effective_analyst_key:
                 raise AuraConfigurationError(
-                    "Gemini API key is required to initialize the chat service.",
+                    "Analyst API key (GEMINI_API_KEY) is required to initialize the chat service.",
                     context={"env_var": "GEMINI_API_KEY"},
                 )
             self._chat_service = ChatService(
-                api_key=effective_gemini_key,
+                api_key=effective_analyst_key,
                 tool_manager=self._tool_manager,
             )
 
-        self._gemini_analyst: GeminiAnalystService | None = None
-        self._claude_executor: ClaudeExecutorService | None = None
+        self._analyst_agent: AnalystAgentService | None = None
+        self._executor_agent: ExecutorAgentService | None = None
 
-        if effective_gemini_key and effective_claude_key:
-            self._gemini_analyst = GeminiAnalystService(
-                api_key=effective_gemini_key,
+        if effective_analyst_key and effective_executor_key:
+            self._analyst_agent = AnalystAgentService(
+                api_key=effective_analyst_key,
                 tool_manager=self._tool_manager,
-                model_name=self.app_state.selected_gemini_model,
+                model_name=self.app_state.analyst_model,
             )
-            self._claude_executor = ClaudeExecutorService(
-                api_key=effective_claude_key,
+            self._executor_agent = ExecutorAgentService(
+                api_key=effective_executor_key,
                 tool_manager=self._tool_manager,
-                model_name=self.app_state.selected_claude_model,
+                model_name=self.app_state.executor_model,
             )
 
     def execute_goal(self, goal: str) -> None:
@@ -267,7 +267,7 @@ class Orchestrator(QObject):
         self.planning_started.emit()
         self.session_started.emit(0, session)
 
-        if self._gemini_analyst and self._claude_executor:
+        if self._analyst_agent and self._executor_agent:
             self.progress_update.emit("⋯ Analyzing with Aura Chat...")
             if self._use_background_thread:
                 self._start_two_agent_execution(session, sanitized)
@@ -297,10 +297,10 @@ class Orchestrator(QObject):
         self._tool_manager = ToolManager(str(self._working_dir))
         if hasattr(self._chat_service, "tool_manager"):
             self._chat_service.tool_manager = self._tool_manager
-        if self._gemini_analyst:
-            self._gemini_analyst.tool_manager = self._tool_manager
-        if self._claude_executor:
-            self._claude_executor.tool_manager = self._tool_manager
+        if self._analyst_agent:
+            self._analyst_agent.tool_manager = self._tool_manager
+        if self._executor_agent:
+            self._executor_agent.tool_manager = self._tool_manager
 
     def reset_history(self) -> None:
         """Clear the conversation history."""
@@ -324,8 +324,8 @@ class Orchestrator(QObject):
         """Execute two-agent flow on a background QThread."""
         self._thread = QThread(self)
         self._worker = _TwoAgentWorker(
-            self._gemini_analyst,
-            self._claude_executor,
+            self._analyst_agent,
+            self._executor_agent,
             goal,
         )
         self._worker.moveToThread(self._thread)
@@ -353,7 +353,7 @@ class Orchestrator(QObject):
             self.session_output.emit(chunk)
 
         try:
-            engineered_prompt = self._gemini_analyst.analyze_and_plan(
+            engineered_prompt = self._analyst_agent.analyze_and_plan(
                 goal, on_chunk=_on_chunk
             )
 
@@ -368,9 +368,9 @@ class Orchestrator(QObject):
                 self._finalize_conversation(session, outcome)
                 return
 
-            self.progress_update.emit("⋯ Claude executor - executing prompt...")
+            self.progress_update.emit("⋯ Executor agent - executing prompt...")
 
-            result = self._claude_executor.execute_prompt(
+            result = self._executor_agent.execute_prompt(
                 engineered_prompt, on_chunk=_on_chunk
             )
 
@@ -439,7 +439,7 @@ class Orchestrator(QObject):
             self._finalize_conversation(session, outcome)
         except Exception as exc:
             error = AuraExecutionError(
-                "Unable to contact Gemini. Verify GEMINI_API_KEY and your connection, then try again.",
+                "Unable to contact the analyst agent. Verify GEMINI_API_KEY and your connection, then try again.",
                 context={"detail": str(exc)},
             )
             LOGGER.exception("Conversation execution failed")
@@ -488,7 +488,7 @@ class Orchestrator(QObject):
         LOGGER.error("Conversation worker failed: %s", message)
         self.error_occurred.emit(
             message
-            or "Unable to contact Gemini. Verify GEMINI_API_KEY and your connection, then try again."
+            or "Unable to contact the analyst agent. Verify GEMINI_API_KEY and your connection, then try again."
         )
         self.all_sessions_complete.emit()
         self.progress_update.emit("Conversation failed")
@@ -672,3 +672,4 @@ class Orchestrator(QObject):
         except Exception as e:
             LOGGER.error(f"Failed to persist messages to database: {e}")
             self.error_occurred.emit("Warning: Failed to save conversation history. Your responses will not persist.")
+

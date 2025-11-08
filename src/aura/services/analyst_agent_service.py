@@ -1,4 +1,4 @@
-"""Gemini analyst service for analyzing requests and building prompts."""
+"""Analyst agent service for analyzing requests and building prompts."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from google.genai import types
 
 from aura.prompts import GEMINI_ANALYST_PROMPT
 from aura.tools.git_tools import get_git_status, git_diff
+from aura.tools.local_agent_tools import generate_commit_message
 from aura.tools.python_tools import (
     format_code,
     get_function_definitions,
@@ -27,11 +28,12 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
-class GeminiAnalystService:
+class AnalystAgentService:
     """Analyzes requests and builds comprehensive prompts for the executor.
 
-    This service uses Gemini 2.5 Pro with read-only tools to gather context,
-    understand patterns, and engineer detailed prompts for Claude to execute.
+    This service uses the configured analyst provider with read-only tools to
+    gather context, understand patterns, and engineer detailed prompts for the
+    executor to carry out.
     """
 
     api_key: str
@@ -40,7 +42,7 @@ class GeminiAnalystService:
     _client: genai.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Initialize the Gemini client."""
+        """Initialize the provider client."""
         self._client = genai.Client(api_key=self.api_key)
 
     def analyze_and_plan(
@@ -55,12 +57,12 @@ class GeminiAnalystService:
             on_chunk: Optional callback for streaming output
 
         Returns:
-            Comprehensive engineered prompt for Claude executor
+            Comprehensive engineered prompt for the executor agent
         """
         started = time.perf_counter()
         prompt_length = len(user_request or "")
         LOGGER.info(
-            "Gemini analysis started | model=%s | prompt_chars=%d | streaming=%s",
+            "Analyst analysis started | model=%s | prompt_chars=%d | streaming=%s",
             self.model_name,
             prompt_length,
             bool(on_chunk),
@@ -82,6 +84,7 @@ class GeminiAnalystService:
                     run_tests,
                     lint_code,
                     format_code,
+                    generate_commit_message,
                 ],
                 system_instruction=GEMINI_ANALYST_PROMPT,
             )
@@ -111,7 +114,7 @@ class GeminiAnalystService:
                 )
                 duration = time.perf_counter() - started
                 LOGGER.info(
-                    "Gemini analysis completed (fallback) | duration=%.2fs | streamed=%s",
+                    "Analyst analysis completed (fallback) | duration=%.2fs | streamed=%s",
                     duration,
                     streamed_any,
                 )
@@ -139,7 +142,7 @@ class GeminiAnalystService:
 
             duration = time.perf_counter() - started
             LOGGER.info(
-                "Gemini analysis completed | duration=%.2fs | streamed=%s",
+                "Analyst analysis completed | duration=%.2fs | streamed=%s",
                 duration,
                 streamed_any,
             )
@@ -148,13 +151,13 @@ class GeminiAnalystService:
         except Exception as exc:  # noqa: BLE001
             duration = time.perf_counter() - started
             LOGGER.exception(
-                "Gemini analysis failed | duration=%.2fs | prompt_preview=%s",
+                "Analyst analysis failed | duration=%.2fs | prompt_preview=%s",
                 duration,
                 (user_request or "")[:80],
             )
             return (
-                "Error: Unable to reach Gemini. Please verify GEMINI_API_KEY "
-                "and network connectivity."
+                "Error: Unable to reach the analyst provider. Please verify "
+                "GEMINI_API_KEY and network connectivity."
             )
 
     @staticmethod
@@ -197,7 +200,7 @@ class GeminiAnalystService:
             seen_calls.add(signature)
             log_preview = args_json if len(args_json) <= 240 else f"{args_json[:237]}..."
             LOGGER.debug(
-                "Gemini tool call | name=%s | args=%s",
+                "Analyst tool call | name=%s | args=%s",
                 name,
                 log_preview,
             )

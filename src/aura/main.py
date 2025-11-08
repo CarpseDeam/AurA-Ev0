@@ -111,8 +111,9 @@ class ApplicationController:
 
         # Load settings and apply them to the AppState
         settings = load_settings()
-        self.app_state.set_gemini_model(settings.get("gemini_model", "gemini-2.5-pro"))
-        self.app_state.set_claude_model(settings.get("claude_model", "claude-sonnet-4-5-20250929"))
+        self.app_state.set_analyst_model(settings.get("analyst_model", "gemini-2.5-pro"))
+        self.app_state.set_executor_model(settings.get("executor_model", "claude-sonnet-4-5-20250929"))
+        self.app_state.set_specialist_model(settings.get("specialist_model", "phi-3-mini"))
         
         selected_agent = settings.get("selected_agent", config.DEFAULT_AGENT)
         agent_executable = settings.get("agent_executable")
@@ -124,13 +125,13 @@ class ApplicationController:
         orchestrator_warning: str | None = None
 
         try:
-            gemini_key = self._require_gemini_api_key()
-            claude_key = self._get_claude_api_key()
+            analyst_key = self._require_analyst_api_key()
+            executor_key = self._get_executor_api_key()
 
             self.orchestrator = Orchestrator(
                 app_state=self.app_state,
-                gemini_api_key=gemini_key,
-                claude_api_key=claude_key,
+                analyst_api_key=analyst_key,
+                executor_api_key=executor_key,
             )
             self.chat_service = self.orchestrator.chat_service
         except AuraConfigurationError as exc:
@@ -194,35 +195,35 @@ class ApplicationController:
             logging.getLogger("aura").error("Failed to update working directory: %s", exc)
             self.main_window._on_progress_update("Invalid working directory")
 
-    def _require_gemini_api_key(self) -> str:
-        """Return a validated Gemini API key.
+    def _require_analyst_api_key(self) -> str:
+        """Return a validated analyst API key.
 
         Raises:
             AuraConfigurationError: If GEMINI_API_KEY is not set
 
         Returns:
-            The Gemini API key
+            The analyst API key
         """
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
             raise AuraConfigurationError(
-                "Gemini API key required for Aura Chat analysis. "
+                "Analyst API key required for Aura Chat analysis. "
                 "Set GEMINI_API_KEY and restart Aura.",
                 context={"env_var": "GEMINI_API_KEY"},
             )
         return api_key
 
-    def _get_claude_api_key(self) -> str | None:
-        """Return Claude API key if available.
+    def _get_executor_api_key(self) -> str | None:
+        """Return executor API key if available.
 
         Returns:
-            The Claude API key or None if not set. When None, Aura falls
-            back to single-agent mode using only Gemini.
+            The executor API key or None if not set. When None, Aura falls
+            back to single-agent mode using only the analyst agent.
         """
         api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
         if not api_key:
             LOGGER.warning(
-                "ANTHROPIC_API_KEY not set. Running in single-agent mode (Gemini only). "
+                "ANTHROPIC_API_KEY not set. Running in single-agent mode (analyst only). "
                 "For two-agent mode, set ANTHROPIC_API_KEY for code execution."
             )
         return api_key or None
@@ -314,3 +315,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

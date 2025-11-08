@@ -1,4 +1,4 @@
-"""Claude executor service for executing prompts and creating files."""
+"""Executor agent service for executing prompts and creating files."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
-class ClaudeExecutorService:
-    """Executes prompts using Claude Sonnet 4 with write-only tools.
+class ExecutorAgentService:
+    """Executes prompts using the configured executor model with write-only tools.
 
     This service receives comprehensive prompts from the analyst and
     executes them reliably using file creation and modification tools.
@@ -35,7 +35,7 @@ class ClaudeExecutorService:
         engineered_prompt: str,
         on_chunk: Optional[Callable[[str], None]] = None,
     ) -> str:
-        """Execute an engineered prompt with Claude.
+        """Execute an engineered prompt with the executor provider.
 
         Args:
             engineered_prompt: Comprehensive prompt from analyst
@@ -47,7 +47,7 @@ class ClaudeExecutorService:
         started = time.perf_counter()
         prompt_length = len(engineered_prompt or "")
         LOGGER.info(
-            "Claude execution started | model=%s | prompt_chars=%d | streaming=%s",
+            "Executor execution started | model=%s | prompt_chars=%d | streaming=%s",
             self.model_name,
             prompt_length,
             bool(on_chunk),
@@ -60,7 +60,7 @@ class ClaudeExecutorService:
             # Initialize conversation with user's prompt
             messages = [{"role": "user", "content": engineered_prompt}]
 
-            # Tool execution loop - continues until Claude stops requesting tools
+            # Tool execution loop - continues until the executor stops requesting tools
             while True:
                 response = client.messages.create(
                     model=self.model_name,
@@ -75,7 +75,7 @@ class ClaudeExecutorService:
 
                 # Check stop reason
                 if response.stop_reason == "tool_use":
-                    # Claude wants to use tools - extract and execute them
+                    # Executor agent wants to use tools - extract and execute them
                     tool_results = []
 
                     for block in response.content:
@@ -92,7 +92,7 @@ class ClaudeExecutorService:
                             # Execute the tool
                             result = self._execute_tool(tool_name, tool_input)
 
-                            # Build tool result for Claude
+                            # Build tool result for the executor provider
                             tool_results.append(
                                 {
                                     "type": "tool_result",
@@ -104,10 +104,10 @@ class ClaudeExecutorService:
                     # Add tool results to conversation
                     messages.append({"role": "user", "content": tool_results})
 
-                    # Continue loop - Claude will see results and respond
+                    # Continue loop - the executor will see results and respond
 
                 elif response.stop_reason in ("end_turn", "stop_sequence", None):
-                    # Claude finished - extract final text
+                    # Executor finished - extract final text
                     final_text = ""
                     for block in response.content:
                         if block.type == "text":
@@ -115,7 +115,7 @@ class ClaudeExecutorService:
 
                     duration = time.perf_counter() - started
                     LOGGER.info(
-                        "Claude execution completed | duration=%.2fs | response_chars=%d",
+                        "Executor execution completed | duration=%.2fs | response_chars=%d",
                         duration,
                         len(final_text),
                     )
@@ -138,18 +138,18 @@ class ClaudeExecutorService:
         except anthropic.APIError as exc:
             duration = time.perf_counter() - started
             LOGGER.exception(
-                "Claude execution failed | duration=%.2fs | error=%s",
+                "Executor execution failed | duration=%.2fs | error=%s",
                 duration,
                 str(exc),
             )
             return (
-                f"Error: Unable to reach Claude API. Please verify ANTHROPIC_API_KEY "
+                f"Error: Unable to reach the executor provider. Please verify ANTHROPIC_API_KEY "
                 f"and network connectivity. Detail: {exc}"
             )
         except Exception as exc:  # noqa: BLE001
             duration = time.perf_counter() - started
             LOGGER.exception(
-                "Claude execution failed unexpectedly | duration=%.2fs",
+                "Executor execution failed unexpectedly | duration=%.2fs",
                 duration,
             )
             return f"Error: Execution failed: {exc}"

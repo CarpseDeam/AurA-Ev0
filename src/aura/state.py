@@ -11,6 +11,13 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
+_APP_STATE: "AppState | None" = None
+
+
+def get_app_state() -> "AppState | None":
+    """Return the global AppState instance if one has been created."""
+    return _APP_STATE
+
 
 class AppState(QObject):
     """Centralized application state with signal-based notifications.
@@ -24,8 +31,9 @@ class AppState(QObject):
     selected_agent_changed = Signal(str)
     agent_path_changed = Signal(str)
     status_changed = Signal(str, str)  # message, color
-    gemini_model_changed = Signal(str)
-    claude_model_changed = Signal(str)
+    analyst_model_changed = Signal(str)
+    executor_model_changed = Signal(str)
+    specialist_model_changed = Signal(str)
     local_model_endpoint_changed = Signal(str)
     current_project_changed = Signal(object)  # project_id (int or None)
     current_conversation_changed = Signal(object)  # conversation_id (int or None)
@@ -38,11 +46,14 @@ class AppState(QObject):
         self._agent_path: str = ""
         self._status_message: str = "Ready"
         self._status_color: str = "#ffffff"
-        self._selected_gemini_model: str = "gemini-1.5-pro-latest"
-        self._selected_claude_model: str = "claude-3-sonnet-20240229"
+        self._analyst_model: str = "gemini-1.5-pro-latest"
+        self._executor_model: str = "claude-3-sonnet-20240229"
+        self._specialist_model: str = "phi-3-mini"
         self._local_model_endpoint: str = ""
         self._current_project_id: Optional[int] = None
         self._current_conversation_id: Optional[int] = None
+        global _APP_STATE
+        _APP_STATE = self
 
     @property
     def working_directory(self) -> str:
@@ -122,26 +133,37 @@ class AppState(QObject):
             self.status_changed.emit(message, color)
 
     @property
-    def selected_gemini_model(self) -> str:
-        """Get the selected Gemini model."""
-        return self._selected_gemini_model
+    def analyst_model(self) -> str:
+        """Get the selected analyst model."""
+        return self._analyst_model
 
-    def set_gemini_model(self, model_id: str) -> None:
-        """Set the selected Gemini model and emit change signal."""
-        if self._selected_gemini_model != model_id:
-            self._selected_gemini_model = model_id
-            self.gemini_model_changed.emit(model_id)
+    def set_analyst_model(self, model_id: str) -> None:
+        """Set the analyst model and emit change signal."""
+        if self._analyst_model != model_id:
+            self._analyst_model = model_id
+            self.analyst_model_changed.emit(model_id)
 
     @property
-    def selected_claude_model(self) -> str:
-        """Get the selected Claude model."""
-        return self._selected_claude_model
+    def executor_model(self) -> str:
+        """Get the selected executor model."""
+        return self._executor_model
 
-    def set_claude_model(self, model_id: str) -> None:
-        """Set the selected Claude model and emit change signal."""
-        if self._selected_claude_model != model_id:
-            self._selected_claude_model = model_id
-            self.claude_model_changed.emit(model_id)
+    def set_executor_model(self, model_id: str) -> None:
+        """Set the executor model and emit change signal."""
+        if self._executor_model != model_id:
+            self._executor_model = model_id
+            self.executor_model_changed.emit(model_id)
+
+    @property
+    def specialist_model(self) -> str:
+        """Get the specialist model used by local tools."""
+        return self._specialist_model
+
+    def set_specialist_model(self, model_name: str) -> None:
+        """Set the specialist model and emit change signal."""
+        if self._specialist_model != model_name:
+            self._specialist_model = model_name
+            self.specialist_model_changed.emit(model_name)
 
     @property
     def local_model_endpoint(self) -> str:

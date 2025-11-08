@@ -11,6 +11,7 @@ from .git_tools import (
     git_push,
     get_git_status,
 )
+from .local_agent_tools import generate_commit_message
 from .project_tools import (
     get_database_schema,
     get_project_dependencies,
@@ -64,4 +65,5 @@ __all__ = [
     "get_project_dependencies",
     "update_documentation",
     "get_database_schema",
+    "generate_commit_message",
 ]

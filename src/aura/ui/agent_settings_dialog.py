@@ -48,6 +48,10 @@ class AgentSettingsDialog(QDialog):
         self.gemini_refresh_button = QPushButton("Refresh Models", self)
         self.claude_model_combo = QComboBox(self)
         self.claude_refresh_button = QPushButton("Refresh Models", self)
+        self.specialist_model_combo = QComboBox(self)
+        self.specialist_model_combo.setEditable(True)
+        self.specialist_model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.specialist_model_combo.setCurrentText(self.app_state.specialist_model)
 
         self.close_button = QPushButton("Close", self)
         self._configure_dialog()
@@ -99,12 +103,16 @@ class AgentSettingsDialog(QDialog):
         gemini_layout = QHBoxLayout()
         gemini_layout.addWidget(self.gemini_model_combo)
         gemini_layout.addWidget(self.gemini_refresh_button)
-        model_layout.addRow("Gemini (Analyst) Model:", gemini_layout)
+        model_layout.addRow("Analyst Model:", gemini_layout)
 
         claude_layout = QHBoxLayout()
         claude_layout.addWidget(self.claude_model_combo)
         claude_layout.addWidget(self.claude_refresh_button)
-        model_layout.addRow("Claude (Executor) Model:", claude_layout)
+        model_layout.addRow("Executor Model:", claude_layout)
+
+        specialist_layout = QHBoxLayout()
+        specialist_layout.addWidget(self.specialist_model_combo)
+        model_layout.addRow("Specialist Model (Local):", specialist_layout)
 
         layout.addLayout(model_layout)
 
@@ -180,6 +188,7 @@ class AgentSettingsDialog(QDialog):
         self.claude_refresh_button.clicked.connect(self._refresh_claude_models)
         self.gemini_model_combo.currentTextChanged.connect(self._on_gemini_model_selected)
         self.claude_model_combo.currentTextChanged.connect(self._on_claude_model_selected)
+        self.specialist_model_combo.currentTextChanged.connect(self._on_specialist_model_selected)
 
     def refresh_agents(self) -> None:
         """Scan system for available agents."""
@@ -249,8 +258,9 @@ class AgentSettingsDialog(QDialog):
     def _save_settings(self) -> None:
         """Save current settings to disk."""
         settings = {
-            "gemini_model": self.app_state.gemini_model,
-            "claude_model": self.app_state.claude_model,
+            "analyst_model": self.app_state.analyst_model,
+            "executor_model": self.app_state.executor_model,
+            "specialist_model": self.app_state.specialist_model,
             "selected_agent": self.app_state.selected_agent,
             "agent_executable": self.app_state.agent_executable.get(self.app_state.selected_agent)
         }
@@ -330,14 +340,24 @@ class AgentSettingsDialog(QDialog):
     def _on_gemini_model_selected(self, text: str) -> None:
         """Handle selection of a Gemini model."""
         model_id = self.gemini_model_combo.currentData()
+        if not model_id:
+            model_id = text.strip()
         if model_id:
-            self.app_state.set_gemini_model(model_id)
+            self.app_state.set_analyst_model(model_id)
 
     def _on_claude_model_selected(self, text: str) -> None:
         """Handle selection of a Claude model."""
         model_id = self.claude_model_combo.currentData()
+        if not model_id:
+            model_id = text.strip()
         if model_id:
-            self.app_state.set_claude_model(model_id)
+            self.app_state.set_executor_model(model_id)
+
+    def _on_specialist_model_selected(self, text: str) -> None:
+        """Handle edits to the specialist model."""
+        model_id = text.strip()
+        if model_id:
+            self.app_state.set_specialist_model(model_id)
 
 
 __all__ = ["AgentSettingsDialog"]
