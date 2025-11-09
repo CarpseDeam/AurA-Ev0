@@ -7,6 +7,7 @@ import io
 import keyword
 import re
 import tokenize
+import uuid
 from typing import Optional
 
 from PySide6.QtGui import QFont, QTextCursor, QTextOption
@@ -288,18 +289,20 @@ AI-Powered Development Assistant
             groups: List of task groups to display
         """
         if not groups:
+            self._remove_task_list_html()
             return
 
         self._flush_stream_buffer()
         self._ensure_leading_break()
 
-        # Generate a unique container ID for this task list
-        import uuid
-        container_id = f"task-list-{uuid.uuid4()}"
-        self._task_list_container_id = container_id
+        if not self._task_list_container_id:
+            self._task_list_container_id = f"task-list-{uuid.uuid4()}"
+            html_content = self._build_task_list_html(groups, self._task_list_container_id)
+            self._append_html(html_content)
+            return
 
-        html_content = self._build_task_list_html(groups, container_id)
-        self._append_html(html_content)
+        html_content = self._build_task_list_html(groups, self._task_list_container_id)
+        self._replace_task_list_html(html_content)
 
     def update_task_status(self, task_id: str, status: TaskStatus) -> None:
         """Update the status of a specific task in real-time.
@@ -332,7 +335,8 @@ AI-Powered Development Assistant
         Returns:
             HTML string for the task list
         """
-        parts: list[str] = []
+        start_marker, end_marker = self._task_list_markers(container_id)
+        parts: list[str] = [start_marker]
         parts.append(
             f'<div id="{container_id}" class="task-list" style="'
             "font-family: 'Consolas', 'Monaco', monospace; "
@@ -344,6 +348,7 @@ AI-Powered Development Assistant
             parts.append(self._build_task_group_html(group))
 
         parts.append("</div>")
+        parts.append(end_marker)
         return "".join(parts)
 
     def _build_task_group_html(self, group: TaskGroup) -> str:
@@ -454,6 +459,60 @@ AI-Powered Development Assistant
             TaskStatus.FAILED: "#FF6B6B",
         }
         return colors.get(status, "#666666")
+
+    def _task_list_markers(self, container_id: str) -> tuple[str, str]:
+        """Return sentinel markers that help locate a rendered task list."""
+        return (
+            f"<!-- TASK_LIST::{container_id}::START -->",
+            f"<!-- TASK_LIST::{container_id}::END -->",
+        )
+
+    def _replace_task_list_html(self, html_content: str) -> None:
+        """Replace the previously rendered task list with updated HTML."""
+        if not self._task_list_container_id:
+            return
+        start_marker, end_marker = self._task_list_markers(self._task_list_container_id)
+        document = self._text_edit.document()
+        start_cursor = document.find(start_marker)
+        if start_cursor.isNull():
+            self._task_list_container_id = None
+            self._append_html(html_content)
+            return
+        end_cursor = document.find(end_marker, start_cursor)
+        if end_cursor.isNull():
+            self._task_list_container_id = None
+            self._append_html(html_content)
+            return
+        cursor = self._text_edit.textCursor()
+        cursor.setPosition(start_cursor.position())
+        cursor.setPosition(
+            end_cursor.position() + len(end_marker),
+            QTextCursor.MoveMode.KeepAnchor,
+        )
+        cursor.insertHtml(html_content)
+
+    def _remove_task_list_html(self) -> None:
+        """Remove the rendered task list entirely."""
+        if not self._task_list_container_id:
+            return
+        start_marker, end_marker = self._task_list_markers(self._task_list_container_id)
+        document = self._text_edit.document()
+        start_cursor = document.find(start_marker)
+        if start_cursor.isNull():
+            self._task_list_container_id = None
+            return
+        end_cursor = document.find(end_marker, start_cursor)
+        if end_cursor.isNull():
+            self._task_list_container_id = None
+            return
+        cursor = self._text_edit.textCursor()
+        cursor.setPosition(start_cursor.position())
+        cursor.setPosition(
+            end_cursor.position() + len(end_marker),
+            QTextCursor.MoveMode.KeepAnchor,
+        )
+        cursor.insertText("")
+        self._task_list_container_id = None
 
     def _render_formatted_block(
         self,
@@ -575,8 +634,14 @@ AI-Powered Development Assistant
         )
         return bullet_lines >= max(1, len(lines) // 2)
 
-    def _looks_like_code(self, text: str) -> bool:
+    @staticmethod
+    def _looks_like_code(text: str) -> bool:
         """Heuristically determine if the text resembles Python code."""
+        stripped = text.lstrip()
+        if stripped.startswith("<"):
+            # Treat markup (e.g., XML planning blueprints) as plain text.
+            return False
+
         lines = [line for line in text.splitlines() if line.strip()]
         if len(lines) < 2:
             return False

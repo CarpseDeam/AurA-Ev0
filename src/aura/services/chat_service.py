@@ -79,6 +79,7 @@ class ChatService:
                     get_imports,
                     self.tool_manager.create_file,
                     self.tool_manager.modify_file,
+                    self.tool_manager.replace_file_lines,
                     self.tool_manager.delete_file,
                 ],
                 system_instruction=AURA_SYSTEM_PROMPT,

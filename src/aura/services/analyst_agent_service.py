@@ -41,6 +41,7 @@ _FILE_TOOLS = {
     "create_file",
     "delete_file",
     "modify_file",
+    "replace_file_lines",
     "read_multiple_files",
     "read_project_file",
 }

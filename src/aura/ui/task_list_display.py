@@ -71,6 +71,7 @@ class TaskListDisplay:
         "read_multiple_files": "Read",
         "create_file": "Create",
         "modify_file": "Modify",
+        "replace_file_lines": "Modify",
         "delete_file": "Delete",
         "list_project_files": "List",
     }

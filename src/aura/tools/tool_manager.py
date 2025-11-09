@@ -66,6 +66,75 @@ class ToolManager:
             LOGGER.exception("Failed to modify file %s: %s", path, exc)
             return f"Error modifying '{path}': {exc}"
 
+    def replace_file_lines(
+        self,
+        path: str,
+        start_line: int,
+        end_line: int,
+        new_content: str,
+    ) -> str:
+        """Replace a block of lines using explicit line numbers."""
+        LOGGER.info(
+            "🔧 TOOL CALLED: replace_file_lines(%s, start=%s, end=%s)",
+            path,
+            start_line,
+            end_line,
+        )
+        try:
+            start = int(start_line)
+            end = int(end_line)
+        except (TypeError, ValueError) as exc:
+            LOGGER.warning("replace_file_lines invalid line numbers: %s", exc)
+            return "Error: start_line and end_line must be integers."
+
+        if start < 1 or end < start:
+            return "Error: start_line must be >= 1 and end_line must be >= start_line."
+
+        try:
+            target = self._resolve_path(path)
+            if not target.exists():
+                return f"Error: file '{path}' does not exist."
+
+            contents = target.read_text(encoding="utf-8")
+            lines = contents.splitlines(keepends=True)
+            total_lines = len(lines)
+            if end > total_lines:
+                return (
+                    f"Error: file '{path}' has only {total_lines} "
+                    f"line(s); cannot replace through line {end}."
+                )
+
+            start_index = start - 1
+            replaced_block = "".join(lines[start_index : end])
+            before = "".join(lines[:start_index])
+            after = "".join(lines[end:])
+
+            replacement = new_content or ""
+            updated_contents = before + replacement + after
+            target.write_text(updated_contents, encoding="utf-8")
+
+            replaced_lines = end - start + 1
+            message = (
+                f"Replaced lines {start}-{end} ({replaced_lines} line(s)) in '{path}'."
+            )
+            LOGGER.info(message)
+            if not replacement.endswith("\n") and replacement:
+                LOGGER.debug(
+                    "replace_file_lines inserted content without trailing newline for %s",
+                    path,
+                )
+            LOGGER.debug(
+                "replace_file_lines replaced block:\n%s\nwith:\n%s",
+                replaced_block,
+                replacement,
+            )
+            return message
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception(
+                "Failed to replace lines %s-%s in %s: %s", start_line, end_line, path, exc
+            )
+            return f"Error replacing lines {start_line}-{end_line} in '{path}': {exc}"
+
     def delete_file(self, path: str) -> str:
         """Delete a workspace file."""
         LOGGER.info("🔧 TOOL CALLED: delete_file(%s)", path)

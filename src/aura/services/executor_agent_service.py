@@ -274,6 +274,36 @@ class ExecutorAgentService:
                 },
             },
             {
+                "name": "replace_file_lines",
+                "description": (
+                    "Modify an existing file by replacing an explicit range of line numbers. "
+                    "Use this for refactors where providing precise line spans is easier "
+                    "than matching full original content."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative path to the file to modify",
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "description": "1-based line number where the replacement begins",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "description": "1-based line number where the replacement ends (inclusive)",
+                        },
+                        "new_content": {
+                            "type": "string",
+                            "description": "Replacement content for the specified line range",
+                        },
+                    },
+                    "required": ["path", "start_line", "end_line", "new_content"],
+                },
+            },
+            {
                 "name": "delete_file",
                 "description": (
                     "Delete a file from the workspace. Use with caution."
@@ -318,6 +348,43 @@ class ExecutorAgentService:
             diff_block = self._build_diff_block(path, old_content, new_content)
             result = self.tool_manager.modify_file(path, old_content, new_content)
             parts = [f"~ Modified {path}", result]
+            if diff_block:
+                parts.append(diff_block)
+            return "\n".join(parts)
+
+        elif tool_name == "replace_file_lines":
+            path = tool_input.get("path", "")
+            new_content = tool_input.get("new_content", "")
+            start_line = tool_input.get("start_line")
+            end_line = tool_input.get("end_line")
+            try:
+                start = int(start_line)
+                end = int(end_line)
+            except (TypeError, ValueError):
+                start = start_line
+                end = end_line
+
+            original = self.tool_manager.read_project_file(path)
+            diff_block = ""
+            if isinstance(original, str) and not original.startswith("Error"):
+                orig_lines = original.splitlines(keepends=True)
+                if (
+                    isinstance(start, int)
+                    and isinstance(end, int)
+                    and 0 < start <= len(orig_lines)
+                    and 0 < end <= len(orig_lines)
+                    and start <= end
+                ):
+                    slice_text = "".join(orig_lines[start - 1 : end])
+                    diff_block = self._build_diff_block(path, slice_text, new_content)
+
+            result = self.tool_manager.replace_file_lines(path, start_line, end_line, new_content)
+            line_desc = (
+                f"lines {start_line}-{end_line}"
+                if start_line is not None and end_line is not None
+                else "requested lines"
+            )
+            parts = [f"~ Modified {path} ({line_desc})", result]
             if diff_block:
                 parts.append(diff_block)
             return "\n".join(parts)
@@ -369,7 +436,7 @@ class ExecutorAgentService:
         tool_input: dict[str, Any] | None,
     ) -> None:
         """Emit FileOperation events for write tools."""
-        if tool_name not in {"create_file", "modify_file", "delete_file"}:
+        if tool_name not in {"create_file", "modify_file", "replace_file_lines", "delete_file"}:
             return
         if not tool_input:
             return
@@ -385,6 +452,11 @@ class ExecutorAgentService:
             old_len = len(tool_input.get("old_content", "") or "")
             new_len = len(tool_input.get("new_content", "") or "")
             details = {"old_length": old_len, "new_length": new_len}
+        elif tool_name == "replace_file_lines":
+            start = tool_input.get("start_line")
+            end = tool_input.get("end_line")
+            new_len = len(tool_input.get("new_content", "") or "")
+            details = {"start_line": start, "end_line": end, "new_length": new_len}
         self._event_bus.emit(
             FileOperation(
                 operation=tool_name,

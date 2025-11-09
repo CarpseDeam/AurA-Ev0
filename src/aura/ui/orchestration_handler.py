@@ -505,7 +505,7 @@ class OrchestrationHandler(QObject):
 
     def _render_file_tool_call(self, tool_name: str, args: Any) -> bool:
         """Render concise summaries for file create/modify/delete tools."""
-        if tool_name not in {"create_file", "modify_file", "delete_file"}:
+        if tool_name not in {"create_file", "modify_file", "replace_file_lines", "delete_file"}:
             return False
         if not isinstance(args, dict):
             return False
@@ -522,6 +522,16 @@ class OrchestrationHandler(QObject):
             if not diff_text:
                 fallback = args.get("diff") or args.get("patch")
                 diff_text = str(fallback or "")
+            if diff_text:
+                self._output_panel.display_edit_block(path, diff_text)
+            return True
+        if tool_name == "replace_file_lines":
+            diff_text = self._build_line_range_diff(
+                path,
+                args.get("start_line"),
+                args.get("end_line"),
+                args.get("new_content"),
+            )
             if diff_text:
                 self._output_panel.display_edit_block(path, diff_text)
             return True
@@ -610,7 +620,7 @@ class OrchestrationHandler(QObject):
                 meta = f"({line_count} lines)"
             elif size_label:
                 meta = f"({size_label})"
-        elif tool_name == "modify_file":
+        elif tool_name in {"modify_file", "replace_file_lines"}:
             action = "Modifying"
             icon = "✏️"
         elif tool_name == "delete_file":
@@ -692,6 +702,38 @@ class OrchestrationHandler(QObject):
                 lineterm="",
             )
         )
+        return "\n".join(diff_lines)
+
+    def _build_line_range_diff(
+        self,
+        path: str,
+        start_line: Any,
+        end_line: Any,
+        new_content: Any,
+    ) -> str:
+        """Return a pseudo-diff for replace_file_lines tool calls."""
+        content = new_content if isinstance(new_content, str) else str(new_content or "")
+        try:
+            start = int(start_line)
+            end = int(end_line)
+            if start < 1 or end < start:
+                raise ValueError
+        except Exception:
+            start = end = None
+
+        diff_lines: list[str] = []
+        if start is not None and end is not None:
+            span = end - start + 1
+            diff_lines.append(f"@@ {start},{span} @@")
+        header = f"# Replacing lines {start_line}-{end_line} in {path}" if start_line and end_line else ""
+        if header:
+            diff_lines.append(header)
+
+        if content:
+            for line in content.splitlines():
+                diff_lines.append(f"+{line}")
+        else:
+            diff_lines.append("- <content removed>")
         return "\n".join(diff_lines)
 
     @staticmethod
@@ -853,14 +895,16 @@ class OrchestrationHandler(QObject):
         verb_map = {
             "create_file": "Created",
             "modify_file": "Modified",
+            "replace_file_lines": "Modified",
             "delete_file": "Deleted",
             "read_project_file": "Read",
         }
         icon_map = {
-            "create_file": "??",
-            "modify_file": "??",
-            "delete_file": "???",
-            "read_project_file": "??",
+            "create_file": "🆕",
+            "modify_file": "✏️",
+            "replace_file_lines": "✏️",
+            "delete_file": "🗑️",
+            "read_project_file": "📖",
         }
         verb = verb_map.get(operation, operation.replace("_", " ").title())
         icon = icon_map.get(operation, "??")
