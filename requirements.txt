@@ -2,7 +2,7 @@
 PySide6>=6.7,<7
 
 # AI Integration
-google-generativeai>=0.8.0
+
 anthropic>=0.45.0
 ollama>=0.2.0
 httpx>=0.27.0
