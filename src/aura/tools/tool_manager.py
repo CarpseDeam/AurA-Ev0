@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import hashlib
 import json
 import logging
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -225,41 +227,56 @@ class ToolManager:
             LOGGER.exception("Failed to read file %s: %s", path, exc)
             return f"Error reading '{path}': {exc}"
 
-    def list_project_files(self, directory: str = ".", extension: str = ".py") -> list:
+    def list_project_files(self, directory: str = ".", extension: str = ".py") -> dict[str, Any]:
         """List files that match the provided extension within the workspace."""
-        LOGGER.info("🔧 TOOL CALLED: list_project_files(%s, %s)", directory, extension)
+        LOGGER.info("🔧 TOOL CALLED: list_project_files(directory=%s, extension=%s)", directory, extension)
+        response: dict[str, Any] = {
+            "directory": directory,
+            "extension": extension,
+            "files": [],
+            "count": 0,
+        }
         try:
             base = self._resolve_directory(directory)
             if not base.exists():
+                message = f"Directory does not exist: {directory}"
                 LOGGER.warning("list_project_files base missing: %s", base)
-                return []
+                response["error"] = message
+                return response
 
             self._ensure_gitignore_state()
             base_relative = self._relative_path(base)
             if self._is_path_ignored(base_relative, is_dir=True):
+                message = f"Directory '{directory}' is ignored by .gitignore rules."
                 LOGGER.info(
                     "list_project_files skipping %s because it is ignored by .gitignore",
                     base_relative or ".",
                 )
-                return []
+                response["error"] = message
+                return response
 
-            suffix = extension if extension.startswith(".") else f".{extension}"
-            LOGGER.debug(
-                "Scanning %s for *%s (workspace=%s)", base, suffix, self.workspace_dir
-            )
+            suffix = extension if not extension or extension.startswith(".") else f".{extension}"
+            LOGGER.debug("Scanning %s for *%s (workspace=%s)", base, suffix or "*", self.workspace_dir)
             files: list[str] = []
             for path in self._iter_workspace_files(base):
                 if suffix and path.suffix != suffix:
                     continue
                 files.append(self._relative_path(path))
 
+            files.sort()
+            response["files"] = files
+            response["count"] = len(files)
             LOGGER.info(
-                "list_project_files returning %d paths from %s", len(files), base
+                "list_project_files returning %d paths from %s (extension=%s)",
+                response["count"],
+                base,
+                suffix or "*",
             )
-            return sorted(files)
+            return response
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to list project files in %s: %s", directory, exc)
-            return [f"Error listing files in '{directory}': {exc}"]
+            response["error"] = f"Error listing files in '{directory}': {exc}"
+            return response
 
     def search_in_files(
         self,
@@ -372,6 +389,409 @@ class ToolManager:
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to read multiple files: %s", exc)
             return {"error": f"Failed to read files: {exc}"}
+
+    # ------------------------------------------------------------------ #
+    # Context analysis helpers
+    # ------------------------------------------------------------------ #
+    def get_project_structure(self, directory: str = ".", max_depth: int = 2) -> dict[str, Any]:
+        """Summarize the project layout for a given directory."""
+        LOGGER.info(
+            "🔧 TOOL CALLED: get_project_structure(directory=%s, max_depth=%s)",
+            directory,
+            max_depth,
+        )
+        summary: dict[str, Any] = {
+            "root": directory,
+            "directories": [],
+            "files": [],
+            "max_depth": max_depth,
+        }
+        try:
+            base = self._resolve_directory(directory)
+            if not base.exists():
+                summary["error"] = f"Directory does not exist: {directory}"
+                return summary
+
+            stack: list[tuple[Path, int]] = [(base, 0)]
+            while stack:
+                current, depth = stack.pop()
+                try:
+                    entries = sorted(current.iterdir(), key=lambda entry: entry.name.lower())
+                except (OSError, PermissionError) as exc:
+                    LOGGER.debug("Unable to read %s: %s", current, exc)
+                    continue
+
+                rel_current = self._relative_path(current)
+                if depth > 0 and rel_current:
+                    summary["directories"].append(rel_current.replace("\\", "/"))
+
+                if depth >= max_depth:
+                    continue
+
+                for entry in entries:
+                    rel = self._relative_path(entry)
+                    is_dir = entry.is_dir()
+                    if self._is_path_ignored(rel, is_dir=is_dir):
+                        continue
+                    if is_dir:
+                        stack.append((entry, depth + 1))
+                    else:
+                        summary["files"].append(rel.replace("\\", "/"))
+
+            summary["directories"].sort()
+            summary["files"].sort()
+            summary["root"] = self._relative_path(base) or "."
+            summary["total_items"] = len(summary["directories"]) + len(summary["files"])
+            return summary
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to build project structure for %s: %s", directory, exc)
+            summary["error"] = str(exc)
+            return summary
+
+    def detect_duplicate_code(self, min_lines: int = 5) -> dict[str, Any]:
+        """Detect repeated code blocks across Python files."""
+        LOGGER.info("🔧 TOOL CALLED: detect_duplicate_code(min_lines=%s)", min_lines)
+        duplicates: dict[str, dict[str, Any]] = {}
+        try:
+            python_files = [
+                path for path in self._iter_workspace_files(self.workspace_dir) if path.suffix == ".py"
+            ]
+            for path in python_files:
+                try:
+                    source = path.read_text(encoding="utf-8")
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.debug("Unable to read %s while detecting duplicates: %s", path, exc)
+                    continue
+                try:
+                    tree = ast.parse(source, filename=str(path), type_comments=True)
+                except SyntaxError as exc:
+                    LOGGER.debug("Skipping %s due to syntax error: %s", path, exc)
+                    continue
+
+                for node in ast.walk(tree):
+                    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        continue
+                    segment = ast.get_source_segment(source, node)
+                    if not segment:
+                        continue
+                    normalized_lines = [line.strip() for line in segment.splitlines() if line.strip()]
+                    line_count = len(normalized_lines)
+                    if line_count < min_lines:
+                        continue
+                    normalized = "\n".join(normalized_lines)
+                    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+                    payload = duplicates.setdefault(
+                        digest,
+                        {
+                            "preview": "\n".join(normalized_lines[: min(8, line_count)]),
+                            "line_count": line_count,
+                            "occurrences": [],
+                        },
+                    )
+                    payload["occurrences"].append(
+                        {
+                            "file": self._relative_path(path),
+                            "symbol": getattr(node, "name", None),
+                            "start_line": getattr(node, "lineno", None),
+                            "end_line": getattr(node, "end_lineno", None),
+                        }
+                    )
+
+            groups = [
+                {
+                    "preview": data["preview"],
+                    "line_count": data["line_count"],
+                    "occurrences": data["occurrences"],
+                }
+                for data in duplicates.values()
+                if len(data["occurrences"]) > 1
+            ]
+            return {"total_groups": len(groups), "duplicates": groups}
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to detect duplicate code: %s", exc)
+            return {"total_groups": 0, "duplicates": [], "error": str(exc)}
+
+    def check_naming_conventions(self, directory: str = ".") -> dict[str, Any]:
+        """Identify functions and classes that violate basic naming rules."""
+        LOGGER.info("🔧 TOOL CALLED: check_naming_conventions(%s)", directory)
+        snake_case = re.compile(r"^[a-z_][a-z0-9_]*$")
+        pascal_case = re.compile(r"^[A-Z][A-Za-z0-9]+$")
+        issues: dict[str, list[dict[str, Any]]] = {
+            "functions": [],
+            "classes": [],
+        }
+        try:
+            base = self._resolve_directory(directory)
+            if not base.exists():
+                return {"error": f"Directory does not exist: {directory}", **issues}
+            python_files = [path for path in self._iter_workspace_files(base) if path.suffix == ".py"]
+
+            for path in python_files:
+                try:
+                    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                except SyntaxError as exc:
+                    LOGGER.debug("Skipping %s due to syntax error: %s", path, exc)
+                    continue
+
+                for node in ast.walk(tree):
+                    rel_path = self._relative_path(path)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        name = node.name
+                        if name.startswith("_") or snake_case.match(name) or name.startswith("__"):
+                            continue
+                        issues["functions"].append(
+                            {"name": name, "file": rel_path, "line": node.lineno}
+                        )
+                    elif isinstance(node, ast.ClassDef):
+                        if pascal_case.match(node.name):
+                            continue
+                        issues["classes"].append(
+                            {"name": node.name, "file": rel_path, "line": node.lineno}
+                        )
+
+            return {
+                "invalid_functions": issues["functions"],
+                "invalid_classes": issues["classes"],
+                "checked_files": len(python_files),
+            }
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to validate naming conventions: %s", exc)
+            return {"error": str(exc), "invalid_functions": [], "invalid_classes": [], "checked_files": 0}
+
+    def analyze_type_hints(self, directory: str = ".") -> dict[str, Any]:
+        """Report functions missing parameter or return annotations."""
+        LOGGER.info("🔧 TOOL CALLED: analyze_type_hints(%s)", directory)
+        findings: list[dict[str, Any]] = []
+        try:
+            base = self._resolve_directory(directory)
+            if not base.exists():
+                return {"error": f"Directory does not exist: {directory}", "missing_annotations": []}
+
+            python_files = [path for path in self._iter_workspace_files(base) if path.suffix == ".py"]
+            for path in python_files:
+                try:
+                    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path), type_comments=True)
+                except SyntaxError as exc:
+                    LOGGER.debug("Skipping %s for type hint analysis: %s", path, exc)
+                    continue
+
+                for node in ast.walk(tree):
+                    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    missing_params: list[str] = []
+                    for arg in getattr(node.args, "posonlyargs", []):
+                        if arg.annotation is None:
+                            missing_params.append(arg.arg)
+                    for arg in node.args.args:
+                        if arg.arg in {"self", "cls"}:
+                            continue
+                        if arg.annotation is None:
+                            missing_params.append(arg.arg)
+                    for arg in node.args.kwonlyargs:
+                        if arg.annotation is None:
+                            missing_params.append(arg.arg)
+                    vararg = node.args.vararg
+                    if vararg and vararg.annotation is None:
+                        missing_params.append(f"*{vararg.arg}")
+                    kwarg = node.args.kwarg
+                    if kwarg and kwarg.annotation is None:
+                        missing_params.append(f"**{kwarg.arg}")
+
+                    missing_return = node.returns is None
+                    if missing_params or missing_return:
+                        findings.append(
+                            {
+                                "function": node.name,
+                                "file": self._relative_path(path),
+                                "line": node.lineno,
+                                "missing_parameters": missing_params,
+                                "missing_return": missing_return,
+                            }
+                        )
+
+            return {"missing_annotations": findings, "checked_files": len(python_files)}
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to analyze type hints: %s", exc)
+            return {"error": str(exc), "missing_annotations": [], "checked_files": 0}
+
+    def inspect_docstrings(self, directory: str = ".", include_private: bool = False) -> dict[str, Any]:
+        """List modules, classes, and functions missing docstrings."""
+        LOGGER.info(
+            "🔧 TOOL CALLED: inspect_docstrings(directory=%s, include_private=%s)",
+            directory,
+            include_private,
+        )
+        missing: list[dict[str, Any]] = []
+        try:
+            base = self._resolve_directory(directory)
+            if not base.exists():
+                return {"error": f"Directory does not exist: {directory}", "missing": []}
+
+            python_files = [path for path in self._iter_workspace_files(base) if path.suffix == ".py"]
+            for path in python_files:
+                try:
+                    source = path.read_text(encoding="utf-8")
+                    tree = ast.parse(source, filename=str(path))
+                except SyntaxError as exc:
+                    LOGGER.debug("Skipping %s for docstring inspection: %s", path, exc)
+                    continue
+
+                module_doc = ast.get_docstring(tree)
+                if not module_doc:
+                    missing.append({"type": "module", "file": self._relative_path(path), "line": 1})
+
+                for node in ast.walk(tree):
+                    name = getattr(node, "name", "")
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        if not include_private and name.startswith("_"):
+                            continue
+                        docstring = ast.get_docstring(node)
+                        if docstring:
+                            continue
+                        missing.append(
+                            {
+                                "type": "function" if not isinstance(node, ast.ClassDef) else "class",
+                                "name": name,
+                                "file": self._relative_path(path),
+                                "line": node.lineno,
+                            }
+                        )
+
+            return {"missing": missing, "checked_files": len(python_files)}
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to inspect docstrings: %s", exc)
+            return {"error": str(exc), "missing": [], "checked_files": 0}
+
+    def get_function_signatures(self, file_path: str) -> dict[str, Any]:
+        """Return simplified function signatures for a Python file."""
+        LOGGER.info("🔧 TOOL CALLED: get_function_signatures(%s)", file_path)
+        details = self.get_function_definitions(file_path)
+        functions = details.get("functions") or []
+        signatures = []
+        for entry in functions:
+            params = entry.get("params") or []
+            signature = f"{entry.get('name')}({', '.join(params)})"
+            signatures.append(
+                {
+                    "name": entry.get("name"),
+                    "signature": signature,
+                    "line": entry.get("line"),
+                    "docstring": entry.get("docstring", ""),
+                }
+            )
+        response: dict[str, Any] = {"signatures": signatures, "total": len(signatures)}
+        if details.get("error"):
+            response["error"] = details["error"]
+        return response
+
+    def find_unused_imports(self, file_path: str) -> dict[str, Any]:
+        """Detect unused imports in a Python file."""
+        LOGGER.info("🔧 TOOL CALLED: find_unused_imports(%s)", file_path)
+        try:
+            target = self._resolve_python_path(file_path)
+        except Exception as exc:  # noqa: BLE001
+            return {"unused": [], "error": str(exc)}
+
+        if not target.exists():
+            return {"unused": [], "error": f"File does not exist: {file_path}"}
+
+        try:
+            source = target.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(target), type_comments=True)
+        except SyntaxError as exc:
+            return {"unused": [], "error": f"Syntax error: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to analyze imports for %s: %s", file_path, exc)
+            return {"unused": [], "error": str(exc)}
+
+        imported_names: dict[str, dict[str, Any]] = {}
+
+        class ImportVisitor(ast.NodeVisitor):
+            def visit_Import(self, node: ast.Import) -> None:  # type: ignore[override]
+                for alias in node.names:
+                    local = alias.asname or alias.name.split(".")[0]
+                    imported_names[local] = {
+                        "module": alias.name,
+                        "line": node.lineno,
+                    }
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # type: ignore[override]
+                if node.module == "*" or any(alias.name == "*" for alias in node.names):
+                    return
+                for alias in node.names:
+                    local = alias.asname or alias.name
+                    imported_names[local] = {
+                        "module": f"{node.module}.{alias.name}" if node.module else alias.name,
+                        "line": node.lineno,
+                    }
+
+        class UsageVisitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.used: set[str] = set()
+
+            def visit_Name(self, node: ast.Name) -> None:  # type: ignore[override]
+                if isinstance(node.ctx, ast.Load):
+                    self.used.add(node.id)
+                self.generic_visit(node)
+
+        ImportVisitor().visit(tree)
+        usage = UsageVisitor()
+        usage.visit(tree)
+
+        unused = [
+            {"name": name, "module": meta["module"], "line": meta["line"]}
+            for name, meta in imported_names.items()
+            if name not in usage.used
+        ]
+        return {"unused": unused, "total_imports": len(imported_names)}
+
+    def get_code_metrics(self, directory: str = ".") -> dict[str, Any]:
+        """Return aggregate code metrics for the target directory."""
+        LOGGER.info("🔧 TOOL CALLED: get_code_metrics(%s)", directory)
+        try:
+            base = self._resolve_directory(directory)
+            if not base.exists():
+                return {"error": f"Directory does not exist: {directory}"}
+
+            python_files = [path for path in self._iter_workspace_files(base) if path.suffix == ".py"]
+            total_lines = 0
+            function_count = 0
+            class_count = 0
+            todo_comments = 0
+
+            for path in python_files:
+                try:
+                    content = path.read_text(encoding="utf-8")
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.debug("Skipping %s for code metrics: %s", path, exc)
+                    continue
+                total_lines += len(content.splitlines())
+                todo_comments += sum(1 for line in content.splitlines() if "TODO" in line.upper())
+
+                try:
+                    tree = ast.parse(content, filename=str(path))
+                except SyntaxError:
+                    continue
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        function_count += 1
+                    elif isinstance(node, ast.ClassDef):
+                        class_count += 1
+
+            average_lines = (
+                round(total_lines / len(python_files), 2) if python_files else 0
+            )
+            return {
+                "python_files": len(python_files),
+                "total_lines": total_lines,
+                "average_lines_per_file": average_lines,
+                "function_count": function_count,
+                "class_count": class_count,
+                "todo_comments": todo_comments,
+            }
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to compute code metrics for %s: %s", directory, exc)
+            return {"error": str(exc)}
 
     # ------------------------------------------------------------------ #
     # Git operations

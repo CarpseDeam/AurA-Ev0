@@ -17,7 +17,8 @@ class MessageRole:
 
     USER = "user"
     ASSISTANT = "assistant"
-    _ALL = frozenset({USER, ASSISTANT})
+    TOOL_RESULT = "tool_result"
+    _ALL = frozenset({USER, ASSISTANT, TOOL_RESULT})
 
     @classmethod
     def validate(cls, role: str) -> None:

@@ -56,8 +56,9 @@ def initialize_database() -> None:
     Creates all required tables if they don't exist:
     - projects: Project metadata and settings
     - conversations: Conversation threads within projects
-    - messages: Individual messages in conversations
+    - messages: Individual messages, plans, and tool_results in conversations
     - project_files: Files attached to projects (for future use)
+    - tool_calls: Auditable history of every tool execution
 
     This function is idempotent and safe to call multiple times.
     """
@@ -99,7 +100,7 @@ def initialize_database() -> None:
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conversation_id INTEGER NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'tool_result')),
                 content TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
@@ -144,6 +145,32 @@ def initialize_database() -> None:
             ON project_files(project_id)
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tool_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER,
+                agent_role TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                tool_input TEXT,
+                tool_output TEXT,
+                success INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT,
+                execution_time_ms REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_tool_calls_conversation_id
+            ON tool_calls(conversation_id)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_tool_calls_created_at
+            ON tool_calls(created_at)
+        """)
+
         conn.commit()
         logger.info("Database schema initialized successfully")
 
@@ -160,6 +187,7 @@ def reset_database() -> None:
         cursor = conn.cursor()
 
         cursor.execute("DROP TABLE IF EXISTS project_files")
+        cursor.execute("DROP TABLE IF EXISTS tool_calls")
         cursor.execute("DROP TABLE IF EXISTS messages")
         cursor.execute("DROP TABLE IF EXISTS conversations")
         cursor.execute("DROP TABLE IF EXISTS projects")
@@ -185,11 +213,11 @@ def check_database_health() -> bool:
             cursor.execute("""
                 SELECT name FROM sqlite_master
                 WHERE type='table'
-                AND name IN ('projects', 'conversations', 'messages', 'project_files')
+                AND name IN ('projects', 'conversations', 'messages', 'project_files', 'tool_calls')
             """)
 
             tables = [row[0] for row in cursor.fetchall()]
-            expected_tables = {'projects', 'conversations', 'messages', 'project_files'}
+            expected_tables = {'projects', 'conversations', 'messages', 'project_files', 'tool_calls'}
 
             if set(tables) == expected_tables:
                 logger.info("Database health check passed")

@@ -18,6 +18,11 @@ from aura.services import ChatService
 from aura.state import AppState
 from aura.ui.main_window import MainWindow
 from aura.utils import load_settings
+from aura.utils.settings import (
+    DEFAULT_ANALYST_MODEL,
+    DEFAULT_EXECUTOR_MODEL,
+    DEFAULT_SPECIALIST_MODEL,
+)
 from aura.database import initialize_database
 from aura.models import Conversation
 
@@ -111,9 +116,9 @@ class ApplicationController:
 
         # Load settings and apply them to the AppState
         settings = load_settings()
-        self.app_state.set_analyst_model(settings.get("analyst_model", "gemini-2.5-pro"))
-        self.app_state.set_executor_model(settings.get("executor_model", "claude-sonnet-4-5-20250929"))
-        self.app_state.set_specialist_model(settings.get("specialist_model", "phi-3-mini"))
+        self.app_state.set_analyst_model(settings.get("analyst_model", DEFAULT_ANALYST_MODEL))
+        self.app_state.set_executor_model(settings.get("executor_model", DEFAULT_EXECUTOR_MODEL))
+        self.app_state.set_specialist_model(settings.get("specialist_model", DEFAULT_SPECIALIST_MODEL))
         
         selected_agent = settings.get("selected_agent", config.DEFAULT_AGENT)
         agent_executable = settings.get("agent_executable")
@@ -126,7 +131,7 @@ class ApplicationController:
 
         try:
             analyst_key = self._require_analyst_api_key()
-            executor_key = self._get_executor_api_key()
+            executor_key = self._get_executor_api_key(fallback=analyst_key)
 
             self.orchestrator = Orchestrator(
                 app_state=self.app_state,
@@ -199,32 +204,39 @@ class ApplicationController:
         """Return a validated analyst API key.
 
         Raises:
-            AuraConfigurationError: If GEMINI_API_KEY is not set
+            AuraConfigurationError: If the Anthropic API key is not set
 
         Returns:
             The analyst API key
         """
-        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        api_key = (
+            os.getenv("ANTHROPIC_ANALYST_API_KEY", "").strip()
+            or os.getenv("ANTHROPIC_API_KEY", "").strip()
+        )
         if not api_key:
             raise AuraConfigurationError(
-                "Analyst API key required for Aura Chat analysis. "
-                "Set GEMINI_API_KEY and restart Aura.",
-                context={"env_var": "GEMINI_API_KEY"},
+                "Analyst API key required for Aura analysis. "
+                "Set ANTHROPIC_API_KEY (or ANTHROPIC_ANALYST_API_KEY) and restart Aura.",
+                context={"env_var": "ANTHROPIC_API_KEY"},
             )
         return api_key
 
-    def _get_executor_api_key(self) -> str | None:
+    def _get_executor_api_key(self, fallback: str | None = None) -> str | None:
         """Return executor API key if available.
 
         Returns:
             The executor API key or None if not set. When None, Aura falls
             back to single-agent mode using only the analyst agent.
         """
-        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        api_key = (
+            os.getenv("ANTHROPIC_EXECUTOR_API_KEY", "").strip()
+            or os.getenv("ANTHROPIC_API_KEY", "").strip()
+            or (fallback or "")
+        )
         if not api_key:
             LOGGER.warning(
-                "ANTHROPIC_API_KEY not set. Running in single-agent mode (analyst only). "
-                "For two-agent mode, set ANTHROPIC_API_KEY for code execution."
+                "ANTHROPIC_EXECUTOR_API_KEY not set. Running in single-agent mode (analyst only). "
+                "Set ANTHROPIC_EXECUTOR_API_KEY to enable executor write access."
             )
         return api_key or None
 

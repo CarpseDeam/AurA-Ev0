@@ -1,470 +1,638 @@
-"""Analyst agent service for analyzing requests and building prompts."""
+"""Analyst agent powered by Claude Sonnet 4.5 that produces execution plans."""
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from functools import wraps
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Sequence
 
-from google import genai
-from google.genai import types
+import anthropic
+from pydantic import ValidationError
 
 from aura import config
 from aura.event_bus import get_event_bus
 from aura.events import (
+    AgentEvent,
     ExecutionComplete,
-    FileOperation,
     PhaseTransition,
     StatusUpdate,
     StreamingChunk,
+    SystemErrorEvent,
+    TaskProgressEvent,
     ToolCallCompleted,
     ToolCallFailed,
     ToolCallStarted,
 )
+from aura.models import ExecutionPlan, Message, MessageRole, ToolCallLog
 from aura.prompts import ANALYST_PROMPT
-from aura.tools.local_agent_tools import generate_commit_message
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
 _ANALYST_SOURCE = "analyst"
-_FILE_TOOLS = {
-    "create_file",
-    "delete_file",
-    "modify_file",
-    "replace_file_lines",
-    "read_multiple_files",
-    "read_project_file",
-}
+
+
+ToolHandler = Callable[..., Any]
 
 
 @dataclass
 class AnalystAgentService:
-    """Analyzes requests and builds comprehensive prompts for the executor.
-
-    This service uses the configured analyst provider with read-only tools to
-    gather context, understand patterns, and engineer detailed prompts for the
-    executor to carry out.
-    """
+    """Runs the analyst loop with Claude and Aura's read-only tools."""
 
     api_key: str
     tool_manager: ToolManager
     model_name: str
-    _client: genai.Client = field(init=False, repr=False)
+    _client: anthropic.Anthropic = field(init=False, repr=False)
     _event_bus: Any = field(init=False, repr=False)
+    _tool_handlers: Mapping[str, ToolHandler] = field(init=False, repr=False)
+    _latest_plan: ExecutionPlan | None = field(default=None, init=False, repr=False)
+    _active_conversation_id: int | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Initialize the provider client."""
-        self._client = genai.Client(api_key=self.api_key)
+        self._client = anthropic.Anthropic(api_key=self.api_key)
         self._event_bus = get_event_bus()
+        self._tool_handlers = {
+            "list_project_files": self.tool_manager.list_project_files,
+            "read_project_file": self.tool_manager.read_project_file,
+            "get_imports": self.tool_manager.get_imports,
+            "get_project_structure": self.tool_manager.get_project_structure,
+            "search_in_files": self.tool_manager.search_in_files,
+            "get_git_status": self.tool_manager.get_git_status,
+            "get_cyclomatic_complexity": self.tool_manager.get_cyclomatic_complexity,
+            "detect_duplicate_code": self.tool_manager.detect_duplicate_code,
+            "check_naming_conventions": self.tool_manager.check_naming_conventions,
+            "analyze_type_hints": self.tool_manager.analyze_type_hints,
+            "inspect_docstrings": self.tool_manager.inspect_docstrings,
+            "get_function_signatures": self.tool_manager.get_function_signatures,
+            "find_unused_imports": self.tool_manager.find_unused_imports,
+            "get_class_hierarchy": self.tool_manager.get_class_hierarchy,
+            "get_dependency_graph": self.tool_manager.get_dependency_graph,
+            "get_code_metrics": self.tool_manager.get_code_metrics,
+            "submit_execution_plan": self._handle_submit_execution_plan,
+        }
 
     def analyze_and_plan(
         self,
         user_request: str,
-        on_chunk: Optional[Callable[[str], None]] = None,
-    ) -> str:
-        """Analyze user request and build comprehensive prompt for executor.
-
-        Args:
-            user_request: The user's request to analyze
-            on_chunk: Optional callback for streaming output
-
-        Returns:
-            Comprehensive engineered prompt for the executor agent
-        """
+        *,
+        on_chunk: Callable[[str], None] | None = None,
+        conversation_id: int | None = None,
+    ) -> ExecutionPlan | str:
+        """Gather context with Claude tools and return an execution plan."""
         started = time.perf_counter()
-        prompt_length = len(user_request or "")
+        self._latest_plan = None
+        self._active_conversation_id = conversation_id
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": user_request}],
+            }
+        ]
+        tools = self._build_tool_definitions()
+
         LOGGER.info(
-            "Analyst analysis started | model=%s | prompt_chars=%d | streaming=%s",
+            "Analyst analysis started | model=%s | prompt_chars=%d",
             self.model_name,
-            prompt_length,
-            bool(on_chunk),
+            len(user_request or ""),
         )
-        workspace = getattr(self.tool_manager, "workspace_dir", None)
-        if workspace:
-            LOGGER.info("Analyst tool workspace: %s", workspace)
         self._event_bus.emit(
             PhaseTransition(from_phase="idle", to_phase="analyst", source=_ANALYST_SOURCE)
         )
-        self._emit_status("Analyst agent: analyzing request...", "analyst.analyze")
+        self._emit_status("Analyst agent: gathering context...", "analyst.start")
+        self._event_bus.emit(
+            AgentEvent(
+                name="analyst.started",
+                payload={"model": self.model_name},
+                source=_ANALYST_SOURCE,
+            )
+        )
+        self._event_bus.emit(
+            TaskProgressEvent(
+                message="Analyst collecting repository signals",
+                percent=0.1,
+                source=_ANALYST_SOURCE,
+            )
+        )
 
         try:
-            tool_catalog = [
-                self.tool_manager.list_project_files,
-                self.tool_manager.read_project_file,
-                self.tool_manager.read_multiple_files,
-                self.tool_manager.search_in_files,
-                self.tool_manager.get_function_definitions,
-                self.tool_manager.find_definition,
-                self.tool_manager.find_usages,
-                self.tool_manager.get_imports,
-                self.tool_manager.get_git_status,
-                self.tool_manager.git_diff,
-                self.tool_manager.run_tests,
-                self.tool_manager.lint_code,
-                self.tool_manager.format_code,
-                generate_commit_message,
-            ]
-
-            messages = [{"role": "user", "parts": [{"text": user_request}]}]
-
-            response = self._client.models.generate_content(
-                model=self.model_name,
-                contents=messages,
-                config=types.GenerateContentConfig(
-                    temperature=0.0,
-                    system_instruction=ANALYST_PROMPT,
-                    tools=self._instrument_tools(tool_catalog, source=_ANALYST_SOURCE),
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                        disable=False
-                    ),
-                ),
-            )
-
-            # ✅ FIX #3: Defensive check for None content
-            if not response.candidates:
-                LOGGER.warning("Response has no candidates")
-                LOGGER.error("Analyst failed to produce text response after function calls")
-                return ""
-
-            candidate = response.candidates[0]
-            if not candidate.content:
-                LOGGER.warning("Candidate has no content")
-                finish_reason = getattr(candidate, "finish_reason", None)
-                LOGGER.warning(
-                    "Candidate finish_reason: %s",
-                    finish_reason if finish_reason is not None else "Unavailable",
+            while True:
+                response = self._client.messages.create(
+                    model=self.model_name,
+                    system=ANALYST_PROMPT,
+                    temperature=0,
+                    max_tokens=6000,
+                    tools=tools,
+                    messages=messages,
                 )
-                safety_ratings = getattr(candidate, "safety_ratings", None)
-                if safety_ratings:
-                    LOGGER.warning("Candidate safety_ratings: %s", safety_ratings)
-                else:
-                    LOGGER.warning("Candidate safety_ratings unavailable or empty")
-                LOGGER.warning("Candidate repr: %r", candidate)
-                LOGGER.error("Analyst failed to produce text response after function calls")
-                return ""
+                messages.append({"role": "assistant", "content": response.content})
 
-            if not candidate.content.parts:
-                LOGGER.warning("Content has no parts")
-                LOGGER.error("Analyst failed to produce text response after function calls")
-                return ""
+                if response.stop_reason == "tool_use":
+                    tool_results = []
+                    for block in response.content:
+                        if block.type != "tool_use":
+                            continue
+                        tool_name = block.name or "tool"
+                        tool_input = dict(block.input or {})
+                        tool_id = block.id
+                        result_payload = self._dispatch_tool_call(tool_name, tool_input)
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": result_payload,
+                            }
+                        )
 
-            final_text = self._coalesce_response_text(response)
-            if final_text:
-                if on_chunk:
-                    self._emit_streaming_chunk(final_text, source=_ANALYST_SOURCE, on_chunk=on_chunk)
-                    self._emit_streaming_chunk("", source=_ANALYST_SOURCE, on_chunk=on_chunk, is_final=True)
+                    messages.append({"role": "user", "content": tool_results})
+                    continue
 
-                duration = time.perf_counter() - started
-                self._emit_status("Analyst agent: plan ready", "analyst.complete")
+                final_text = self._collect_text(response.content)
+                if final_text:
+                    self._emit_streaming_chunk(
+                        final_text,
+                        source=_ANALYST_SOURCE,
+                        on_chunk=on_chunk,
+                        is_final=True,
+                    )
+                break
+
+            if not self._latest_plan:
+                error_message = (
+                    "Error: Analyst did not provide a submit_execution_plan tool call."
+                )
+                self._emit_status("Analyst agent: failed", "analyst.error")
                 self._event_bus.emit(
-                    PhaseTransition(from_phase="analyst", to_phase="idle", source=_ANALYST_SOURCE)
+                    PhaseTransition(
+                        from_phase="analyst",
+                        to_phase="analyst.error",
+                        source=_ANALYST_SOURCE,
+                    )
                 )
-                self._emit_completion(final_text, success=True)
-                LOGGER.info(
-                    "Analyst analysis completed | duration=%.2fs | text_length=%d",
-                    duration,
-                    len(final_text),
-                )
-                return final_text
+                self._emit_completion(error_message, success=False)
+                return error_message
 
-            LOGGER.error("Analyst failed to produce text response after function calls")
-            return ""
-
-        except Exception as exc:
             duration = time.perf_counter() - started
-            LOGGER.exception(
-                "Analyst analysis failed | duration=%.2fs | prompt_preview=%s",
+            LOGGER.info(
+                "Analyst plan completed | duration=%.2fs | operations=%d",
                 duration,
-                (user_request or "")[:80],
+                len(self._latest_plan.operations),
             )
+            self._emit_status("Analyst agent: execution plan ready", "analyst.complete")
+            self._event_bus.emit(
+                PhaseTransition(
+                    from_phase="analyst",
+                    to_phase="idle",
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            self._event_bus.emit(
+                TaskProgressEvent(
+                    message="Analyst execution plan ready",
+                    percent=0.45,
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            summary = (
+                f"Execution plan ready ({len(self._latest_plan.operations)} operations)."
+            )
+            self._emit_completion(summary, success=True)
+            return self._latest_plan
+
+        except anthropic.APIError as exc:
+            duration = time.perf_counter() - started
+            LOGGER.exception("Analyst request failed | duration=%.2fs", duration)
             error_message = (
-                "Error: Unable to reach the analyst provider. Please verify "
-                "GEMINI_API_KEY and network connectivity."
+                "Error: Unable to contact Claude. Verify ANTHROPIC_API_KEY and network access."
             )
             self._emit_status("Analyst agent: failed", "analyst.error")
             self._event_bus.emit(
-                PhaseTransition(from_phase="analyst", to_phase="analyst.error", source=_ANALYST_SOURCE)
+                SystemErrorEvent(
+                    error="analyst.api_error",
+                    details={"message": str(exc)},
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            self._event_bus.emit(
+                PhaseTransition(
+                    from_phase="analyst",
+                    to_phase="analyst.error",
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            self._emit_completion(error_message, success=False)
+            return error_message
+        except Exception as exc:  # noqa: BLE001
+            duration = time.perf_counter() - started
+            LOGGER.exception("Analyst request failed unexpectedly | duration=%.2fs", duration)
+            error_message = f"Error: Analysis failed: {exc}"
+            self._emit_status("Analyst agent: failed", "analyst.error")
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="analyst.unexpected_error",
+                    details={"message": str(exc)},
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            self._event_bus.emit(
+                PhaseTransition(
+                    from_phase="analyst",
+                    to_phase="analyst.error",
+                    source=_ANALYST_SOURCE,
+                )
             )
             self._emit_completion(error_message, success=False)
             return error_message
 
-    def _execute_tool(self, tool_name: str, tool_args: dict) -> Any:
-        """Execute a tool call and return the result."""
-        try:
-            self._event_bus.emit(
-                ToolCallStarted(tool_name=tool_name, parameters=tool_args, source=_ANALYST_SOURCE)
-            )
-            started = time.perf_counter()
+    # ------------------------------------------------------------------ #
+    # Tool orchestration helpers
+    # ------------------------------------------------------------------ #
+    def _build_tool_definitions(self) -> list[dict[str, Any]]:
+        """Return Claude-compatible tool schemas."""
+        return [
+            {
+                "name": "list_project_files",
+                "description": "List files beneath a directory filtered by extension.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "directory": {
+                            "type": "string",
+                            "description": "Directory relative to the workspace.",
+                            "default": ".",
+                        },
+                        "extension": {
+                            "type": "string",
+                            "description": "File extension filter such as .py.",
+                            "default": ".py",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "read_project_file",
+                "description": "Read a single file relative to the workspace root.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path relative to the workspace.",
+                        }
+                    },
+                    "required": ["path"],
+                },
+            },
+            {
+                "name": "get_imports",
+                "description": "Analyze import statements inside a Python file.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Python file path."}
+                    },
+                    "required": ["file_path"],
+                },
+            },
+            {
+                "name": "get_project_structure",
+                "description": "Summarize folders and files up to a certain depth.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "directory": {"type": "string", "default": "."},
+                        "max_depth": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "default": 2,
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "search_in_files",
+                "description": "Search for a case-insensitive pattern across files.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string"},
+                        "directory": {"type": "string", "default": "."},
+                        "file_extension": {"type": "string", "default": ".py"},
+                    },
+                    "required": ["pattern"],
+                },
+            },
+            {
+                "name": "get_git_status",
+                "description": "Return the short git status for the workspace.",
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "get_cyclomatic_complexity",
+                "description": "Compute cyclomatic complexity metrics for a Python file.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Python file path."}
+                    },
+                    "required": ["file_path"],
+                },
+            },
+            {
+                "name": "detect_duplicate_code",
+                "description": "Identify duplicated function or class bodies across the repo.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "min_lines": {
+                            "type": "integer",
+                            "minimum": 3,
+                            "default": 5,
+                        }
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "check_naming_conventions",
+                "description": "Report classes or functions that violate naming conventions.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"directory": {"type": "string", "default": "."}},
+                    "required": [],
+                },
+            },
+            {
+                "name": "analyze_type_hints",
+                "description": "List functions missing parameter or return annotations.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"directory": {"type": "string", "default": "."}},
+                    "required": [],
+                },
+            },
+            {
+                "name": "inspect_docstrings",
+                "description": "Find modules, classes, or functions without docstrings.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "directory": {"type": "string", "default": "."},
+                        "include_private": {"type": "boolean", "default": False},
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "get_function_signatures",
+                "description": "Return function signatures (name, params, docstring).",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Python file path."}
+                    },
+                    "required": ["file_path"],
+                },
+            },
+            {
+                "name": "find_unused_imports",
+                "description": "Detect unused imports inside a Python file.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Python file path."}
+                    },
+                    "required": ["file_path"],
+                },
+            },
+            {
+                "name": "get_class_hierarchy",
+                "description": "Show parents and children for a specific class.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "class_name": {"type": "string"},
+                        "search_directory": {"type": "string", "default": "."},
+                    },
+                    "required": ["class_name"],
+                },
+            },
+            {
+                "name": "get_dependency_graph",
+                "description": "Inspect dependencies and dependents for a symbol.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol_name": {"type": "string"},
+                        "search_directory": {"type": "string", "default": "."},
+                    },
+                    "required": ["symbol_name"],
+                },
+            },
+            {
+                "name": "get_code_metrics",
+                "description": "Aggregate LOC, TODOs, and symbol counts for a directory.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"directory": {"type": "string", "default": "."}},
+                    "required": [],
+                },
+            },
+            {
+                "name": "submit_execution_plan",
+                "description": "Submit the final JSON execution plan for the executor.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "task_summary": {"type": "string"},
+                        "project_context": {"type": "string"},
+                        "estimated_files": {"type": "integer", "minimum": 0},
+                        "quality_checklist": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "operations": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "operation_type": {
+                                        "type": "string",
+                                        "enum": ["CREATE", "MODIFY", "DELETE"],
+                                    },
+                                    "file_path": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "old_str": {"type": "string"},
+                                    "new_str": {"type": "string"},
+                                    "rationale": {"type": "string"},
+                                    "dependencies": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                },
+                                "required": ["operation_type", "file_path", "rationale"],
+                            },
+                        },
+                    },
+                    "required": [
+                        "task_summary",
+                        "project_context",
+                        "estimated_files",
+                        "quality_checklist",
+                        "operations",
+                    ],
+                },
+            },
+        ]
 
-            method = getattr(self.tool_manager, tool_name, None)
-            if not method:
-                method = globals().get(tool_name)
-
-            if not method:
-                raise ValueError(f"Tool '{tool_name}' not found")
-
-            result = method(**tool_args)
-            duration = time.perf_counter() - started
-
-            self._event_bus.emit(
-                ToolCallCompleted(
-                    tool_name=tool_name,
-                    result=self._summarize_result(result),
-                    duration=duration,
-                    source=_ANALYST_SOURCE,
-                )
-            )
-            LOGGER.info(f"Tool {tool_name} executed successfully")
-            return result
-        except Exception as e:
-            duration = time.perf_counter() - started
-            LOGGER.exception(f"Tool {tool_name} failed: {e}")
-            self._event_bus.emit(
-                ToolCallFailed(
-                    tool_name=tool_name,
-                    error=str(e),
-                    duration=duration,
-                    source=_ANALYST_SOURCE,
-                    parameters=tool_args,
-                )
-            )
-            return f"Error executing {tool_name}: {str(e)}"
-
-    @staticmethod
-    def _extract_stream_addition(
-        chunk: types.GenerateContentResponse,
-        aggregated_text: str,
-    ) -> tuple[str, str]:
-        """Return the new text produced by this chunk.
-
-        This method robustly extracts text from API responses, even when they
-        contain complex multi-part content (e.g., after tool calls).
-        """
-        text_snapshot = AnalystAgentService._coalesce_response_text(chunk)
-        if not text_snapshot:
-            return "", aggregated_text
-
-        if aggregated_text and aggregated_text.startswith(text_snapshot):
-            return "", aggregated_text
-
-        if text_snapshot.startswith(aggregated_text):
-            addition = text_snapshot[len(aggregated_text) :]
-            return addition, text_snapshot
-
-        return text_snapshot, aggregated_text + text_snapshot
-
-    @staticmethod
-    def _coalesce_response_text(response: Any) -> str:
-        """Prefer text gathered from structured parts, fallback to plain text."""
-        if response is None:
-            return ""
-
-        text_from_parts = AnalystAgentService._extract_text_from_parts(response)
-        if text_from_parts:
-            return text_from_parts
-
-        fallback_text = AnalystAgentService._get_structured_field(response, "text")
-        return fallback_text if isinstance(fallback_text, str) else ""
-
-    @staticmethod
-    def _extract_text_from_parts(chunk: types.GenerateContentResponse) -> str:
-        """Extract text from all text parts in a complex response.
-
-        When the API returns multi-part content (common after tool calls),
-        the .text property may be empty. This method manually walks through
-        all parts to extract text content.
-        """
-        text_parts: list[str] = []
-        non_text_detected = False
-
-        try:
-            for part in AnalystAgentService._iter_response_parts(chunk):
-                extracted = AnalystAgentService._extract_text_from_part(part)
-                if extracted:
-                    text_parts.append(extracted)
-                    continue
-                if AnalystAgentService._part_contains_non_text_payload(part):
-                    non_text_detected = True
-        except Exception as exc:
-            LOGGER.debug("Could not extract text from response parts: %s", exc)
-            return ""
-
-        if non_text_detected and not text_parts:
-            LOGGER.debug(
-                "Analyst stream chunk contained only non-text payload; ignoring."
-            )
-
-        return "".join(text_parts)
-
-    @staticmethod
-    def _iter_response_parts(
-        chunk: types.GenerateContentResponse,
-    ) -> Iterator[Any]:
-        """Yield every content part in the response."""
-        candidates = AnalystAgentService._get_structured_field(chunk, "candidates")
-        for candidate in AnalystAgentService._iterate_structured_sequence(candidates):
-            yield from AnalystAgentService._parts_from_candidate(candidate)
-
-        content = AnalystAgentService._get_structured_field(chunk, "content")
-        yield from AnalystAgentService._parts_from_content(content)
-
-    @staticmethod
-    def _parts_from_candidate(candidate: Any) -> Iterator[Any]:
-        """Yield all parts associated with a candidate."""
-        if not candidate:
-            return
-        content = AnalystAgentService._get_structured_field(candidate, "content")
-        yield from AnalystAgentService._parts_from_content(content)
-
-    @staticmethod
-    def _parts_from_content(content: Any) -> Iterator[Any]:
-        """Yield all parts from a content object or a sequence of contents."""
-        if not content:
-            return
-
-        if AnalystAgentService._is_non_string_sequence(content):
-            for entry in content:
-                yield from AnalystAgentService._parts_from_content(entry)
-            return
-
-        content_parts = AnalystAgentService._get_structured_field(content, "parts")
-        if not content_parts:
-            return
-        for part in AnalystAgentService._iterate_structured_sequence(content_parts):
-            yield part
-
-    @staticmethod
-    def _extract_text_from_part(part: Any) -> str:
-        """Return textual content from a part if present."""
-        if isinstance(part, str):
-            return part
-        if isinstance(part, Mapping):
-            text_value = part.get("text")
-            return text_value if isinstance(text_value, str) else ""
-        text_value = getattr(part, "text", None)
-        return text_value if isinstance(text_value, str) else ""
-
-    @staticmethod
-    def _part_contains_non_text_payload(part: Any) -> bool:
-        """Return True if the part carries structured data instead of text."""
-        if isinstance(part, Mapping):
-            keys = set(part.keys())
-            keys.discard("text")
-            keys.discard("thought")
-            keys.discard("thought_signature")
-            return bool(keys)
-        structured_fields = (
-            "function_call",
-            "function_response",
-            "inline_data",
-            "file_data",
-            "code_execution_result",
-            "executable_code",
-            "video_metadata",
+    def _dispatch_tool_call(self, tool_name: str, tool_input: Mapping[str, Any]) -> str:
+        """Execute a tool handler with full logging and auditing."""
+        handler = self._tool_handlers.get(tool_name)
+        params = self._sanitize_parameters((), dict(tool_input))
+        self._event_bus.emit(
+            ToolCallStarted(tool_name=tool_name, parameters=params, source=_ANALYST_SOURCE)
         )
-        return any(getattr(part, field, None) is not None for field in structured_fields)
-
-    @staticmethod
-    def _get_structured_field(source: Any, field: str) -> Any:
-        """Return an attribute/field regardless of whether the source is obj or dict."""
-        if source is None:
-            return None
-        if isinstance(source, Mapping):
-            return source.get(field)
-        return getattr(source, field, None)
-
-    @staticmethod
-    def _is_non_string_sequence(value: Any) -> bool:
-        """Return True if value behaves like a sequence we can iterate safely."""
-        if value is None:
-            return False
-        return isinstance(value, Sequence) and not isinstance(
-            value,
-            (str, bytes, bytearray, Mapping),
-        )
-
-    @staticmethod
-    def _iterate_structured_sequence(value: Any) -> Iterator[Any]:
-        """Yield items from a sequence-like value while handling scalars."""
-        if value is None:
-            return
-        if AnalystAgentService._is_non_string_sequence(value):
-            for item in value:
-                yield item
-            return
-        yield value
-
-    def _instrument_tools(
-        self,
-        tools: Sequence[Callable[..., Any]],
-        source: str,
-    ) -> list[Callable[..., Any]]:
-        """Wrap tool callables so they emit events and telemetry."""
-        wrapped: list[Callable[..., Any]] = []
-        for tool in tools:
-            if callable(tool):
-                wrapped.append(self._wrap_tool(tool, source))
-        return wrapped
-
-    def _wrap_tool(
-        self,
-        tool: Callable[..., Any],
-        source: str,
-    ) -> Callable[..., Any]:
-        """Return a callable that emits ToolCall events around execution."""
-        tool_name = getattr(tool, "__name__", tool.__class__.__name__)
-        if not tool_name:
-            tool_name = tool.__class__.__name__
-
-        @wraps(tool)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            params = self._sanitize_parameters(args, kwargs)
-            self._event_bus.emit(
-                ToolCallStarted(tool_name=tool_name, parameters=params, source=source)
+        self._event_bus.emit(
+            AgentEvent(
+                name="analyst.tool_call",
+                payload={"tool": tool_name, "parameters": params},
+                source=_ANALYST_SOURCE,
             )
-            started = time.perf_counter()
-            try:
-                result = tool(*args, **kwargs)
-            except Exception as exc:
-                duration = time.perf_counter() - started
+        )
+        started = time.perf_counter()
+        success = False
+        result_obj: Any = {"error": f"Unknown tool: {tool_name}"}
+        try:
+            if not handler:
+                raise ValueError(f"Tool '{tool_name}' is not registered.")
+            result_obj = handler(**tool_input)
+            success = True
+            return self._serialize_tool_result(result_obj)
+        except ValidationError as exc:
+            LOGGER.warning("Tool %s validation failed: %s", tool_name, exc)
+            result_obj = {"error": "Validation failed", "details": exc.errors()}
+            serialized = self._serialize_tool_result(result_obj)
+            self._record_tool_failure(tool_name, params, serialized, started)
+            return serialized
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Tool %s execution failed", tool_name)
+            result_obj = {"error": str(exc)}
+            serialized = self._serialize_tool_result(result_obj)
+            self._record_tool_failure(tool_name, params, serialized, started)
+            return serialized
+        finally:
+            duration = time.perf_counter() - started
+            ToolCallLog.record(
+                conversation_id=self._active_conversation_id,
+                agent_role=_ANALYST_SOURCE,
+                tool_name=tool_name,
+                tool_input=json.dumps(tool_input, ensure_ascii=False, default=str),
+                tool_output=self._serialize_tool_result(result_obj),
+                success=success,
+                error_message=None if success else str(result_obj),
+                execution_time_ms=round(duration * 1000, 2),
+            )
+            if success:
                 self._event_bus.emit(
                     ToolCallCompleted(
                         tool_name=tool_name,
-                        result=f"error: {exc}",
+                        result=self._safe_value(result_obj, limit=320),
                         duration=duration,
-                        source=source,
+                        source=_ANALYST_SOURCE,
                     )
-                )
-                LOGGER.exception(
-                    "Tool %s failed after %.2fs | params=%s", tool_name, duration, params
                 )
                 self._event_bus.emit(
-                    ToolCallFailed(
-                        tool_name=tool_name,
-                        error=str(exc),
-                        duration=duration,
-                        source=source,
-                        parameters=params,
+                    AgentEvent(
+                        name="analyst.tool_result",
+                        payload={"tool": tool_name},
+                        source=_ANALYST_SOURCE,
                     )
                 )
-                raise
 
-            duration = time.perf_counter() - started
-            self._event_bus.emit(
-                ToolCallCompleted(
-                    tool_name=tool_name,
-                    result=self._summarize_result(result),
-                    duration=duration,
-                    source=source,
-                )
+    def _record_tool_failure(
+        self,
+        tool_name: str,
+        params: Mapping[str, Any],
+        result: str,
+        started: float,
+    ) -> None:
+        duration = time.perf_counter() - started
+        self._event_bus.emit(
+            ToolCallFailed(
+                tool_name=tool_name,
+                error=result,
+                duration=duration,
+                source=_ANALYST_SOURCE,
+                parameters=params,
             )
-            self._maybe_emit_file_operation(tool_name, args, kwargs, source)
-            return result
+        )
+        self._event_bus.emit(
+            AgentEvent(
+                name="analyst.tool_result",
+                payload={"tool": tool_name, "error": True},
+                source=_ANALYST_SOURCE,
+            )
+        )
+        self._event_bus.emit(
+            SystemErrorEvent(
+                error="analyst.tool_failure",
+                details={"tool": tool_name, "result": result},
+                source=_ANALYST_SOURCE,
+            )
+        )
 
-        return wrapper
+    def _serialize_tool_result(self, payload: Any) -> str:
+        """Convert tool outputs to JSON strings for tool_result blocks."""
+        if isinstance(payload, str):
+            return payload
+        try:
+            return json.dumps(payload, ensure_ascii=False)
+        except TypeError:
+            return str(payload)
+
+    def _handle_submit_execution_plan(self, **payload: Any) -> dict[str, Any]:
+        """Validate and persist the submitted execution plan."""
+        try:
+            plan = ExecutionPlan.model_validate(payload)
+        except ValidationError as exc:
+            LOGGER.warning("Execution plan validation failed: %s", exc)
+            return {"success": False, "errors": exc.errors()}
+
+        self._latest_plan = plan
+        plan_json = plan.to_json(indent=2)
+        if self._active_conversation_id is not None:
+            Message.create(
+                conversation_id=self._active_conversation_id,
+                role=MessageRole.TOOL_RESULT,
+                content=plan_json,
+            )
+        self._event_bus.emit(
+            AgentEvent(
+                name="analyst.blueprint_ready",
+                payload={"operations": len(plan.operations)},
+                source=_ANALYST_SOURCE,
+            )
+        )
+        return {
+            "success": True,
+            "operations": len(plan.operations),
+            "estimated_files": plan.estimated_files,
+        }
+
+    # ------------------------------------------------------------------ #
+    # Shared utility helpers (mostly carried over from the legacy flow)
+    # ------------------------------------------------------------------ #
+    def _collect_text(self, content: Sequence[Any]) -> str:
+        """Concatenate text blocks from an Anthropic response."""
+        parts: list[str] = []
+        for block in content:
+            if getattr(block, "type", None) == "text":
+                parts.append(block.text or "")
+        return "".join(parts)
 
     def _sanitize_parameters(
         self,
@@ -486,73 +654,12 @@ class AnalystAgentService:
         text = str(value)
         return text if len(text) <= limit else f"{text[:limit]}..."
 
-    def _summarize_result(self, result: Any) -> Any:
-        """Summarize tool results for event payloads."""
-        return self._safe_value(result, limit=320)
-
-    def _maybe_emit_file_operation(
-        self,
-        tool_name: str,
-        args: Sequence[Any],
-        kwargs: dict[str, Any],
-        source: str,
-    ) -> None:
-        """Emit a FileOperation event for relevant tools."""
-        if tool_name not in _FILE_TOOLS:
-            return
-
-        if tool_name == "read_multiple_files":
-            paths = kwargs.get("paths") or (args[0] if args else None)
-            if paths is None:
-                return
-            if isinstance(paths, (str, bytes)):
-                paths_iterable = [paths]
-            elif isinstance(paths, Sequence):
-                paths_iterable = list(paths)
-            else:
-                return
-            paths_list = [str(path) for path in paths_iterable]
-            if not paths_list:
-                return
-            details = {"count": len(paths_list)}
-            filepath = paths_list[0]
-        else:
-            filepath = self._extract_path(args, kwargs)
-            details = None
-
-        if not filepath:
-            return
-
-        self._event_bus.emit(
-            FileOperation(
-                operation=tool_name,
-                filepath=str(filepath),
-                details=details,
-                source=source,
-            )
-        )
-
-    @staticmethod
-    def _extract_path(
-        args: Sequence[Any],
-        kwargs: dict[str, Any],
-    ) -> str | None:
-        """Best-effort extraction of a file path argument."""
-        candidate = kwargs.get("path")
-        if isinstance(candidate, str):
-            return candidate
-        if args:
-            first = args[0]
-            if isinstance(first, str):
-                return first
-        return None
-
     def _emit_streaming_chunk(
         self,
         text: str,
         *,
         source: str,
-        on_chunk: Optional[Callable[[str], None]],
+        on_chunk: Callable[[str], None] | None,
         is_final: bool = False,
     ) -> None:
         """Emit a typed streaming event and forward to legacy callbacks."""
@@ -571,7 +678,7 @@ class AnalystAgentService:
         )
         try:
             on_chunk(callback_payload)
-        except Exception:
+        except Exception:  # noqa: BLE001
             LOGGER.debug("Streaming callback failed (analyst)", exc_info=True)
 
     def _emit_status(self, message: str, phase: str) -> None:
@@ -589,3 +696,6 @@ class AnalystAgentService:
                 success=success,
             )
         )
+
+
+__all__ = ["AnalystAgentService"]

@@ -26,7 +26,7 @@ from aura.services.executor_agent_service import ExecutorAgentService
 from aura.services.local_summarizer_service import LocalSummarizerService
 from aura.state import AppState
 from aura.tools.tool_manager import ToolManager
-from aura.models import Conversation, Message, MessageRole, Project
+from aura.models import Conversation, ExecutionPlan, Message, MessageRole, Project
 
 LOGGER = logging.getLogger(__name__)
 
@@ -135,6 +135,7 @@ class _TwoAgentWorker(QObject):
         analyst_agent: AnalystAgentService,
         executor_agent: ExecutorAgentService,
         goal: str,
+        conversation_id: int | None,
         *,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
@@ -142,6 +143,7 @@ class _TwoAgentWorker(QObject):
         self._analyst_agent = analyst_agent
         self._executor_agent = executor_agent
         self._goal = goal
+        self._conversation_id = conversation_id
         self._progress_callback = progress_callback
 
     def _notify_progress(self, message: str) -> None:
@@ -163,18 +165,23 @@ class _TwoAgentWorker(QObject):
 
         try:
             self._notify_progress(ANALYST_START_MESSAGE)
-            engineered_prompt = self._analyst_agent.analyze_and_plan(
-                self._goal, on_chunk=_on_chunk
+            plan_or_error = self._analyst_agent.analyze_and_plan(
+                self._goal,
+                on_chunk=_on_chunk,
+                conversation_id=self._conversation_id,
             )
 
-            if not engineered_prompt or "Error:" in engineered_prompt:
-                error_msg = engineered_prompt or "Analysis failed"
+            if isinstance(plan_or_error, str):
+                error_msg = plan_or_error or "Analysis failed"
                 self.failed.emit(error_msg)
                 return
 
+            execution_plan: ExecutionPlan = plan_or_error
             self._notify_progress(EXECUTOR_START_MESSAGE)
-            result = self._executor_agent.execute_prompt(
-                engineered_prompt, on_chunk=_on_chunk
+            result = self._executor_agent.execute_plan(
+                execution_plan,
+                on_chunk=_on_chunk,
+                conversation_id=self._conversation_id,
             )
 
             duration = time.perf_counter() - started
@@ -306,11 +313,15 @@ class Orchestrator(QObject):
         self.planning_started.emit()
         self.session_started.emit(0, session)
 
+        conversation_id: int | None = None
+        if self._analyst_agent and self._executor_agent:
+            conversation_id = self._ensure_active_conversation()
+
         if self._analyst_agent and self._executor_agent:
             if self._use_background_thread:
-                self._start_two_agent_execution(session, sanitized)
+                self._start_two_agent_execution(session, sanitized, conversation_id)
             else:
-                self._run_two_agent_execution(session, sanitized)
+                self._run_two_agent_execution(session, sanitized, conversation_id)
         else:
             self.progress_update.emit(CONTEXT_BUILD_MESSAGE)
             prompt = self._build_prompt(sanitized)
@@ -349,6 +360,21 @@ class Orchestrator(QObject):
         """Clear the conversation history."""
         self._history.clear()
 
+    def _ensure_active_conversation(self) -> int:
+        """Ensure a conversation exists so intermediate artifacts can be stored."""
+        conversation_id = self.app_state.current_conversation_id
+        if conversation_id is not None:
+            return conversation_id
+        with self._conversation_lock:
+            conversation_id = self.app_state.current_conversation_id
+            if conversation_id is None:
+                project_id = self.app_state.current_project_id
+                conv = Conversation.create(project_id=project_id)
+                conversation_id = conv.id
+                self.app_state.set_current_conversation(conversation_id)
+                LOGGER.info("Created conversation %s for new execution", conversation_id)
+        return conversation_id
+
     @property
     def history(self) -> Tuple[Tuple[str, str], ...]:
         """Return the accumulated conversation history."""
@@ -363,6 +389,7 @@ class Orchestrator(QObject):
         self,
         session: ConversationSession,
         goal: str,
+        conversation_id: int | None,
     ) -> None:
         """Execute two-agent flow on a background QThread."""
         self._thread = QThread(self)
@@ -370,6 +397,7 @@ class Orchestrator(QObject):
             self._analyst_agent,
             self._executor_agent,
             goal,
+            conversation_id,
             progress_callback=self.progress_update.emit,
         )
         self._worker.moveToThread(self._thread)
@@ -387,6 +415,7 @@ class Orchestrator(QObject):
         self,
         session: ConversationSession,
         goal: str,
+        conversation_id: int | None,
     ) -> None:
         """Execute two-agent flow synchronously."""
         started = time.perf_counter()
@@ -398,12 +427,14 @@ class Orchestrator(QObject):
 
         try:
             self.progress_update.emit(ANALYST_START_MESSAGE)
-            engineered_prompt = self._analyst_agent.analyze_and_plan(
-                goal, on_chunk=_on_chunk
+            plan_or_error = self._analyst_agent.analyze_and_plan(
+                goal,
+                on_chunk=_on_chunk,
+                conversation_id=conversation_id,
             )
 
-            if not engineered_prompt or "Error:" in engineered_prompt:
-                error_msg = engineered_prompt or "Analysis failed"
+            if isinstance(plan_or_error, str):
+                error_msg = plan_or_error or "Analysis failed"
                 self.error_occurred.emit(error_msg)
                 outcome = _ConversationOutcome(
                     response=error_msg,
@@ -413,9 +444,12 @@ class Orchestrator(QObject):
                 self._finalize_conversation(session, outcome)
                 return
 
+            execution_plan: ExecutionPlan = plan_or_error
             self.progress_update.emit(EXECUTOR_START_MESSAGE)
-            result = self._executor_agent.execute_prompt(
-                engineered_prompt, on_chunk=_on_chunk
+            result = self._executor_agent.execute_plan(
+                execution_plan,
+                on_chunk=_on_chunk,
+                conversation_id=conversation_id,
             )
 
             duration = time.perf_counter() - started

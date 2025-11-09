@@ -1,8 +1,9 @@
-"""Executor agent service for executing prompts and creating files."""
+"""Executor agent service for applying ExecutionPlans with write-only tools."""
 
 from __future__ import annotations
 
 import difflib
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -12,14 +13,19 @@ import anthropic
 
 from aura.event_bus import get_event_bus
 from aura.events import (
+    AgentEvent,
     ExecutionComplete,
     FileOperation,
     PhaseTransition,
     StatusUpdate,
     StreamingChunk,
+    SystemErrorEvent,
+    TaskProgressEvent,
     ToolCallCompleted,
+    ToolCallFailed,
     ToolCallStarted,
 )
+from aura.models import ExecutionPlan, ToolCallLog
 from aura.prompts import EXECUTOR_PROMPT
 from aura.tools.tool_manager import ToolManager
 
@@ -29,146 +35,109 @@ _EXECUTOR_SOURCE = "executor"
 
 @dataclass
 class ExecutorAgentService:
-    """Executes prompts using the configured executor model with write-only tools.
-
-    This service receives comprehensive prompts from the analyst and
-    executes them reliably using file creation and modification tools.
-    Formats output to look like CLI tools for visual satisfaction.
-    """
+    """Apply ExecutionPlan operations via Claude Sonnet 4.5 and file tools."""
 
     api_key: str
     tool_manager: ToolManager
     model_name: str
     _event_bus: Any = field(init=False, repr=False)
+    _client: anthropic.Anthropic = field(init=False, repr=False)
+    _active_conversation_id: int | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._event_bus = get_event_bus()
+        self._client = anthropic.Anthropic(api_key=self.api_key)
 
-    def execute_prompt(
+    def execute_plan(
         self,
-        engineered_prompt: str,
+        execution_plan: ExecutionPlan,
         on_chunk: Optional[Callable[[str], None]] = None,
+        conversation_id: int | None = None,
     ) -> str:
-        """Execute an engineered prompt with the executor provider.
-
-        Args:
-            engineered_prompt: Comprehensive prompt from analyst
-            on_chunk: Optional callback for streaming CLI-style output
-
-        Returns:
-            Summary of execution results
-        """
+        """Execute a validated ExecutionPlan using the configured executor model."""
         started = time.perf_counter()
-        prompt_length = len(engineered_prompt or "")
+        self._active_conversation_id = conversation_id
+        plan_json = execution_plan.to_json(indent=2)
         LOGGER.info(
-            "Executor execution started | model=%s | prompt_chars=%d | streaming=%s",
+            "Executor execution started | model=%s | operations=%d",
             self.model_name,
-            prompt_length,
-            bool(on_chunk),
+            len(execution_plan.operations),
         )
         self._event_bus.emit(
             PhaseTransition(from_phase="idle", to_phase="executor", source=_EXECUTOR_SOURCE)
         )
-        self._emit_status("Executor agent: dispatching micro-actions...", "executor.run")
+        self._emit_status("Executor agent: applying execution plan...", "executor.run")
+        self._event_bus.emit(
+            AgentEvent(
+                name="executor.started",
+                payload={"operations": len(execution_plan.operations)},
+                source=_EXECUTOR_SOURCE,
+            )
+        )
+        self._event_bus.emit(
+            TaskProgressEvent(
+                message="Executor applying plan operations",
+                percent=0.6,
+                source=_EXECUTOR_SOURCE,
+            )
+        )
+
+        plan_message = (
+            "The JSON ExecutionPlan below has been fully validated by the system. "
+            "Execute each operation sequentially, using the provided content verbatim. "
+            "Do not invent additional work or reorder operations.\n\n"
+            f"{plan_json}"
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": plan_message}],
+            }
+        ]
+        tools = self._build_anthropic_tools()
 
         try:
-            client = anthropic.Anthropic(api_key=self.api_key)
-            tools = self._build_anthropic_tools()
-
-            # Initialize conversation with user's prompt
-            messages = [{"role": "user", "content": engineered_prompt}]
-
-            # Tool execution loop - continues until the executor stops requesting tools
             while True:
-                response = client.messages.create(
+                response = self._client.messages.create(
                     model=self.model_name,
                     max_tokens=8096,
                     system=EXECUTOR_PROMPT,
                     messages=messages,
                     tools=tools,
                 )
-
-                # Add assistant's response to conversation
                 messages.append({"role": "assistant", "content": response.content})
 
-                # Check stop reason
                 if response.stop_reason == "tool_use":
-                    # Executor agent wants to use tools - extract and execute them
                     tool_results = []
-
                     for block in response.content:
-                        if block.type == "tool_use":
-                            tool_name = block.name or "tool"
-                            tool_input = dict(block.input or {})
-                            tool_id = block.id
-
-                            params = self._sanitize_tool_args(tool_input)
-                            self._event_bus.emit(
-                                ToolCallStarted(
-                                    tool_name=tool_name,
-                                    parameters=params,
-                                    source=_EXECUTOR_SOURCE,
-                                )
-                            )
-                            tool_started = time.perf_counter()
-                            try:
-                                result = self._execute_tool(tool_name, tool_input)
-                            except Exception as exc:
-                                duration = time.perf_counter() - tool_started
-                                self._event_bus.emit(
-                                    ToolCallCompleted(
-                                        tool_name=tool_name,
-                                        result=f"error: {exc}",
-                                        duration=duration,
-                                        source=_EXECUTOR_SOURCE,
-                                    )
-                                )
-                                self._maybe_emit_file_operation(tool_name, tool_input)
-                                raise
-
-                            duration = time.perf_counter() - tool_started
-                            self._event_bus.emit(
-                                ToolCallCompleted(
-                                    tool_name=tool_name,
-                                    result=self._safe_value(result, limit=320),
-                                    duration=duration,
-                                    source=_EXECUTOR_SOURCE,
-                                )
-                            )
-                            self._maybe_emit_file_operation(tool_name, tool_input)
-
-                            # Build tool result for the executor provider
-                            tool_results.append(
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_id,
-                                    "content": result,
-                                }
-                            )
-
-                    # Add tool results to conversation
+                        if block.type != "tool_use":
+                            continue
+                        tool_name = block.name or "tool"
+                        tool_input = dict(block.input or {})
+                        tool_id = block.id
+                        result = self._invoke_workspace_tool(tool_name, tool_input)
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": result,
+                            }
+                        )
                     messages.append({"role": "user", "content": tool_results})
+                    continue
 
-                    # Continue loop - the executor will see results and respond
-
-                elif response.stop_reason in ("end_turn", "stop_sequence", None):
-                    # Executor finished - extract final text
-                    final_text = ""
-                    for block in response.content:
-                        if block.type == "text":
-                            final_text += block.text
-
+                if response.stop_reason in ("end_turn", "stop_sequence", None):
+                    final_text = self._collect_text(response.content)
                     duration = time.perf_counter() - started
                     LOGGER.info(
                         "Executor execution completed | duration=%.2fs | response_chars=%d",
                         duration,
                         len(final_text),
                     )
-
                     if final_text:
                         self._emit_streaming_chunk(final_text, on_chunk=on_chunk)
                     self._emit_streaming_chunk(
-                        "✓ Execution complete",
+                        "Execution complete",
                         on_chunk=on_chunk,
                         is_final=True,
                     )
@@ -176,30 +145,41 @@ class ExecutorAgentService:
                     self._event_bus.emit(
                         PhaseTransition(from_phase="executor", to_phase="idle", source=_EXECUTOR_SOURCE)
                     )
+                    self._event_bus.emit(
+                        AgentEvent(
+                            name="executor.complete",
+                            payload={"operations": len(execution_plan.operations)},
+                            source=_EXECUTOR_SOURCE,
+                        )
+                    )
+                    self._event_bus.emit(
+                        TaskProgressEvent(
+                            message="Executor finished applying plan",
+                            percent=0.98,
+                            source=_EXECUTOR_SOURCE,
+                        )
+                    )
                     summary = final_text or "Execution complete."
                     self._emit_completion(summary, success=True)
                     return summary
 
-                else:
-                    # Unexpected stop reason
-                    LOGGER.warning(
-                        "Unexpected stop_reason: %s",
-                        response.stop_reason,
-                    )
-                    break
+                LOGGER.warning("Executor received unexpected stop_reason: %s", response.stop_reason)
+                break
 
         except anthropic.APIError as exc:
             duration = time.perf_counter() - started
-            LOGGER.exception(
-                "Executor execution failed | duration=%.2fs | error=%s",
-                duration,
-                str(exc),
-            )
+            LOGGER.exception("Executor execution failed | duration=%.2fs | error=%s", duration, exc)
             error_message = (
-                f"Error: Unable to reach the executor provider. Please verify ANTHROPIC_API_KEY "
-                f"and network connectivity. Detail: {exc}"
+                "Error: Unable to contact Claude for execution. Verify ANTHROPIC_API_KEY and network access."
             )
             self._emit_status("Executor agent: failed", "executor.error")
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="executor.api_error",
+                    details={"message": str(exc)},
+                    source=_EXECUTOR_SOURCE,
+                )
+            )
             self._event_bus.emit(
                 PhaseTransition(from_phase="executor", to_phase="executor.error", source=_EXECUTOR_SOURCE)
             )
@@ -207,41 +187,36 @@ class ExecutorAgentService:
             return error_message
         except Exception as exc:  # noqa: BLE001
             duration = time.perf_counter() - started
-            LOGGER.exception(
-                "Executor execution failed unexpectedly | duration=%.2fs",
-                duration,
-            )
+            LOGGER.exception("Executor execution failed unexpectedly | duration=%.2fs", duration)
             error_message = f"Error: Execution failed: {exc}"
             self._emit_status("Executor agent: failed", "executor.error")
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="executor.unexpected_error",
+                    details={"message": str(exc)},
+                    source=_EXECUTOR_SOURCE,
+                )
+            )
             self._event_bus.emit(
                 PhaseTransition(from_phase="executor", to_phase="executor.error", source=_EXECUTOR_SOURCE)
             )
             self._emit_completion(error_message, success=False)
             return error_message
 
-    def _build_anthropic_tools(self) -> list[dict]:
-        """Build Anthropic tool definitions for write operations."""
+    # ------------------------------------------------------------------ #
+    # Tool execution helpers
+    # ------------------------------------------------------------------ #
+    def _build_anthropic_tools(self) -> list[dict[str, Any]]:
+        """Return Claude tool schema for allowed write operations."""
         return [
             {
                 "name": "create_file",
-                "description": (
-                    "Create a new file with the specified content. The file will be "
-                    "created in the workspace directory. Parent directories will be "
-                    "created automatically if they don't exist."
-                ),
+                "description": "Create a new file using content from the ExecutionPlan.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": (
-                                "Relative path for the new file (e.g., 'src/utils/helper.py')"
-                            ),
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Complete file content to write",
-                        },
+                        "path": {"type": "string", "description": "Workspace-relative file path"},
+                        "content": {"type": "string", "description": "Full file contents."},
                     },
                     "required": ["path", "content"],
                 },
@@ -249,99 +224,95 @@ class ExecutorAgentService:
             {
                 "name": "modify_file",
                 "description": (
-                    "Modify an existing file by replacing old content with new content. "
-                    "The old_content must match exactly for the replacement to succeed."
+                    "Replace existing text in a file using the exact `old_content` / `new_content` "
+                    "strings from the ExecutionPlan."
                 ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Relative path to the file to modify",
-                        },
-                        "old_content": {
-                            "type": "string",
-                            "description": (
-                                "Exact content to replace (must match exactly)"
-                            ),
-                        },
-                        "new_content": {
-                            "type": "string",
-                            "description": "New content to insert",
-                        },
+                        "path": {"type": "string"},
+                        "old_content": {"type": "string"},
+                        "new_content": {"type": "string"},
                     },
                     "required": ["path", "old_content", "new_content"],
                 },
             },
             {
-                "name": "replace_file_lines",
-                "description": (
-                    "Modify an existing file by replacing an explicit range of line numbers. "
-                    "Use this for refactors where providing precise line spans is easier "
-                    "than matching full original content."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Relative path to the file to modify",
-                        },
-                        "start_line": {
-                            "type": "integer",
-                            "description": "1-based line number where the replacement begins",
-                        },
-                        "end_line": {
-                            "type": "integer",
-                            "description": "1-based line number where the replacement ends (inclusive)",
-                        },
-                        "new_content": {
-                            "type": "string",
-                            "description": "Replacement content for the specified line range",
-                        },
-                    },
-                    "required": ["path", "start_line", "end_line", "new_content"],
-                },
-            },
-            {
                 "name": "delete_file",
-                "description": (
-                    "Delete a file from the workspace. Use with caution."
-                ),
+                "description": "Delete a file specified by the ExecutionPlan.",
                 "input_schema": {
                     "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Relative path to the file to delete",
-                        },
-                    },
+                    "properties": {"path": {"type": "string", "description": "File to delete"}},
                     "required": ["path"],
                 },
             },
         ]
 
-    def _execute_tool(
-        self,
-        tool_name: str,
-        tool_input: dict,
-    ) -> str:
-        """Execute a tool and return formatted result.
+    def _invoke_workspace_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
+        """Execute a workspace tool with auditing, logging, and DB persistence."""
+        params = self._sanitize_tool_args(tool_input)
+        self._event_bus.emit(
+            ToolCallStarted(tool_name=tool_name, parameters=params, source=_EXECUTOR_SOURCE)
+        )
+        started = time.perf_counter()
+        result_text = ""
+        success = False
+        try:
+            result_text = self._execute_tool(tool_name, tool_input)
+            success = True
+            self._maybe_emit_file_operation(tool_name, tool_input)
+            return result_text
+        except Exception as exc:
+            error_text = str(exc)
+            result_text = error_text
+            self._event_bus.emit(
+                ToolCallFailed(
+                    tool_name=tool_name,
+                    error=error_text,
+                    duration=time.perf_counter() - started,
+                    source=_EXECUTOR_SOURCE,
+                    parameters=params,
+                )
+            )
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="executor.tool_failure",
+                    details={"tool": tool_name, "message": error_text},
+                    source=_EXECUTOR_SOURCE,
+                )
+            )
+            raise
+        finally:
+            duration = time.perf_counter() - started
+            ToolCallLog.record(
+                conversation_id=self._active_conversation_id,
+                agent_role=_EXECUTOR_SOURCE,
+                tool_name=tool_name,
+                tool_input=json.dumps(tool_input, ensure_ascii=False, default=str),
+                tool_output=result_text,
+                success=success,
+                error_message=None if success else result_text,
+                execution_time_ms=round(duration * 1000, 2),
+            )
+            if success:
+                self._event_bus.emit(
+                    ToolCallCompleted(
+                        tool_name=tool_name,
+                        result=self._safe_value(result_text, limit=320),
+                        duration=duration,
+                        source=_EXECUTOR_SOURCE,
+                    )
+                )
 
-        Args:
-            tool_name: Name of the tool to execute
-            tool_input: Tool input parameters
-
-        Returns:
-            Formatted execution result
-        """
+    def _execute_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
+        """Invoke the appropriate ToolManager method."""
         if tool_name == "create_file":
             path = tool_input.get("path", "")
             content = tool_input.get("content", "")
             result = self.tool_manager.create_file(path, content)
             return f"+ Created {path}\n{result}"
 
-        elif tool_name == "modify_file":
+        if tool_name == "modify_file":
             path = tool_input.get("path", "")
             old_content = tool_input.get("old_content", "")
             new_content = tool_input.get("new_content", "")
@@ -352,50 +323,12 @@ class ExecutorAgentService:
                 parts.append(diff_block)
             return "\n".join(parts)
 
-        elif tool_name == "replace_file_lines":
-            path = tool_input.get("path", "")
-            new_content = tool_input.get("new_content", "")
-            start_line = tool_input.get("start_line")
-            end_line = tool_input.get("end_line")
-            try:
-                start = int(start_line)
-                end = int(end_line)
-            except (TypeError, ValueError):
-                start = start_line
-                end = end_line
-
-            original = self.tool_manager.read_project_file(path)
-            diff_block = ""
-            if isinstance(original, str) and not original.startswith("Error"):
-                orig_lines = original.splitlines(keepends=True)
-                if (
-                    isinstance(start, int)
-                    and isinstance(end, int)
-                    and 0 < start <= len(orig_lines)
-                    and 0 < end <= len(orig_lines)
-                    and start <= end
-                ):
-                    slice_text = "".join(orig_lines[start - 1 : end])
-                    diff_block = self._build_diff_block(path, slice_text, new_content)
-
-            result = self.tool_manager.replace_file_lines(path, start_line, end_line, new_content)
-            line_desc = (
-                f"lines {start_line}-{end_line}"
-                if start_line is not None and end_line is not None
-                else "requested lines"
-            )
-            parts = [f"~ Modified {path} ({line_desc})", result]
-            if diff_block:
-                parts.append(diff_block)
-            return "\n".join(parts)
-
-        elif tool_name == "delete_file":
+        if tool_name == "delete_file":
             path = tool_input.get("path", "")
             result = self.tool_manager.delete_file(path)
             return f"- Deleted {path}\n{result}"
 
-        else:
-            return f"Error: Unknown tool '{tool_name}'"
+        raise ValueError(f"Unknown tool '{tool_name}'")
 
     def _build_diff_block(self, path: str, old_content: str, new_content: str) -> str:
         """Return a fenced unified diff block for modify_file operations."""
@@ -414,6 +347,14 @@ class ExecutorAgentService:
             return ""
         diff_text = "\n".join(diff_lines)
         return f"```diff\n{diff_text}\n```"
+
+    def _collect_text(self, content: list[Any]) -> str:
+        """Concatenate text blocks from an Anthropic response."""
+        parts: list[str] = []
+        for block in content:
+            if getattr(block, "type", None) == "text":
+                parts.append(block.text or "")
+        return "".join(parts)
 
     def _sanitize_tool_args(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         """Return a sanitized copy of the provided tool arguments."""
@@ -435,8 +376,8 @@ class ExecutorAgentService:
         tool_name: str,
         tool_input: dict[str, Any] | None,
     ) -> None:
-        """Emit FileOperation events for write tools."""
-        if tool_name not in {"create_file", "modify_file", "replace_file_lines", "delete_file"}:
+        """Emit FileOperation and agent events for write tools."""
+        if tool_name not in {"create_file", "modify_file", "delete_file"}:
             return
         if not tool_input:
             return
@@ -452,16 +393,18 @@ class ExecutorAgentService:
             old_len = len(tool_input.get("old_content", "") or "")
             new_len = len(tool_input.get("new_content", "") or "")
             details = {"old_length": old_len, "new_length": new_len}
-        elif tool_name == "replace_file_lines":
-            start = tool_input.get("start_line")
-            end = tool_input.get("end_line")
-            new_len = len(tool_input.get("new_content", "") or "")
-            details = {"start_line": start, "end_line": end, "new_length": new_len}
         self._event_bus.emit(
             FileOperation(
                 operation=tool_name,
                 filepath=path,
                 details=details,
+                source=_EXECUTOR_SOURCE,
+            )
+        )
+        self._event_bus.emit(
+            AgentEvent(
+                name="executor.file_operation",
+                payload={"operation": tool_name, "file": path},
                 source=_EXECUTOR_SOURCE,
             )
         )
@@ -503,3 +446,6 @@ class ExecutorAgentService:
                 success=success,
             )
         )
+
+
+__all__ = ["ExecutorAgentService"]

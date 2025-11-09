@@ -10,5 +10,16 @@ This package provides data models and CRUD operations for:
 from .project import Project
 from .conversation import Conversation
 from .message import Message, MessageRole
+from .execution_plan import ExecutionPlan, FileOperation, OperationType
+from .tool_call import ToolCallLog
 
-__all__ = ['Project', 'Conversation', 'Message', 'MessageRole']
+__all__ = [
+    'Project',
+    'Conversation',
+    'Message',
+    'MessageRole',
+    'ExecutionPlan',
+    'FileOperation',
+    'OperationType',
+    'ToolCallLog',
+]
