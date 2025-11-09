@@ -36,6 +36,22 @@ _ANALYST_SOURCE = "analyst"
 ToolHandler = Callable[..., Any]
 
 
+def unwrap_tool_input(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Unwrap payload-wrapped tool inputs from Claude API.
+
+    Claude sometimes wraps tool inputs in {"payload": "JSON_STRING"} format.
+    This function extracts and parses that JSON string if present.
+    """
+    if "payload" in kwargs and len(kwargs) == 1:
+        try:
+            payload_value = kwargs["payload"]
+            if isinstance(payload_value, str):
+                return json.loads(payload_value)
+        except (json.JSONDecodeError, TypeError) as exc:
+            LOGGER.warning("Failed to unwrap tool input payload: %s", exc)
+    return kwargs
+
+
 @dataclass
 class AnalystAgentService:
     """Runs the analyst loop with Claude and Aura's read-only tools."""
@@ -203,7 +219,7 @@ class AnalystAgentService:
                 )
             )
             summary = (
-                f"Execution plan ready ({len(self._latest_plan.operations)} operations)."
+                f"Analyst completed execution plan with {len(self._latest_plan.operations)} operations."
             )
             self._emit_completion(summary, success=True)
             return self._latest_plan
@@ -234,7 +250,7 @@ class AnalystAgentService:
         except Exception as exc:  # noqa: BLE001
             duration = time.perf_counter() - started
             LOGGER.exception("Analyst request failed unexpectedly | duration=%.2fs", duration)
-            error_message = f"Error: Analysis failed: {exc}"
+            error_message = f"Error: Analyst failed: {exc}"
             self._emit_status("Analyst agent: failed", "analyst.error")
             self._event_bus.emit(
                 SystemErrorEvent(
@@ -253,9 +269,6 @@ class AnalystAgentService:
             self._emit_completion(error_message, success=False)
             return error_message
 
-    # ------------------------------------------------------------------ #
-    # Tool orchestration helpers
-    # ------------------------------------------------------------------ #
     def _build_tool_definitions(self) -> list[dict[str, Any]]:
         """Return Claude-compatible tool schemas."""
         from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema
@@ -371,9 +384,16 @@ class AnalystAgentService:
             return str(payload)
 
     def _handle_submit_execution_plan(self, **payload: Any) -> dict[str, Any]:
-        """Validate and persist the submitted execution plan."""
+        """Validate and persist the submitted execution plan.
+
+        Handles both direct JSON objects and payload-wrapped inputs from Claude.
+        """
+        unwrapped = unwrap_tool_input(payload)
+
+        LOGGER.debug("Received execution plan input: %s", json.dumps(unwrapped, default=str)[:200])
+
         try:
-            plan = ExecutionPlan.model_validate(payload)
+            plan = ExecutionPlan.model_validate(unwrapped)
         except ValidationError as exc:
             LOGGER.warning("Execution plan validation failed: %s", exc)
             return {"success": False, "errors": exc.errors()}
@@ -399,9 +419,6 @@ class AnalystAgentService:
             "estimated_files": plan.estimated_files,
         }
 
-    # ------------------------------------------------------------------ #
-    # Shared utility helpers (mostly carried over from the legacy flow)
-    # ------------------------------------------------------------------ #
     def _collect_text(self, content: Sequence[Any]) -> str:
         """Concatenate text blocks from an Anthropic response."""
         parts: list[str] = []

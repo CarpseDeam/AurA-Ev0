@@ -2,16 +2,45 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-DEFAULT_ANALYST_MODEL = "claude-3-sonnet-20240229"
-DEFAULT_EXECUTOR_MODEL = "claude-3-sonnet-20240229"
+LATEST_CLAUDE_SONNET_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_ANALYST_MODEL = LATEST_CLAUDE_SONNET_MODEL
+DEFAULT_EXECUTOR_MODEL = LATEST_CLAUDE_SONNET_MODEL
 DEFAULT_LOCAL_MODEL_ENDPOINT = "http://localhost:11434/api/generate"
 DEFAULT_SPECIALIST_MODEL = "phi-3-mini"
+MODEL_MIGRATIONS: Dict[str, str] = {
+    "claude-3-sonnet-20240229": LATEST_CLAUDE_SONNET_MODEL,
+}
+
+
+def _normalize_model_setting(settings: Dict[str, Any], key: str, default: str) -> bool:
+    """
+    Normalize deprecated, empty, or whitespace-only model identifiers.
+
+    Returns:
+        bool: True if the setting was changed.
+    """
+    value = settings.get(key)
+    if isinstance(value, str):
+        value = value.strip()
+
+    if not value:
+        settings[key] = default
+        return True
+
+    replacement = MODEL_MIGRATIONS.get(value)
+    if replacement and replacement != value:
+        logger.info("Upgrading %s model from %s to %s", key, value, replacement)
+        settings[key] = replacement
+        return True
+
+    settings[key] = value
+    return False
 
 def get_settings_path() -> Path:
     """
@@ -49,9 +78,9 @@ def load_settings() -> Dict[str, Any]:
     try:
         with open(settings_path, "r", encoding="utf-8") as f:
             settings = json.load(f)
-            # Ensure all keys are present, providing defaults for any missing ones
-            settings["analyst_model"] = DEFAULT_ANALYST_MODEL  # Force correct model
-            settings.setdefault("executor_model", DEFAULT_EXECUTOR_MODEL)
+            updated = False
+            updated |= _normalize_model_setting(settings, "analyst_model", DEFAULT_ANALYST_MODEL)
+            updated |= _normalize_model_setting(settings, "executor_model", DEFAULT_EXECUTOR_MODEL)
             settings.setdefault("specialist_model", DEFAULT_SPECIALIST_MODEL)
             settings.setdefault("local_model_endpoint", DEFAULT_LOCAL_MODEL_ENDPOINT)
             settings.setdefault("selected_agent", None)
@@ -59,6 +88,8 @@ def load_settings() -> Dict[str, Any]:
             settings.setdefault("sidebar_collapsed", False)
             settings.setdefault("sidebar_width", 280)
             settings.setdefault("verbosity", "normal")
+            if updated:
+                save_settings(settings)
             return settings
     except (json.JSONDecodeError, IOError) as e:
         logger.error(f"Failed to load or parse settings file: {e}. Using default settings.")
