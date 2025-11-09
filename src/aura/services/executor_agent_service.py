@@ -220,9 +220,9 @@ class ExecutorAgentService:
         from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema
 
         tools = [
-            build_anthropic_tool_schema(self.tool_manager.create_file, name_override="create_file"),
-            build_anthropic_tool_schema(self.tool_manager.modify_file, name_override="modify_file"),
-            build_anthropic_tool_schema(self.tool_manager.delete_file, name_override="delete_file"),
+            build_anthropic_tool_schema(self.tool_manager.create_file, name="create_file"),
+            build_anthropic_tool_schema(self.tool_manager.modify_file, name="modify_file"),
+            build_anthropic_tool_schema(self.tool_manager.delete_file, name="delete_file"),
         ]
         return tools
 

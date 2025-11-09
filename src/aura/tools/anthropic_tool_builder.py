@@ -3,15 +3,17 @@ A utility for dynamically generating Anthropic tool schemas from Python callable
 """
 import inspect
 import re
-from typing import Callable, Dict, Any
+from typing import Any, Callable, Dict, Optional
 
-def build_anthropic_tool_schema(tool: Callable, name_override: str = None) -> Dict[str, Any]:
+
+def build_anthropic_tool_schema(tool: Callable, name: Optional[str] = None) -> Dict[str, Any]:
     """
     Dynamically builds a JSON schema for a given Python tool (callable)
     that is compatible with the Anthropic API.
 
     Args:
         tool: The Python tool (function or method) to generate the schema for.
+        name: Optional explicit tool name to use in the schema output.
 
     Returns:
         A dictionary representing the JSON schema for the tool.
@@ -44,7 +46,7 @@ def build_anthropic_tool_schema(tool: Callable, name_override: str = None) -> Di
         "dict": "object",
     }
 
-    for name, param in signature.parameters.items():
+    for param_name, param in signature.parameters.items():
         param_type = "string"  # Default to string
         if param.annotation is not inspect.Parameter.empty:
             annotation_str = str(param.annotation)
@@ -58,14 +60,14 @@ def build_anthropic_tool_schema(tool: Callable, name_override: str = None) -> Di
                 except AttributeError:
                     param_type = "string"  # Fallback for complex types without __name__
 
-        properties[name] = {
+        properties[param_name] = {
             "type": param_type,
-            "description": param_descriptions.get(name, "")
+            "description": param_descriptions.get(param_name, "")
         }
         if param.default is inspect.Parameter.empty:
-            required.append(name)
+            required.append(param_name)
 
-    tool_name = name_override if name_override is not None else tool.__name__
+    tool_name = name if name is not None else tool.__name__
 
     return {
         "name": tool_name,

@@ -395,6 +395,12 @@ class ToolManager:
     # ------------------------------------------------------------------ #
     def get_project_structure(self, directory: str = ".", max_depth: int = 2) -> dict[str, Any]:
         """Summarize the project layout for a given directory."""
+        if isinstance(max_depth, str):
+            try:
+                max_depth = int(max_depth)
+            except ValueError:
+                LOGGER.warning("Invalid max_depth value '%s'; defaulting to 2", max_depth)
+                max_depth = 2
         LOGGER.info(
             "🔧 TOOL CALLED: get_project_structure(directory=%s, max_depth=%s)",
             directory,
