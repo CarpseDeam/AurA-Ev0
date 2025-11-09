@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from google import genai
 from google.genai import types
@@ -245,26 +245,22 @@ class AnalystAgentService:
         This method robustly extracts text from API responses, even when they
         contain complex multi-part content (e.g., after tool calls).
         """
-        # Try the simple .text property first (fast path)
-        text = getattr(chunk, "text", "")
+        text_snapshot = getattr(chunk, "text", "") or ""
 
-        # If that didn't work, manually extract from all text parts
-        if not text:
-            text = AnalystAgentService._extract_text_from_parts(chunk)
+        if not text_snapshot:
+            text_snapshot = AnalystAgentService._extract_text_from_parts(chunk)
 
-        # Still no text? Return early
-        if not text:
+        if not text_snapshot:
             return "", aggregated_text
 
-        # Handle incremental streaming logic
-        if aggregated_text and aggregated_text.startswith(text):
+        if aggregated_text and aggregated_text.startswith(text_snapshot):
             return "", aggregated_text
 
-        if text.startswith(aggregated_text):
-            addition = text[len(aggregated_text) :]
-            return addition, text
+        if text_snapshot.startswith(aggregated_text):
+            addition = text_snapshot[len(aggregated_text) :]
+            return addition, text_snapshot
 
-        return text, aggregated_text + text
+        return text_snapshot, aggregated_text + text_snapshot
 
     @staticmethod
     def _extract_text_from_parts(chunk: types.GenerateContentResponse) -> str:
@@ -274,40 +270,96 @@ class AnalystAgentService:
         the .text property may be empty. This method manually walks through
         all parts to extract text content.
         """
-        text_parts = []
+        text_parts: list[str] = []
+        non_text_detected = False
 
         try:
-            # Access candidates array
-            candidates = getattr(chunk, "candidates", None)
-            if not candidates:
-                return ""
-
-            # Get the first candidate
-            candidate = candidates[0] if len(candidates) > 0 else None
-            if not candidate:
-                return ""
-
-            # Access the content within the candidate
-            content = getattr(candidate, "content", None)
-            if not content:
-                return ""
-
-            # Extract text from all parts
-            parts = getattr(content, "parts", None)
-            if not parts:
-                return ""
-
-            for part in parts:
-                # Each part might have a 'text' field
-                part_text = getattr(part, "text", None)
-                if part_text:
-                    text_parts.append(part_text)
-
-        except (AttributeError, IndexError, TypeError) as exc:
+            for part in AnalystAgentService._iter_response_parts(chunk):
+                extracted = AnalystAgentService._extract_text_from_part(part)
+                if extracted:
+                    text_parts.append(extracted)
+                    continue
+                if AnalystAgentService._part_contains_non_text_payload(part):
+                    non_text_detected = True
+        except Exception as exc:  # noqa: BLE001
             LOGGER.debug("Could not extract text from response parts: %s", exc)
             return ""
 
+        if non_text_detected and not text_parts:
+            LOGGER.debug(
+                "Analyst stream chunk contained only non-text payload; ignoring."
+            )
+
         return "".join(text_parts)
+
+    @staticmethod
+    def _iter_response_parts(
+        chunk: types.GenerateContentResponse,
+    ) -> Iterator[Any]:
+        """Yield every content part in the response."""
+        candidates = getattr(chunk, "candidates", None)
+        if candidates:
+            for candidate in candidates:
+                yield from AnalystAgentService._parts_from_candidate(candidate)
+            return
+
+        content = getattr(chunk, "content", None)
+        yield from AnalystAgentService._parts_from_content(content)
+
+    @staticmethod
+    def _parts_from_candidate(candidate: Any) -> Iterator[Any]:
+        """Yield all parts associated with a candidate."""
+        if not candidate:
+            return
+        content = getattr(candidate, "content", None)
+        yield from AnalystAgentService._parts_from_content(content)
+
+    @staticmethod
+    def _parts_from_content(content: Any) -> Iterator[Any]:
+        """Yield all parts from a content object or a sequence of contents."""
+        if not content:
+            return
+
+        if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+            for entry in content:
+                yield from AnalystAgentService._parts_from_content(entry)
+            return
+
+        content_parts = getattr(content, "parts", None)
+        if not content_parts:
+            return
+        for part in content_parts:
+            yield part
+
+    @staticmethod
+    def _extract_text_from_part(part: Any) -> str:
+        """Return textual content from a part if present."""
+        if isinstance(part, str):
+            return part
+        if isinstance(part, Mapping):
+            text_value = part.get("text")
+            return text_value if isinstance(text_value, str) else ""
+        text_value = getattr(part, "text", None)
+        return text_value if isinstance(text_value, str) else ""
+
+    @staticmethod
+    def _part_contains_non_text_payload(part: Any) -> bool:
+        """Return True if the part carries structured data instead of text."""
+        if isinstance(part, Mapping):
+            keys = set(part.keys())
+            keys.discard("text")
+            keys.discard("thought")
+            return bool(keys)
+        structured_fields = (
+            "function_call",
+            "function_response",
+            "inline_data",
+            "file_data",
+            "code_execution_result",
+            "executable_code",
+            "video_metadata",
+        )
+        return any(getattr(part, field, None) is not None for field in structured_fields)
 
     def _instrument_tools(
         self,

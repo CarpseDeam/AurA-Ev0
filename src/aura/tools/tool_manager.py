@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import fnmatch
 import logging
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+
+try:  # Optional dependency; fallback matcher used if unavailable.
+    from pathspec import PathSpec
+except ImportError:  # pragma: no cover - pathspec is optional at runtime.
+    PathSpec = None  # type: ignore[assignment]
+
+from aura.utils.file_filter import load_gitignore_patterns
 
 LOGGER = logging.getLogger(__name__)
 
@@ -16,6 +25,12 @@ class ToolManager:
         if not resolved.is_dir():
             raise ValueError(f"Workspace directory does not exist: {workspace_dir}")
         self.workspace_dir = resolved
+        self._gitignore_mtime: float | None = None
+        self._gitignore_patterns: list[str] = []
+        self._gitignore_spec: PathSpec | None = None
+        self._gitignore_fallback_matchers: list[tuple[str, bool]] = []
+        self._gitignore_warning_logged = False
+        self._ensure_gitignore_state()
         LOGGER.info("ToolManager workspace set to %s", self.workspace_dir)
 
     def update_workspace(self, workspace_dir: str) -> None:
@@ -27,6 +42,7 @@ class ToolManager:
             LOGGER.debug("ToolManager workspace already set to %s; skipping update", resolved)
             return
         self.workspace_dir = resolved
+        self._reset_gitignore_cache()
         LOGGER.info("ToolManager workspace updated to %s", self.workspace_dir)
 
     # ------------------------------------------------------------------ #
@@ -176,15 +192,25 @@ class ToolManager:
                 LOGGER.warning("list_project_files base missing: %s", base)
                 return []
 
+            self._ensure_gitignore_state()
+            base_relative = self._relative_path(base)
+            if self._is_path_ignored(base_relative, is_dir=True):
+                LOGGER.info(
+                    "list_project_files skipping %s because it is ignored by .gitignore",
+                    base_relative or ".",
+                )
+                return []
+
             suffix = extension if extension.startswith(".") else f".{extension}"
             LOGGER.debug(
                 "Scanning %s for *%s (workspace=%s)", base, suffix, self.workspace_dir
             )
-            files = [
-                self._relative_path(path)
-                for path in base.rglob(f"*{suffix}")
-                if path.is_file() and self._is_within_workspace(path)
-            ]
+            files: list[str] = []
+            for path in self._iter_workspace_files(base):
+                if suffix and path.suffix != suffix:
+                    continue
+                files.append(self._relative_path(path))
+
             LOGGER.info(
                 "list_project_files returning %d paths from %s", len(files), base
             )
@@ -320,3 +346,158 @@ class ToolManager:
             return True
         except ValueError:
             return False
+
+    def _reset_gitignore_cache(self) -> None:
+        """Clear cached gitignore data when the workspace changes."""
+        self._gitignore_mtime = None
+        self._gitignore_patterns = []
+        self._gitignore_spec = None
+        self._gitignore_fallback_matchers = []
+        self._gitignore_warning_logged = False
+        self._ensure_gitignore_state()
+
+    def _ensure_gitignore_state(self) -> None:
+        """Ensure .gitignore patterns are loaded and compiled."""
+        gitignore_path = self.workspace_dir / ".gitignore"
+        if not gitignore_path.exists():
+            self._gitignore_mtime = None
+            self._gitignore_patterns = []
+            self._gitignore_spec = None
+            self._gitignore_fallback_matchers = []
+            return
+
+        try:
+            mtime = gitignore_path.stat().st_mtime
+        except OSError as exc:  # noqa: BLE001
+            LOGGER.debug("Unable to stat .gitignore: %s", exc)
+            return
+
+        if self._gitignore_mtime == mtime:
+            return
+
+        patterns = load_gitignore_patterns(str(self.workspace_dir))
+        self._gitignore_mtime = mtime
+        self._gitignore_patterns = patterns
+
+        spec = self._compile_gitignore_spec(patterns)
+        self._gitignore_spec = spec
+        if spec is None:
+            self._gitignore_fallback_matchers = self._build_fallback_gitignore_matchers(
+                patterns
+            )
+        else:
+            self._gitignore_fallback_matchers = []
+
+    def _compile_gitignore_spec(self, patterns: Sequence[str]) -> PathSpec | None:
+        """Return a compiled PathSpec for .gitignore patterns when available."""
+        if not patterns:
+            return None
+        if PathSpec is None:
+            if patterns and not self._gitignore_warning_logged:
+                LOGGER.warning(
+                    "pathspec is not installed; falling back to basic .gitignore matching."
+                )
+                self._gitignore_warning_logged = True
+            return None
+
+        try:
+            return PathSpec.from_lines("gitwildmatch", patterns)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to compile .gitignore via pathspec: %s", exc)
+            return None
+
+    def _build_fallback_gitignore_matchers(
+        self,
+        patterns: Sequence[str],
+    ) -> list[tuple[str, bool]]:
+        """Build a simple glob-based matcher for environments without pathspec."""
+        matchers: list[tuple[str, bool]] = []
+        for raw in patterns:
+            if not raw:
+                continue
+            is_negated = raw.startswith("!")
+            pattern = raw[1:] if is_negated else raw
+            if not pattern:
+                continue
+            anchored = pattern.startswith("/")
+            cannon = pattern.lstrip("/")
+            directory_only = cannon.endswith("/")
+            cannon = cannon.rstrip("/")
+            if not cannon:
+                continue
+
+            base_patterns = [cannon]
+            if directory_only:
+                base_patterns.append(f"{cannon}/**")
+
+            for candidate in base_patterns:
+                normalized = candidate.replace("\\", "/")
+                if not anchored and not normalized.startswith("**/"):
+                    normalized = f"**/{normalized}"
+                matchers.append((normalized, is_negated))
+
+        return matchers
+
+    def _is_path_ignored(self, relative_path: str, is_dir: bool) -> bool:
+        """Return True if a relative path should be ignored by .gitignore rules."""
+        if not relative_path or relative_path in {".", ""}:
+            return False
+        if not self._gitignore_patterns and not self._gitignore_spec:
+            return False
+
+        candidate = relative_path.replace("\\", "/")
+        spec = self._gitignore_spec
+        if spec is not None:
+            if spec.match_file(candidate):
+                return True
+            if is_dir:
+                dir_candidate = candidate if candidate.endswith("/") else f"{candidate}/"
+                if spec.match_file(dir_candidate):
+                    return True
+            return False
+
+        if not self._gitignore_fallback_matchers:
+            return False
+
+        targets = {candidate}
+        if is_dir:
+            targets.add(f"{candidate}/")
+
+        ignored = False
+        for pattern, is_negated in self._gitignore_fallback_matchers:
+            if any(fnmatch.fnmatchcase(target, pattern) for target in targets):
+                ignored = not is_negated
+        return ignored
+
+    def _iter_workspace_files(self, root: Path) -> Iterator[Path]:
+        """Yield workspace files beneath `root`, respecting .gitignore rules."""
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            try:
+                entries = list(current.iterdir())
+            except (OSError, PermissionError) as exc:
+                LOGGER.debug("Skipping directory %s: %s", current, exc)
+                continue
+
+            for entry in entries:
+                try:
+                    resolved = entry.resolve(strict=False)
+                except OSError:
+                    resolved = entry
+
+                if not self._is_within_workspace(resolved):
+                    LOGGER.debug("Skipping path outside workspace bounds: %s", entry)
+                    continue
+
+                relative = self._relative_path(entry)
+                is_dir = entry.is_dir()
+                if self._is_path_ignored(relative, is_dir=is_dir):
+                    LOGGER.debug("Skipping .gitignore-matched path: %s", relative)
+                    continue
+
+                if is_dir:
+                    stack.append(entry)
+                    continue
+
+                yield entry
