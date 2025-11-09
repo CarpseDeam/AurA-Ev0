@@ -64,13 +64,7 @@ def configure_logging() -> None:
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
 
-    for sdk_logger in [
-        "google.genai",
-        "google_genai",
-        "google.generativeai",
-        "google.ai.generativelanguage",
-    ]:
-        logging.getLogger(sdk_logger).setLevel(logging.WARNING)
+
 
     configure_logging._configured = True  # type: ignore[attr-defined]
 

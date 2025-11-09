@@ -73,7 +73,7 @@ LINE_HEIGHT: float = 1.6
 LETTER_SPACING: str = "0.5px"
 WINDOW_DIMENSIONS: tuple[int, int] = (900, 700)
 
-DEFAULT_AGENT: str = "gemini"
+DEFAULT_AGENT: str = "claude"
 STREAM_PREFIX: str = "STREAM::"
 
 AGENT_SEARCH_PATHS: list[str] = [
@@ -84,7 +84,6 @@ AGENT_SEARCH_PATHS: list[str] = [
 ]
 
 AGENT_DISPLAY_NAMES: dict[str, str] = {
-    "gemini": "Gemini 2.5 Pro",
     "claude": "Claude Code",
     "codex": "Codex",
 }
