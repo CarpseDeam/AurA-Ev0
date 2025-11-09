@@ -22,8 +22,7 @@ LOGGER = logging.getLogger(__name__)
 
 def get_project_dependencies(
     requirements_path: str = "requirements.txt",
-    pyproject_path: str = "pyproject.toml",
-) -> dict[str, Any]:
+) -> dict:
     """Return declared dependencies from requirements.txt and/or pyproject.toml."""
     LOGGER.info("?? TOOL CALLED: get_project_dependencies")
     project_root = Path.cwd()
@@ -53,10 +52,9 @@ def get_project_dependencies(
 
 def update_documentation(
     symbol_name: str,
-    old_reference: str | None,
+    old_reference: str,
     new_reference: str,
-    docs_directory: str = ".",
-) -> dict[str, Any]:
+) -> dict:
     """Update Markdown docs that reference a symbol or old signature."""
     LOGGER.info("?? TOOL CALLED: update_documentation(%s)", symbol_name)
     docs_path = _resolve_path(docs_directory)
@@ -93,7 +91,7 @@ def update_documentation(
     }
 
 
-def get_database_schema(connection_url: str | None = None) -> dict[str, Any]:
+def get_database_schema(connection_url: str = None) -> dict:
     """Inspect a SQL database using SQLAlchemy and return a schema summary."""
     LOGGER.info("?? TOOL CALLED: get_database_schema")
     try:
