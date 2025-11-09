@@ -112,7 +112,6 @@ class AnalystAgentService:
             max_iterations = 10
 
             for iteration in range(max_iterations):
-                # ✅ FIX #1: Updated Gemini API call to use correct SDK syntax
                 response = self._client.models.generate_content(
                     model=self.model_name,
                     contents=messages,
@@ -126,52 +125,75 @@ class AnalystAgentService:
                     ),
                 )
 
-                if response.candidates and response.candidates[0].content.parts:
-                    parts = response.candidates[0].content.parts
+                # ✅ FIX #3: Defensive check for None content
+                if not response.candidates:
+                    LOGGER.warning("Response has no candidates")
+                    break
 
-                    function_calls = [p for p in parts if p.function_call]
+                candidate = response.candidates[0]
+                if not candidate.content:
+                    LOGGER.warning("Candidate has no content")
+                    finish_reason = getattr(candidate, "finish_reason", None)
+                    LOGGER.warning(
+                        "Candidate finish_reason: %s",
+                        finish_reason if finish_reason is not None else "Unavailable",
+                    )
+                    safety_ratings = getattr(candidate, "safety_ratings", None)
+                    if safety_ratings:
+                        LOGGER.warning("Candidate safety_ratings: %s", safety_ratings)
+                    else:
+                        LOGGER.warning("Candidate safety_ratings unavailable or empty")
+                    LOGGER.warning("Candidate repr: %r", candidate)
+                    break
 
-                    if function_calls:
-                        messages.append(response.candidates[0].content)
+                if not candidate.content.parts:
+                    LOGGER.warning("Content has no parts")
+                    break
 
-                        for fc in function_calls:
-                            tool_name = fc.function_call.name
-                            tool_args = dict(fc.function_call.args)
+                parts = candidate.content.parts
+                function_calls = [p for p in parts if p.function_call]
 
-                            LOGGER.info(f"Executing tool: {tool_name} with args: {tool_args}")
+                if function_calls:
+                    messages.append(candidate.content)
 
-                            result = self._execute_tool(tool_name, tool_args)
+                    for fc in function_calls:
+                        tool_name = fc.function_call.name
+                        tool_args = dict(fc.function_call.args)
 
-                            messages.append({
-                                "role": "user",
-                                "parts": [{
-                                    "function_response": {
-                                        "name": tool_name,
-                                        "response": {"result": result},
-                                    }
-                                }]
-                            })
+                        LOGGER.info(f"Executing tool: {tool_name} with args: {tool_args}")
 
-                        continue
+                        result = self._execute_tool(tool_name, tool_args)
 
-                    final_text = self._coalesce_response_text(response)
-                    if final_text:
-                        if on_chunk:
-                            self._emit_streaming_chunk(final_text, source=_ANALYST_SOURCE, on_chunk=on_chunk)
-                            self._emit_streaming_chunk("", source=_ANALYST_SOURCE, on_chunk=on_chunk, is_final=True)
+                        messages.append({
+                            "role": "user",
+                            "parts": [{
+                                "function_response": {
+                                    "name": tool_name,
+                                    "response": {"result": result},
+                                }
+                            }]
+                        })
 
-                        duration = time.perf_counter() - started
-                        self._emit_status("Analyst agent: plan ready", "analyst.complete")
-                        self._event_bus.emit(
-                            PhaseTransition(from_phase="analyst", to_phase="idle", source=_ANALYST_SOURCE)
-                        )
-                        self._emit_completion(final_text, success=True)
-                        LOGGER.info(
-                            "Analyst analysis completed | duration=%.2fs | text_length=%d",
-                            duration,
-                            len(final_text),
-                        )
-                        return final_text
+                    continue
+
+                final_text = self._coalesce_response_text(response)
+                if final_text:
+                    if on_chunk:
+                        self._emit_streaming_chunk(final_text, source=_ANALYST_SOURCE, on_chunk=on_chunk)
+                        self._emit_streaming_chunk("", source=_ANALYST_SOURCE, on_chunk=on_chunk, is_final=True)
+
+                    duration = time.perf_counter() - started
+                    self._emit_status("Analyst agent: plan ready", "analyst.complete")
+                    self._event_bus.emit(
+                        PhaseTransition(from_phase="analyst", to_phase="idle", source=_ANALYST_SOURCE)
+                    )
+                    self._emit_completion(final_text, success=True)
+                    LOGGER.info(
+                        "Analyst analysis completed | duration=%.2fs | text_length=%d",
+                        duration,
+                        len(final_text),
+                    )
+                    return final_text
 
                 break
 
@@ -359,7 +381,7 @@ class AnalystAgentService:
             keys = set(part.keys())
             keys.discard("text")
             keys.discard("thought")
-            keys.discard("thought_signature")  # ✅ FIX #2: thought_signature fix
+            keys.discard("thought_signature")
             return bool(keys)
         structured_fields = (
             "function_call",

@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-DEFAULT_ANALYST_MODEL = "gemini-2.5-pro"
+DEFAULT_ANALYST_MODEL = "claude-sonnet-4-5-20250929"
 DEFAULT_EXECUTOR_MODEL = "claude-sonnet-4-5-20250929"
 DEFAULT_LOCAL_MODEL_ENDPOINT = "http://localhost:11434/api/generate"
 DEFAULT_SPECIALIST_MODEL = "phi-3-mini"

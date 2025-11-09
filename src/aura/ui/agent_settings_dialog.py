@@ -49,10 +49,10 @@ class AgentSettingsDialog(QDialog):
         self.save_settings_button.setObjectName("save_settings_button")
 
         # Model selection widgets
-        self.gemini_model_combo = QComboBox(self)
-        self.gemini_refresh_button = QPushButton("Refresh Models", self)
-        self.claude_model_combo = QComboBox(self)
-        self.claude_refresh_button = QPushButton("Refresh Models", self)
+        self.analyst_model_combo = QComboBox(self)
+        self.analyst_refresh_button = QPushButton("Refresh Models", self)
+        self.executor_model_combo = QComboBox(self)
+        self.executor_refresh_button = QPushButton("Refresh Models", self)
         self.specialist_model_combo = QComboBox(self)
         self.specialist_refresh_button = QPushButton("Refresh", self)
         self.specialist_model_combo.setEditable(False)
@@ -65,8 +65,7 @@ class AgentSettingsDialog(QDialog):
         self._apply_styles()
         self._connect_signals()
         self.refresh_agents()
-        self._refresh_gemini_models()
-        self._refresh_claude_models()
+        self._refresh_cloud_models()
         self._refresh_ollama_models()
 
     def _configure_dialog(self) -> None:
@@ -107,15 +106,15 @@ class AgentSettingsDialog(QDialog):
         model_layout.setContentsMargins(0, 20, 0, 0)
         model_layout.addRow(QLabel("API MODELS"))
 
-        gemini_layout = QHBoxLayout()
-        gemini_layout.addWidget(self.gemini_model_combo)
-        gemini_layout.addWidget(self.gemini_refresh_button)
-        model_layout.addRow("Analyst Model:", gemini_layout)
+        analyst_layout = QHBoxLayout()
+        analyst_layout.addWidget(self.analyst_model_combo)
+        analyst_layout.addWidget(self.analyst_refresh_button)
+        model_layout.addRow("Analyst Model:", analyst_layout)
 
-        claude_layout = QHBoxLayout()
-        claude_layout.addWidget(self.claude_model_combo)
-        claude_layout.addWidget(self.claude_refresh_button)
-        model_layout.addRow("Executor Model:", claude_layout)
+        executor_layout = QHBoxLayout()
+        executor_layout.addWidget(self.executor_model_combo)
+        executor_layout.addWidget(self.executor_refresh_button)
+        model_layout.addRow("Executor Model:", executor_layout)
 
         specialist_layout = QHBoxLayout()
         specialist_layout.addWidget(self.specialist_model_combo)
@@ -192,11 +191,11 @@ class AgentSettingsDialog(QDialog):
         self.close_button.clicked.connect(self.accept)
 
         # Model selection signals
-        self.gemini_refresh_button.clicked.connect(self._refresh_gemini_models)
-        self.claude_refresh_button.clicked.connect(self._refresh_claude_models)
+        self.analyst_refresh_button.clicked.connect(self._refresh_cloud_models)
+        self.executor_refresh_button.clicked.connect(self._refresh_cloud_models)
         self.specialist_refresh_button.clicked.connect(self._refresh_ollama_models)
-        self.gemini_model_combo.currentTextChanged.connect(self._on_gemini_model_selected)
-        self.claude_model_combo.currentTextChanged.connect(self._on_claude_model_selected)
+        self.analyst_model_combo.currentTextChanged.connect(self._on_analyst_model_selected)
+        self.executor_model_combo.currentTextChanged.connect(self._on_executor_model_selected)
         self.specialist_model_combo.currentTextChanged.connect(self._on_specialist_model_selected)
 
     def refresh_agents(self) -> None:
@@ -304,25 +303,27 @@ class AgentSettingsDialog(QDialog):
         )
         return item if ok else ""
 
-    def _refresh_gemini_models(self) -> None:
-        """Fetch and display available Gemini models."""
-        api_key = os.environ.get("GEMINI_API_KEY", "")
-        if not api_key:
-            self._update_model_combo(self.gemini_model_combo, [], "Set GEMINI_API_KEY to discover models")
-            return
+    def _refresh_cloud_models(self) -> None:
+        """Fetch and display available hosted models for analyst/executor roles."""
+        models: list[ModelInfo | dict | str] = []
 
-        models = discover_gemini_models(api_key)
-        self._update_model_combo(self.gemini_model_combo, models, "Unable to fetch models (check network/key)")
+        gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if gemini_api_key:
+            models.extend(discover_gemini_models(gemini_api_key))
 
-    def _refresh_claude_models(self) -> None:
-        """Fetch and display available Claude models."""
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            self._update_model_combo(self.claude_model_combo, [], "Set ANTHROPIC_API_KEY to discover models")
-            return
+        claude_api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if claude_api_key:
+            models.extend(discover_claude_models(claude_api_key))
 
-        models = discover_claude_models(api_key)
-        self._update_model_combo(self.claude_model_combo, models, "Unable to fetch models (check network/key)")
+        has_any_api_key = bool(gemini_api_key or claude_api_key)
+        error_message = (
+            "Set GEMINI_API_KEY or ANTHROPIC_API_KEY to discover models"
+            if not has_any_api_key
+            else "Unable to fetch models (check network/key)"
+        )
+
+        self._update_model_combo(self.analyst_model_combo, models, error_message)
+        self._update_model_combo(self.executor_model_combo, models, error_message)
 
     def _refresh_ollama_models(self) -> None:
         """Fetch and display available Ollama models."""
@@ -344,9 +345,9 @@ class AgentSettingsDialog(QDialog):
             current_selection = stripped_text or None
 
         if not current_selection:
-            if combo is self.gemini_model_combo:
+            if combo is self.analyst_model_combo:
                 current_selection = self.app_state.analyst_model
-            elif combo is self.claude_model_combo:
+            elif combo is self.executor_model_combo:
                 current_selection = self.app_state.executor_model
             elif combo is self.specialist_model_combo:
                 current_selection = self.app_state.specialist_model
@@ -416,17 +417,17 @@ class AgentSettingsDialog(QDialog):
         finally:
             combo.blockSignals(False)
 
-    def _on_gemini_model_selected(self, text: str) -> None:
-        """Handle selection of a Gemini analyst model."""
-        model_id = self.gemini_model_combo.currentData()
+    def _on_analyst_model_selected(self, text: str) -> None:
+        """Handle selection of an analyst model."""
+        model_id = self.analyst_model_combo.currentData()
         if not model_id:
             model_id = text.strip()
         if model_id:
             self.app_state.set_analyst_model(model_id)
 
-    def _on_claude_model_selected(self, text: str) -> None:
-        """Handle selection of a Claude model."""
-        model_id = self.claude_model_combo.currentData()
+    def _on_executor_model_selected(self, text: str) -> None:
+        """Handle selection of an executor model."""
+        model_id = self.executor_model_combo.currentData()
         if not model_id:
             model_id = text.strip()
         if model_id:
