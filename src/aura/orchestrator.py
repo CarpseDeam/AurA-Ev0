@@ -7,11 +7,10 @@ directly to the UI.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
 import threading
 import time
-import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Tuple
@@ -233,7 +232,6 @@ class Orchestrator(QObject):
             )
 
         self._working_dir = resolved
-        self._agent_path = app_state.agent_path
         self._use_background_thread = use_background_thread
         self._history: List[Tuple[str, str]] = []
         self._thread: QThread | None = None
@@ -329,10 +327,6 @@ class Orchestrator(QObject):
                 self._start_background_conversation(session, prompt)
             else:
                 self._run_conversation(session, prompt)
-
-    def update_agent_path(self, agent_path: str) -> None:
-        """Update the remembered CLI agent path (used for manual runs)."""
-        self._agent_path = agent_path
 
     def update_working_directory(self, path: str) -> None:
         """Update the working directory used when building prompts."""
@@ -688,18 +682,6 @@ class Orchestrator(QObject):
                 "Workspace no longer exists. Select a valid working directory to continue.",
                 context={"issue": "working_directory_missing", "path": str(self._working_dir)},
             )
-        if self._agent_path:
-            agent = Path(self._agent_path)
-            if not agent.exists():
-                raise AuraConfigurationError(
-                    "Configured agent executable cannot be found. Please update your agent settings.",
-                    context={"issue": "agent_missing", "path": str(agent)},
-                )
-            if not os.access(agent, os.X_OK):
-                raise AuraConfigurationError(
-                    "Configured agent is not executable. Please reconfigure the agent path.",
-                    context={"issue": "agent_not_executable", "path": str(agent)},
-                )
 
     def load_conversation_history(self, conversation_id: int) -> None:
         """

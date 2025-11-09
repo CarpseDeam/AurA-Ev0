@@ -68,8 +68,6 @@ def load_settings() -> Dict[str, Any]:
             "executor_model": DEFAULT_EXECUTOR_MODEL,
             "specialist_model": DEFAULT_SPECIALIST_MODEL,
             "local_model_endpoint": DEFAULT_LOCAL_MODEL_ENDPOINT,
-            "selected_agent": None,
-            "agent_executable": None,
             "sidebar_collapsed": False,
             "sidebar_width": 280,
             "verbosity": "normal",
@@ -83,8 +81,6 @@ def load_settings() -> Dict[str, Any]:
             updated |= _normalize_model_setting(settings, "executor_model", DEFAULT_EXECUTOR_MODEL)
             settings.setdefault("specialist_model", DEFAULT_SPECIALIST_MODEL)
             settings.setdefault("local_model_endpoint", DEFAULT_LOCAL_MODEL_ENDPOINT)
-            settings.setdefault("selected_agent", None)
-            settings.setdefault("agent_executable", None)
             settings.setdefault("sidebar_collapsed", False)
             settings.setdefault("sidebar_width", 280)
             settings.setdefault("verbosity", "normal")
@@ -98,8 +94,6 @@ def load_settings() -> Dict[str, Any]:
             "executor_model": DEFAULT_EXECUTOR_MODEL,
             "specialist_model": DEFAULT_SPECIALIST_MODEL,
             "local_model_endpoint": DEFAULT_LOCAL_MODEL_ENDPOINT,
-            "selected_agent": None,
-            "agent_executable": None,
             "sidebar_collapsed": False,
             "sidebar_width": 280,
             "verbosity": "normal",

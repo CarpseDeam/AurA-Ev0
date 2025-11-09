@@ -23,7 +23,7 @@ from aura.events import (
     ToolCallStarted,
 )
 from aura.models import ToolCallLog
-from aura.prompt import AURA_SYSTEM_PROMPT
+from aura.prompts import UNIFIED_AGENT_PROMPT
 from aura.tools.local_agent_tools import generate_commit_message
 from aura.tools.tool_manager import ToolManager
 from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema
@@ -111,7 +111,7 @@ class ChatService:
 
                 response = self._client.messages.create(
                     model=self.model_name,
-                    system=AURA_SYSTEM_PROMPT,
+                    system=UNIFIED_AGENT_PROMPT,
                     temperature=0,
                     max_tokens=4096,
                     tools=tools,

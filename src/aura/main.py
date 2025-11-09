@@ -114,13 +114,6 @@ class ApplicationController:
         self.app_state.set_executor_model(settings.get("executor_model", DEFAULT_EXECUTOR_MODEL))
         self.app_state.set_specialist_model(settings.get("specialist_model", DEFAULT_SPECIALIST_MODEL))
         
-        selected_agent = settings.get("selected_agent", config.DEFAULT_AGENT)
-        agent_executable = settings.get("agent_executable")
-        
-        self.app_state.set_selected_agent(selected_agent)
-        if agent_executable:
-            self.app_state.set_agent_path(agent_executable)
-
         orchestrator_warning: str | None = None
 
         try:

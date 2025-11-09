@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 
@@ -73,23 +72,7 @@ LINE_HEIGHT: float = 1.6
 LETTER_SPACING: str = "0.5px"
 WINDOW_DIMENSIONS: tuple[int, int] = (900, 700)
 
-DEFAULT_AGENT: str = "claude"
 STREAM_PREFIX: str = "STREAM::"
-
-AGENT_SEARCH_PATHS: list[str] = [
-    os.path.join(os.getenv("APPDATA", ""), "npm"),
-    os.path.join(os.getenv("LOCALAPPDATA", ""), "Programs"),
-    "/usr/local/bin",
-    os.path.expanduser("~/.local/bin"),
-]
-
-AGENT_DISPLAY_NAMES: dict[str, str] = {
-    "claude": "Claude Code",
-    "codex": "Codex",
-}
-
-AUTO_COMMIT_SESSIONS: bool = False
-AUTO_PUSH_ON_COMPLETE: bool = False
 
 OUTPUT_SECTION_SEPARATOR: str = "=" * 70
 OUTPUT_SUBSECTION_SEPARATOR: str = "-" * 50
@@ -112,12 +95,7 @@ __all__ = [
     "WINDOW_DIMENSIONS",
     "ColorPalette",
     "Icons",
-    "DEFAULT_AGENT",
     "STREAM_PREFIX",
-    "AGENT_SEARCH_PATHS",
-    "AGENT_DISPLAY_NAMES",
-    "AUTO_COMMIT_SESSIONS",
-    "AUTO_PUSH_ON_COMPLETE",
     "OUTPUT_SECTION_SEPARATOR",
     "OUTPUT_SUBSECTION_SEPARATOR",
     "OUTPUT_SECTION_SPACING_PX",

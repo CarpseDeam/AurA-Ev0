@@ -29,8 +29,6 @@ class AppState(QObject):
 
     # Signals for state changes
     working_directory_changed = Signal(str)
-    selected_agent_changed = Signal(str)
-    agent_path_changed = Signal(str)
     status_changed = Signal(str, str)  # message, color
     analyst_model_changed = Signal(str)
     executor_model_changed = Signal(str)
@@ -43,8 +41,6 @@ class AppState(QObject):
         """Initialize application state with default values."""
         super().__init__(parent)
         self._working_directory: str = ""
-        self._selected_agent: str = ""
-        self._agent_path: str = ""
         self._status_message: str = "Ready"
         self._status_color: str = "#ffffff"
         self._analyst_model: str = DEFAULT_ANALYST_MODEL
@@ -81,35 +77,6 @@ class AppState(QObject):
             self._working_directory = resolved
             self.working_directory_changed.emit(resolved)
 
-    @property
-    def selected_agent(self) -> str:
-        """Get the currently selected agent."""
-        return self._selected_agent
-
-    def set_selected_agent(self, agent: str) -> None:
-        """Set the selected agent and emit change signal.
-
-        Args:
-            agent: Agent name to select
-        """
-        if self._selected_agent != agent:
-            self._selected_agent = agent
-            self.selected_agent_changed.emit(agent)
-
-    @property
-    def agent_path(self) -> str:
-        """Get the current agent executable path."""
-        return self._agent_path
-
-    def set_agent_path(self, path: str) -> None:
-        """Set the agent path and emit change signal.
-
-        Args:
-            path: Path to agent executable
-        """
-        if self._agent_path != path:
-            self._agent_path = path
-            self.agent_path_changed.emit(path)
 
     @property
     def status_message(self) -> str:

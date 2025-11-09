@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -45,10 +44,8 @@ from aura.exceptions import (
     AuraValidationError,
 )
 from aura.orchestrator import Orchestrator
-from aura.services import AgentRunner
 from aura.state import AppState
 from aura.ui import AgentSettingsDialog
-from aura.ui.agent_execution_manager import AgentExecutionManager
 from aura.ui.orchestration_handler import OrchestrationHandler, VerbosityLevel
 from aura.ui.output_panel import OutputPanel
 from aura.ui.status_bar_manager import StatusBarManager
@@ -80,7 +77,6 @@ class MainWindow(QMainWindow):
         self.input_field = QLineEdit(self); self.clear_button = QPushButton("Clear", self)
         self.toolbar = self.addToolBar("Project")
         self.verbosity_selector: QComboBox | None = None
-        self.current_runner: Optional[AgentRunner] = None
         self._workspace_blocked_project_id: Optional[int] = None
 
         # Model status badges
@@ -103,12 +99,6 @@ class MainWindow(QMainWindow):
             app_state=self.app_state,
             parent=self,
         )
-        self.agent_manager = AgentExecutionManager(
-            app_state=self.app_state,
-            output_panel=self.output_panel,
-            status_manager=self.status_bar_manager,
-            orchestrator=self.orchestrator,
-        )
 
         self._configure_window(); self._build_layout(); self._configure_sidebar_animation(); self._apply_styles(); self._build_toolbar()
         self._connect_signals(); self._connect_sidebar_signals(); self._connect_handler_signals(); self._subscribe_to_events()
@@ -122,8 +112,6 @@ class MainWindow(QMainWindow):
             self._connect_orchestrator_signals()
             self.output_panel.display_startup_header()
             self.output_panel.display_output("Aura orchestration ready", config.COLORS.success)
-
-        self.agent_manager.detect_default_agent()
 
     def _configure_window(self) -> None:
         self.setWindowTitle("Aura"); self.resize(*config.WINDOW_DIMENSIONS)
@@ -537,9 +525,6 @@ class MainWindow(QMainWindow):
         prompt = self.input_field.text().strip()
         if not prompt:
             return
-        if self.current_runner and self.current_runner.isRunning():
-            self.output_panel.display_output("An agent run is already in progress.", "#FF6B6B")
-            return
         if self._workspace_blocked_project_id:
             self.output_panel.display_error(
                 "Select a working directory for the current project before running an agent."
@@ -550,30 +535,20 @@ class MainWindow(QMainWindow):
         self.input_field.clear()
         self.output_panel.display_output(f"> {prompt}", config.COLORS.prompt)
         has_orchestrator = self.orchestrator is not None
-        should_orchestrate = bool(has_orchestrator and self._should_orchestrate(prompt))
-        status_message = (
-            "⋯ Gemini Analyst - analyzing request..."
-            if should_orchestrate
-            else "⋯ Executing CLI agent..."
-        )
+        status_message = "⋯ Analyst/Executor pipeline running..." if has_orchestrator else "⋯ Orchestrator unavailable"
         self.status_bar_manager.update_status(status_message, config.COLORS.thinking, persist=True)
         self._set_input_enabled(False)
 
         try:
             if not has_orchestrator:
-                self.execute_command(prompt)
-                return
-            if should_orchestrate:
-                import threading
-
-                LOGGER.info(
-                    "EXECUTION_REQUESTED: Emitting execution_requested signal (thread: %s, goal: %s)",
-                    threading.current_thread().name,
-                    prompt[:50],
+                self._display_user_error(
+                    "Cloud orchestration is unavailable. Set ANTHROPIC_API_KEY and restart Aura."
                 )
-                self.execution_requested.emit(prompt)
-            else:
-                self.execute_command(prompt)
+                self._recover_input_after_error()
+                return
+
+            LOGGER.info("EXECUTION_REQUESTED: goal=%s", prompt[:80])
+            self.execution_requested.emit(prompt)
         except AuraConfigurationError as exc:
             LOGGER.warning("Configuration issue while submitting prompt: %s", exc)
             self._handle_configuration_issue(exc)
@@ -591,83 +566,8 @@ class MainWindow(QMainWindow):
             self._display_user_error("Something went wrong while starting your request. Please try again.")
             self._recover_input_after_error()
 
-    def execute_command(self, prompt: str) -> None:
-        try:
-            self.agent_manager.validate_environment()
-            command_prompt = self.agent_manager.compose_prompt(prompt)
-        except AuraConfigurationError as exc:
-            self._handle_configuration_issue(exc)
-            self._recover_input_after_error()
-            return
-        except AuraValidationError as exc:
-            self._display_user_error(str(exc))
-            self._recover_input_after_error()
-            return
-
-        agent_executable = self.app_state.agent_path
-        if not agent_executable:
-            error = AuraConfigurationError(
-                "No CLI agent is configured. Please open Agent Settings to choose one.",
-                context={"issue": "agent_missing"},
-            )
-            self._handle_configuration_issue(error)
-            self._recover_input_after_error()
-            return
-
-        command = [agent_executable, "-p", command_prompt, "--yolo"]
-        try:
-            runner = AgentRunner(
-                command=command,
-                working_directory=self.app_state.working_directory,
-                parent=self,
-            )
-        except ValueError as exc:
-            self._display_user_error(f"Unable to start agent: {exc}")
-            self._recover_input_after_error()
-            return
-        except Exception:  # noqa: BLE001
-            LOGGER.exception("Failed to initialize agent runner")
-            self._display_user_error("Unable to start the CLI agent. Check logs for details.")
-            self._recover_input_after_error()
-            return
-
-        runner.output_line.connect(self.output_panel.display_output)
-        runner.process_finished.connect(self.handle_process_finished)
-        runner.process_error.connect(self.handle_process_error)
-        self.current_runner = runner
-        self.status_bar_manager.update_status("Running...", config.COLORS.accent, persist=True)
-        LOGGER.info(
-            "Starting CLI agent run | agent=%s | cwd=%s",
-            os.path.basename(agent_executable),
-            self.app_state.working_directory,
-        )
-        runner.start()
-
-    def _should_orchestrate(self, prompt: str) -> bool:
-        lower = prompt.lower()
-        if any(word in lower for word in ["build", "create app", "add feature", "implement"]):
-            return len(prompt) > 30
-        return len(prompt) > 50
-
     def _set_input_enabled(self, enabled: bool) -> None:
         self.input_field.setEnabled(enabled)
-
-    def handle_process_finished(self, exit_code: int) -> None:
-        if exit_code == 0:
-            self.output_panel.display_output("Agent run completed successfully.", config.COLORS.success)
-            self.status_bar_manager.update_status("Completed", config.COLORS.success, persist=True)
-        else:
-            self.output_panel.display_output(f"Agent exited with code {exit_code}", "#FF6B6B")
-            self.status_bar_manager.update_status("Error", "#FF6B6B", persist=True)
-
-        LOGGER.info("CLI agent finished | exit_code=%s", exit_code)
-        self._set_input_enabled(True); self.input_field.setFocus()
-        self.current_runner = None
-
-    def handle_process_error(self, error: str) -> None:
-        LOGGER.error("CLI agent reported error: %s", error)
-        self._display_user_error(error or "Agent reported an unknown error.")
-        self._recover_input_after_error()
 
     def clear_output(self) -> None:
         self.output_panel.clear()
@@ -690,8 +590,6 @@ class MainWindow(QMainWindow):
         issue = (error.context or {}).get("issue") if isinstance(error.context, dict) else None
         if issue in {"working_directory_missing", "working_directory_invalid"}:
             self._prompt_for_working_directory()
-        elif issue in {"agent_missing", "agent_not_executable"}:
-            self._open_agent_settings()
 
     def _prompt_for_working_directory(self) -> None:
         """Prompt the user to choose a new working directory."""
@@ -755,17 +653,24 @@ class MainWindow(QMainWindow):
             project_name or "unknown",
         )
         try:
-            applied = self.agent_manager.set_working_directory(resolved)
-        except AuraConfigurationError as exc:
-            LOGGER.warning("Failed to apply project workspace %s: %s", resolved, exc)
-            self._display_user_error(str(exc))
+            self.app_state.set_working_directory(resolved)
+        except (ValueError, FileNotFoundError) as exc:
+            LOGGER.warning("Failed to set working directory %s: %s", resolved, exc)
+            self._display_user_error("Please select a valid working directory that exists on disk.")
             return False
-
-        workspace = applied or self.app_state.working_directory
+        workspace = self.app_state.working_directory
         if not workspace:
             LOGGER.error("Workspace application returned empty path for %s", resolved)
             self._display_user_error("Workspace not applied. Please retry selecting the directory.")
             return False
+
+        if self.orchestrator:
+            try:
+                self.orchestrator.update_working_directory(workspace)
+            except AuraConfigurationError as exc:
+                LOGGER.warning("Failed to sync orchestrator workspace %s: %s", resolved, exc)
+                self._display_user_error(str(exc))
+                return False
 
         try:
             if Path(workspace).resolve() != resolved_path:
@@ -793,8 +698,7 @@ class MainWindow(QMainWindow):
 
     def _open_agent_settings(self) -> None:
         dialog = AgentSettingsDialog(self.app_state, self)
-        if dialog.exec():
-            self.agent_manager.detect_default_agent()
+        dialog.exec()
 
     def _on_progress_update(self, message: str) -> None:
         """Update status bar with immediate visual feedback for progress."""
