@@ -11,11 +11,13 @@ from PySide6.QtCore import Signal, Qt, QEasingCurve, QVariantAnimation, QAbstrac
 from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut, QIcon
 from PySide6.QtWidgets import (
     QFileDialog,
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -32,7 +34,9 @@ from aura.events import (
     StatusUpdate,
     StreamingChunk,
     ToolCallCompleted,
+    ToolCallFailed,
     ToolCallStarted,
+    PhaseTransition,
 )
 from aura.exceptions import (
     AuraConfigurationError,
@@ -45,7 +49,7 @@ from aura.services import AgentRunner
 from aura.state import AppState
 from aura.ui import AgentSettingsDialog
 from aura.ui.agent_execution_manager import AgentExecutionManager
-from aura.ui.orchestration_handler import OrchestrationHandler
+from aura.ui.orchestration_handler import OrchestrationHandler, VerbosityLevel
 from aura.ui.output_panel import OutputPanel
 from aura.ui.status_bar_manager import StatusBarManager
 from aura.ui.project_sidebar import ProjectSidebar
@@ -75,7 +79,9 @@ class MainWindow(QMainWindow):
         self.output_panel = OutputPanel(self)
         self.input_field = QLineEdit(self); self.clear_button = QPushButton("Clear", self)
         self.toolbar = self.addToolBar("Project")
+        self.verbosity_selector: QComboBox | None = None
         self.current_runner: Optional[AgentRunner] = None
+        self._workspace_blocked_project_id: Optional[int] = None
 
         # Model status badges
         self.analyst_badge = QLabel(self)
@@ -303,6 +309,16 @@ class MainWindow(QMainWindow):
         dir_action = QAction("Set Working Directory", self); dir_action.triggered.connect(self._select_working_directory); self.toolbar.addAction(dir_action)
         agent_action = QAction("Agent Settings...", self); agent_action.triggered.connect(self._open_agent_settings); self.toolbar.addAction(agent_action)
 
+        # Verbosity controls
+        verbosity_label = QLabel("Verbosity:", self)
+        verbosity_label.setStyleSheet(
+            f"color: {config.COLORS.secondary}; font-size: 11px; font-weight: 500; padding-left: 6px;"
+        )
+        self.toolbar.addWidget(verbosity_label)
+        self.verbosity_selector = QComboBox(self)
+        self._configure_verbosity_selector()
+        self.toolbar.addWidget(self.verbosity_selector)
+
         # Add spacer to push badges to the right
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -314,6 +330,67 @@ class MainWindow(QMainWindow):
         self._style_model_badges()
         self.toolbar.addWidget(self.analyst_badge)
         self.toolbar.addWidget(self.executor_badge)
+
+    def _configure_verbosity_selector(self) -> None:
+        """Initialize the verbosity drop-down."""
+        if not self.verbosity_selector:
+            return
+        self.verbosity_selector.clear()
+        for level in VerbosityLevel:
+            self.verbosity_selector.addItem(level.name.title(), level.value)
+        self.verbosity_selector.setMinimumWidth(130)
+        self.verbosity_selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.verbosity_selector.setStyleSheet(
+            f"""
+            QComboBox {{
+                background: {config.COLORS.background};
+                color: {config.COLORS.text};
+                border: 1px solid {config.COLORS.border};
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 11px;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+            }}
+            QComboBox QListView {{
+                background: {config.COLORS.background};
+                color: {config.COLORS.text};
+                selection-background-color: {config.COLORS.accent};
+            }}
+            """
+        )
+        self.verbosity_selector.setToolTip("Control how much streaming output is shown.")
+        self.verbosity_selector.currentIndexChanged.connect(self._on_verbosity_changed)
+        self._select_verbosity_in_ui(self.orchestration_handler.verbosity)
+
+    def _select_verbosity_in_ui(self, level: VerbosityLevel) -> None:
+        """Update the combo box selection without retriggering persistence."""
+        if not self.verbosity_selector:
+            return
+        target_index = self.verbosity_selector.findData(level.value)
+        if target_index == -1:
+            return
+        block_state = self.verbosity_selector.blockSignals(True)
+        self.verbosity_selector.setCurrentIndex(target_index)
+        self.verbosity_selector.blockSignals(block_state)
+
+    def _apply_verbosity_level(self, level: VerbosityLevel, *, persist: bool) -> None:
+        """Apply verbosity to handler, update UI, and optionally persist."""
+        self.orchestration_handler.set_verbosity(level)
+        self._select_verbosity_in_ui(level)
+        if persist:
+            settings = load_settings()
+            settings["verbosity"] = level.value
+            save_settings(settings)
+
+    def _on_verbosity_changed(self, index: int) -> None:
+        """Handle live changes to verbosity from the toolbar."""
+        if not self.verbosity_selector or index < 0:
+            return
+        data = self.verbosity_selector.itemData(index)
+        level = VerbosityLevel.from_value(str(data) if data is not None else None)
+        self._apply_verbosity_level(level, persist=True)
 
     def _connect_signals(self) -> None:
         self.input_field.returnPressed.connect(self._handle_submit); self.clear_button.clicked.connect(self.clear_output)
@@ -361,7 +438,9 @@ class MainWindow(QMainWindow):
             StreamingChunk,
             ToolCallStarted,
             ToolCallCompleted,
+            ToolCallFailed,
             FileOperation,
+            PhaseTransition,
             StatusUpdate,
             ExecutionComplete,
         )
@@ -374,6 +453,8 @@ class MainWindow(QMainWindow):
     def _load_and_apply_settings(self) -> None:
         """Load sidebar state from settings and apply it."""
         settings = load_settings()
+        saved_verbosity = VerbosityLevel.from_value(settings.get("verbosity"))
+        self._apply_verbosity_level(saved_verbosity, persist=False)
         sidebar_width = int(settings.get("sidebar_width", self.project_sidebar.sizeHint().width()))
         self.project_sidebar.expanded_width = sidebar_width
         sidebar_width = self.project_sidebar.expanded_width
@@ -458,6 +539,11 @@ class MainWindow(QMainWindow):
             return
         if self.current_runner and self.current_runner.isRunning():
             self.output_panel.display_output("An agent run is already in progress.", "#FF6B6B")
+            return
+        if self._workspace_blocked_project_id:
+            self.output_panel.display_error(
+                "Select a working directory for the current project before running an agent."
+            )
             return
 
         # IMMEDIATE FEEDBACK - happens instantly before any processing
@@ -622,38 +708,88 @@ class MainWindow(QMainWindow):
             self._prompting_for_directory = False
 
     def _select_working_directory(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select Working Directory", self.app_state.working_directory)
+        """Allow the user to override the working directory manually."""
+        seed = self.app_state.working_directory or str(Path.home())
+        path = QFileDialog.getExistingDirectory(self, "Select Working Directory", seed)
         if not path:
             return
-        self._apply_project_working_directory(path)
+        project_name = None
+        project = None
+        current_project_id = self.app_state.current_project_id
+        if current_project_id:
+            project = Project.get_by_id(current_project_id)
+            if project:
+                project_name = project.name
+        if self._apply_project_working_directory(path, project_name=project_name):
+            if current_project_id and project:
+                project.update(working_directory=str(Path(path).resolve()))
+                self.project_sidebar.refresh_projects()
+                self.project_panel.set_project(project)
+            self._workspace_blocked_project_id = None
+            self._set_input_enabled(True)
 
-    def _apply_project_working_directory(self, raw_path: str) -> None:
+    def _apply_project_working_directory(self, raw_path: str, *, project_name: Optional[str] = None) -> bool:
         """Resolve and propagate a project-provided working directory."""
         if not raw_path:
-            return
+            return False
         try:
             resolved_path = Path(raw_path).expanduser().resolve()
             resolved = str(resolved_path)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("Invalid project working directory '%s': %s", raw_path, exc)
             self._display_user_error(f"Project working directory is invalid: {raw_path}")
-            return
+            return False
 
         current = self.app_state.working_directory
         if current:
             try:
                 if Path(current).resolve() == resolved_path:
                     LOGGER.debug("Workspace already set to %s; skipping update", resolved)
-                    return
+                    return True
             except Exception:  # noqa: BLE001
                 LOGGER.debug("Unable to compare workspace paths; continuing", exc_info=True)
 
-        LOGGER.info("Applying workspace %s (requested=%s)", resolved, raw_path)
+        LOGGER.info(
+            "Setting ToolManager workspace to: %s | project=%s",
+            resolved,
+            project_name or "unknown",
+        )
         try:
-            self.agent_manager.set_working_directory(resolved)
+            applied = self.agent_manager.set_working_directory(resolved)
         except AuraConfigurationError as exc:
             LOGGER.warning("Failed to apply project workspace %s: %s", resolved, exc)
             self._display_user_error(str(exc))
+            return False
+
+        workspace = applied or self.app_state.working_directory
+        if not workspace:
+            LOGGER.error("Workspace application returned empty path for %s", resolved)
+            self._display_user_error("Workspace not applied. Please retry selecting the directory.")
+            return False
+
+        try:
+            if Path(workspace).resolve() != resolved_path:
+                LOGGER.error(
+                    "Workspace mismatch detected | expected=%s | current=%s",
+                    resolved,
+                    workspace,
+                )
+                self._display_user_error(
+                    "Working directory mismatch detected. Please re-select the project directory."
+                )
+                return False
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Unable to verify workspace equality; continuing", exc_info=True)
+
+        if not self._verify_tool_manager_workspace(resolved):
+            return False
+
+        if project_name:
+            self.status_bar_manager.update_status(f"Project: {project_name}", config.COLORS.accent, persist=True)
+        else:
+            self.status_bar_manager.update_status("Workspace updated", config.COLORS.accent, persist=True)
+        LOGGER.info("Working directory set to %s", resolved)
+        return True
 
     def _open_agent_settings(self) -> None:
         dialog = AgentSettingsDialog(self.app_state, self)
@@ -693,15 +829,26 @@ class MainWindow(QMainWindow):
                 self.app_state.set_current_conversation(None)
                 if self.orchestrator:
                     self.orchestrator.reset_history()
+                LOGGER.info("Loading project: %s (ID: %s)", project.name, project_id)
+                LOGGER.info("Project working directory: %s", project.working_directory or "<unset>")
+
                 self.output_panel.clear()
-                self.output_panel.display_output(f"Loaded project: {project.name}", config.COLORS.success)
 
                 # Update app state
                 self.app_state.set_current_project(project_id)
 
-                # Update working directory if project has one
-                if project.working_directory:
-                    self._apply_project_working_directory(project.working_directory)
+                workspace_ready = self._ensure_project_workspace(project)
+                if workspace_ready:
+                    self._workspace_blocked_project_id = None
+                    current_workspace = self.app_state.working_directory
+                    self._set_input_enabled(True)
+                    self.output_panel.display_output(
+                        f"Loaded project: {project.name} | Working directory: {current_workspace}",
+                        config.COLORS.success,
+                    )
+                else:
+                    self._block_workspace_for_project(project)
+                    self.output_panel.display_output(f"Loaded project: {project.name}", config.COLORS.success)
 
                 # Show project panel
                 self.project_panel.set_project(project)
@@ -714,6 +861,116 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             LOGGER.error(f"Failed to select project: {e}")
+
+    def _ensure_project_workspace(self, project: Project) -> bool:
+        """Ensure the selected project has an active working directory."""
+        raw_path = (project.working_directory or "").strip()
+        if raw_path:
+            return self._apply_project_working_directory(raw_path, project_name=project.name)
+        return self._prompt_for_project_working_directory(project)
+
+    def _prompt_for_project_working_directory(self, project: Project) -> bool:
+        """Request the user to provide a working directory when missing."""
+        message = (
+            f"Project '{project.name}' has no working directory. "
+            "Select one now to enable file tools."
+        )
+        choice = QMessageBox.question(
+            self,
+            "Set Project Working Directory",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if choice == QMessageBox.StandardButton.Yes:
+            seed = project.working_directory or self.app_state.working_directory or str(Path.home())
+            selected = QFileDialog.getExistingDirectory(self, "Select Project Directory", seed)
+            if selected:
+                resolved = str(Path(selected).expanduser().resolve())
+                LOGGER.info(
+                    "User selected working directory %s for project %s",
+                    resolved,
+                    project.id,
+                )
+                project.update(working_directory=resolved)
+                self.project_sidebar.refresh_projects()
+                self.project_panel.set_project(project)
+                return self._apply_project_working_directory(resolved, project_name=project.name)
+        LOGGER.warning(
+            "Project %s lacks a working directory; agent operations disabled until one is set.",
+            project.id,
+        )
+        self._display_user_error(
+            f"Project '{project.name}' has no working directory. Use 'Set Working Directory' to continue."
+        )
+        return False
+
+    def _block_workspace_for_project(self, project: Project) -> None:
+        """Disable agent operations until the workspace is configured."""
+        self._workspace_blocked_project_id = project.id
+        self._set_input_enabled(False)
+        self.status_bar_manager.update_status(
+            f"Workspace required for {project.name}",
+            config.COLORS.error,
+            persist=True,
+        )
+
+    def _verify_tool_manager_workspace(self, expected: str) -> bool:
+        """Compare the orchestrator/tool manager workspace to the requested path."""
+        if not expected:
+            return False
+        expected_path = None
+        try:
+            expected_path = Path(expected).resolve()
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Unable to resolve expected workspace %s", expected, exc_info=True)
+        if not self.orchestrator:
+            LOGGER.info("ToolManager now using: %s (no orchestrator available for verification)", expected)
+            return True
+
+        tm_path = ""
+        tm = getattr(self.orchestrator, "_tool_manager", None)
+        if tm is not None:
+            tm_path = str(getattr(tm, "workspace_dir", "") or "")
+        orch_path = ""
+        if hasattr(self.orchestrator, "_working_dir"):
+            try:
+                orch_path = str(self.orchestrator._working_dir)
+            except Exception:  # noqa: BLE001
+                LOGGER.debug("Unable to read orchestrator working dir", exc_info=True)
+
+        LOGGER.info(
+            "ToolManager now using: %s | orchestrator _working_dir=%s",
+            tm_path or "<unknown>",
+            orch_path or "<unknown>",
+        )
+
+        mismatch = False
+        if expected_path:
+            if tm_path:
+                try:
+                    if Path(tm_path).resolve() != expected_path:
+                        mismatch = True
+                except Exception:  # noqa: BLE001
+                    LOGGER.debug("Unable to resolve ToolManager path %s", tm_path, exc_info=True)
+            if orch_path:
+                try:
+                    if Path(orch_path).resolve() != expected_path:
+                        mismatch = True
+                except Exception:  # noqa: BLE001
+                    LOGGER.debug("Unable to resolve orchestrator path %s", orch_path, exc_info=True)
+
+        if mismatch:
+            LOGGER.error(
+                "ToolManager workspace mismatch detected | expected=%s | tool_manager=%s | orchestrator=%s",
+                expected,
+                tm_path or "<unknown>",
+                orch_path or "<unknown>",
+            )
+            self._display_user_error(
+                "ToolManager is still using the previous workspace. Please re-select the project directory."
+            )
+            return False
+        return True
 
     def _on_conversation_selected(self, conversation_id: int) -> None:
         """Handle conversation selection from sidebar."""

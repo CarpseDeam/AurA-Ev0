@@ -92,20 +92,38 @@ class AgentExecutionManager:
             "#FFB74D",
         )
 
-    def set_working_directory(self, path: str) -> None:
-        """Update the working directory in AppState."""
+    def set_working_directory(self, path: str) -> str:
+        """Update the working directory in AppState and synchronize dependents."""
         try:
-            self._app_state.set_working_directory(path)
-        except (ValueError, FileNotFoundError) as exc:
+            resolved = str(Path(path).expanduser().resolve())
+        except Exception as exc:  # noqa: BLE001
             raise AuraConfigurationError(
                 "Please select a valid working directory that exists on disk.",
                 context={"issue": "working_directory_invalid", "path": path},
             ) from exc
-        LOGGER.info("Working directory changed: %s", self._app_state.working_directory)
+        try:
+            self._app_state.set_working_directory(resolved)
+        except (ValueError, FileNotFoundError) as exc:
+            raise AuraConfigurationError(
+                "Please select a valid working directory that exists on disk.",
+                context={"issue": "working_directory_invalid", "path": resolved},
+            ) from exc
+
+        workspace = self._app_state.working_directory
+        LOGGER.info("Working directory changed: %s", workspace)
+
+        if self._orchestrator:
+            try:
+                self._orchestrator.update_working_directory(workspace)
+            except AuraConfigurationError as exc:
+                LOGGER.error("Failed to sync orchestrator workspace: %s", exc)
+                raise
+
         self._output_panel.display_output(
-            f"Working directory set to {self._app_state.working_directory}",
+            f"Working directory set to {workspace}",
             config.COLORS.accent,
         )
+        return workspace
 
     def compose_prompt(self, prompt: str) -> str:
         """Combine workspace context with the user's prompt."""

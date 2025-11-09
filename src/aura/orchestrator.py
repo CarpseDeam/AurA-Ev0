@@ -331,14 +331,19 @@ class Orchestrator(QObject):
                 "Working directory does not exist.",
                 context={"path": str(resolved)},
             )
+        LOGGER.info("Orchestrator updating working directory to %s", resolved)
         self._working_dir = resolved
-        self._tool_manager = ToolManager(str(self._working_dir))
+        if hasattr(self, "_tool_manager") and self._tool_manager is not None:
+            self._tool_manager.update_workspace(str(self._working_dir))
+        else:
+            self._tool_manager = ToolManager(str(self._working_dir))
         if hasattr(self._chat_service, "tool_manager"):
             self._chat_service.tool_manager = self._tool_manager
         if self._analyst_agent:
             self._analyst_agent.tool_manager = self._tool_manager
         if self._executor_agent:
             self._executor_agent.tool_manager = self._tool_manager
+        LOGGER.info("ToolManager bound to workspace %s", self._tool_manager.workspace_dir)
 
     def reset_history(self) -> None:
         """Clear the conversation history."""

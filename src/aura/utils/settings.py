@@ -43,6 +43,7 @@ def load_settings() -> Dict[str, Any]:
             "agent_executable": None,
             "sidebar_collapsed": False,
             "sidebar_width": 280,
+            "verbosity": "normal",
         }
 
     try:
@@ -57,6 +58,7 @@ def load_settings() -> Dict[str, Any]:
             settings.setdefault("agent_executable", None)
             settings.setdefault("sidebar_collapsed", False)
             settings.setdefault("sidebar_width", 280)
+            settings.setdefault("verbosity", "normal")
             return settings
     except (json.JSONDecodeError, IOError) as e:
         logger.error(f"Failed to load or parse settings file: {e}. Using default settings.")
@@ -69,6 +71,7 @@ def load_settings() -> Dict[str, Any]:
             "agent_executable": None,
             "sidebar_collapsed": False,
             "sidebar_width": 280,
+            "verbosity": "normal",
         }
 
 def save_settings(settings: Dict[str, Any]) -> None:

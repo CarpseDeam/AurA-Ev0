@@ -7,7 +7,9 @@ import difflib
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Optional
 
 from PySide6.QtCore import QObject, Signal, QTimer
@@ -16,9 +18,11 @@ from aura import config
 from aura.events import (
     ExecutionComplete,
     FileOperation,
+    PhaseTransition,
     StatusUpdate,
     StreamingChunk,
     ToolCallCompleted,
+    ToolCallFailed,
     ToolCallStarted,
 )
 from aura.orchestrator import SessionResult
@@ -67,6 +71,37 @@ def _log_handler_recv(message: str) -> None:
     LOGGER.info(f"HANDLER_RECV [ID:{msg_id}]: {msg_preview}")
 
 
+class VerbosityLevel(str, Enum):
+    """Represents how much streaming output to surface."""
+
+    MINIMAL = "minimal"
+    NORMAL = "normal"
+    VERBOSE = "verbose"
+
+    @classmethod
+    def from_value(cls, value: Optional[str]) -> "VerbosityLevel":
+        """Map persisted values (including None) onto a valid enum."""
+        if isinstance(value, cls):
+            return value
+        normalized = (value or "").lower()
+        for level in cls:
+            if level.value == normalized:
+                return level
+        return cls.NORMAL
+
+
+STREAM_SUMMARY_WINDOW_MS = 1200
+STREAM_SUMMARY_MAX_LEN = 220
+IGNORED_CHUNK_PHRASES = {
+    "thinking",
+    "analysis",
+    "analyzing",
+    "considering options",
+    "reasoning",
+    "pondering",
+}
+
+
 class OrchestrationHandler(QObject):
     """Routes orchestrator events to the output panel and status bar."""
 
@@ -89,10 +124,32 @@ class OrchestrationHandler(QObject):
         self._tool_batch_timer = QTimer(self)
         self._tool_batch_timer.setSingleShot(True)
         self._tool_batch_timer.timeout.connect(self._flush_tool_announcements)
+        self._verbosity = VerbosityLevel.NORMAL
+        self._chunk_buffer: list[str] = []
+        self._chunk_buffer_source: Optional[str] = None
+        self._chunk_buffer_timer = QTimer(self)
+        self._chunk_buffer_timer.setSingleShot(True)
+        self._chunk_buffer_timer.timeout.connect(self._flush_chunk_buffer)
+        self._in_thinking_block = False
+        self._last_chunk_summary: str = ""
+
+    @property
+    def verbosity(self) -> VerbosityLevel:
+        """Return the currently active verbosity level."""
+        return self._verbosity
+
+    def set_verbosity(self, level: VerbosityLevel) -> None:
+        """Update verbosity and reset streaming buffers."""
+        new_level = VerbosityLevel.from_value(level)
+        if new_level == self._verbosity:
+            return
+        self._verbosity = new_level
+        self._reset_chunk_buffer()
 
     def handle_planning_started(self) -> None:
         """Reset state and display planning message."""
         try:
+            self._reset_chunk_buffer()
             self._set_running_state()
             self.request_input_enabled.emit(False)
         except Exception:  # noqa: BLE001
@@ -102,6 +159,7 @@ class OrchestrationHandler(QObject):
     def handle_session_started(self, index: int, session) -> None:
         """Display headers for a new session."""
         try:
+            self._reset_chunk_buffer()
             self._set_running_state()
             name = getattr(session, "name", "Conversation")
 
@@ -199,11 +257,7 @@ class OrchestrationHandler(QObject):
         """Process typed feedback events from the event bus."""
         try:
             if isinstance(event, StreamingChunk):
-                text = (event.text or "").rstrip("\r")
-                if not text:
-                    return
-                _log_handler_recv(text)
-                self._output_panel.display_stream_chunk(text, config.COLORS.agent_output)
+                self._handle_streaming_chunk_event(event)
                 return
 
             if isinstance(event, ToolCallStarted):
@@ -211,11 +265,19 @@ class OrchestrationHandler(QObject):
                 return
 
             if isinstance(event, ToolCallCompleted):
-                # Reserved for future use (e.g., telemetry)
+                self._handle_tool_call_completed_event(event)
+                return
+
+            if isinstance(event, ToolCallFailed):
+                self._handle_tool_call_failure_event(event)
                 return
 
             if isinstance(event, FileOperation):
                 self._handle_file_operation_event(event)
+                return
+
+            if isinstance(event, PhaseTransition):
+                self._handle_phase_transition_event(event)
                 return
 
             if isinstance(event, StatusUpdate):
@@ -228,6 +290,32 @@ class OrchestrationHandler(QObject):
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to handle feedback event")
             self._output_panel.display_error("Background event processing failed. See aura.log for details.")
+
+    def _handle_streaming_chunk_event(self, event: StreamingChunk) -> None:
+        """Filter and display streaming chunks according to verbosity settings."""
+        text = (event.text or "").rstrip("\r")
+        if not text:
+            return
+        if self._verbosity is VerbosityLevel.VERBOSE:
+            _log_handler_recv(text)
+            self._output_panel.display_stream_chunk(text, config.COLORS.agent_output)
+            return
+
+        filtered = self._strip_hidden_blocks(text)
+        if self._verbosity is VerbosityLevel.MINIMAL:
+            # Still update hidden block tracking even when suppressing all text.
+            return
+
+        normalized = self._normalize_chunk(filtered)
+        if not normalized:
+            return
+        self._chunk_buffer_source = event.source or self._chunk_buffer_source
+        self._chunk_buffer.append(normalized)
+        total_chars = sum(len(segment) for segment in self._chunk_buffer)
+        if event.is_final or total_chars >= STREAM_SUMMARY_MAX_LEN:
+            self._flush_chunk_buffer()
+            return
+        self._chunk_buffer_timer.start(STREAM_SUMMARY_WINDOW_MS)
 
     def _handle_tool_call_message(self, payload: str) -> None:
         """Parse a TOOL_CALL message and render it appropriately."""
@@ -242,8 +330,36 @@ class OrchestrationHandler(QObject):
 
     def _handle_tool_call_event(self, event: ToolCallStarted) -> None:
         """Render tool call feedback emitted from the event bus."""
+        self._flush_chunk_buffer()
         parsed_args = self._normalize_parameters(event.parameters)
         self._render_tool_call(event.tool_name or "tool", parsed_args)
+
+    def _handle_tool_call_completed_event(self, event: ToolCallCompleted) -> None:
+        """Surface a concise completion line for every tool call."""
+        self._flush_chunk_buffer()
+        tool = event.tool_name or "tool"
+        summary = self._summarize_tool_result(event.result)
+        if summary:
+            message = f"[OK] {tool} completed: {summary}"
+        else:
+            message = f"[OK] {tool} completed"
+        self._output_panel.display_output(message, config.COLORS.success)
+
+    def _handle_tool_call_failure_event(self, event: ToolCallFailed) -> None:
+        """Always display tool failures, regardless of verbosity."""
+        self._flush_chunk_buffer()
+        tool = event.tool_name or "tool"
+        error = (event.error or "Tool call failed.").strip()
+        message = f"[FAIL] {tool} failed: {error}"
+        self._output_panel.display_output(message, config.COLORS.error)
+
+    def _handle_phase_transition_event(self, event: PhaseTransition) -> None:
+        """Highlight state transitions across the orchestration pipeline."""
+        self._flush_chunk_buffer()
+        previous = (event.from_phase or "unknown").strip() or "unknown"
+        current = (event.to_phase or "unknown").strip() or "unknown"
+        message = f"-> Phase: {previous} -> {current}"
+        self._output_panel.display_output(message, config.COLORS.accent)
 
     def _render_tool_call(self, tool_name: str, parsed_args: Any) -> None:
         """Shared rendering pipeline for tool call events."""
@@ -531,8 +647,128 @@ class OrchestrationHandler(QObject):
             return dict(parameters)
         return {"value": parameters}
 
+    def _strip_hidden_blocks(self, text: str) -> str:
+        """Remove segments enclosed in hidden tags (e.g., <thinking>)."""
+        if not text:
+            return ""
+        lowered = text.lower()
+        cursor = 0
+        output: list[str] = []
+        while cursor < len(text):
+            if self._in_thinking_block:
+                closing_index = None
+                closing_token = ""
+                for tag in ("thinking", "analysis"):
+                    token = f"</{tag}>"
+                    idx = lowered.find(token, cursor)
+                    if idx != -1 and (closing_index is None or idx < closing_index):
+                        closing_index = idx
+                        closing_token = token
+                if closing_index is None:
+                    # Entire remainder is hidden.
+                    return "".join(output)
+                cursor = closing_index + len(closing_token)
+                self._in_thinking_block = False
+                continue
+
+            start_index = None
+            start_token_end = None
+            for tag in ("thinking", "analysis"):
+                token = f"<{tag}"
+                idx = lowered.find(token, cursor)
+                if idx != -1 and (start_index is None or idx < start_index):
+                    start_index = idx
+                    end = lowered.find(">", idx)
+                    start_token_end = end + 1 if end != -1 else None
+            if start_index is None:
+                output.append(text[cursor:])
+                break
+            output.append(text[cursor:start_index])
+            if start_token_end is None:
+                # Tag started but not finished in this chunk.
+                self._in_thinking_block = True
+                break
+            cursor = start_token_end
+            self._in_thinking_block = True
+        cleaned = "".join(output)
+        cleaned = re.sub(r"</(thinking|analysis)>", "", cleaned, flags=re.IGNORECASE)
+        return cleaned
+
+    def _normalize_chunk(self, text: str) -> str:
+        """Collapse whitespace and discard repetitive reasoning lines."""
+        normalized = re.sub(r"\s+", " ", text or "").strip()
+        if not normalized:
+            return ""
+        normalized = normalized.lstrip("-•").strip()
+        lowered = normalized.lower()
+        if lowered in IGNORED_CHUNK_PHRASES:
+            return ""
+        if lowered.startswith("analysis:"):
+            normalized = normalized[len("analysis:") :].strip().capitalize()
+        return normalized
+
+    def _flush_chunk_buffer(self) -> None:
+        """Emit any buffered streaming summary."""
+        if not self._chunk_buffer:
+            self._chunk_buffer_timer.stop()
+            self._chunk_buffer_source = None
+            return
+        summary = self._summarize_chunk_buffer()
+        self._chunk_buffer = []
+        self._chunk_buffer_timer.stop()
+        source = self._format_source_label(self._chunk_buffer_source)
+        self._chunk_buffer_source = None
+        if not summary:
+            return
+        self._last_chunk_summary = summary
+        self._output_panel.display_output(f"[{source}] {summary}", config.COLORS.agent_output)
+
+    def _summarize_chunk_buffer(self) -> str:
+        """Create a single line summary from buffered chunks."""
+        summary = re.sub(r"\s+", " ", " ".join(self._chunk_buffer)).strip()
+        if not summary:
+            return ""
+        if summary == self._last_chunk_summary:
+            return ""
+        if len(summary) > STREAM_SUMMARY_MAX_LEN:
+            summary = summary[:STREAM_SUMMARY_MAX_LEN].rstrip() + "..."
+        return summary
+
+    def _format_source_label(self, source: Optional[str]) -> str:
+        """Return a friendly display label for a streaming source."""
+        if not source:
+            return "Analyst"
+        normalized = source.replace("_", " ").strip()
+        if not normalized:
+            return "Analyst"
+        return normalized.title()
+
+    def _summarize_tool_result(self, result: Any) -> str:
+        """Convert tool results into a short one-line summary."""
+        if result is None:
+            return ""
+        if isinstance(result, str):
+            summary = result.strip()
+        else:
+            try:
+                summary = json.dumps(result, default=str)
+            except TypeError:
+                summary = str(result)
+        summary = summary.splitlines()[0].strip()
+        if len(summary) > 160:
+            summary = summary[:160].rstrip() + "..."
+        return summary
+
+    def _reset_chunk_buffer(self) -> None:
+        """Clear any buffered streaming text and reset filters."""
+        self._chunk_buffer.clear()
+        self._chunk_buffer_timer.stop()
+        self._chunk_buffer_source = None
+        self._in_thinking_block = False
+
     def _handle_file_operation_event(self, event: FileOperation) -> None:
         """Render file operation completions."""
+        self._flush_chunk_buffer()
         operation = (event.operation or "").lower()
         filepath = event.filepath or ""
         if not operation or not filepath:
@@ -561,6 +797,7 @@ class OrchestrationHandler(QObject):
 
     def _handle_status_update_event(self, event: StatusUpdate) -> None:
         """Display status updates from services."""
+        self._flush_chunk_buffer()
         message = event.message or "Status update"
         phase = (event.phase or "").lower()
         color = config.COLORS.accent
@@ -572,6 +809,7 @@ class OrchestrationHandler(QObject):
 
     def _handle_execution_complete_event(self, event: ExecutionComplete) -> None:
         """Show execution summaries when agents finish."""
+        self._flush_chunk_buffer()
         summary = (event.summary or "").strip()
         success = event.success is not False
         color = config.COLORS.success if success else config.COLORS.error

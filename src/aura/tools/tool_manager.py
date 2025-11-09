@@ -18,6 +18,17 @@ class ToolManager:
         self.workspace_dir = resolved
         LOGGER.info("ToolManager workspace set to %s", self.workspace_dir)
 
+    def update_workspace(self, workspace_dir: str) -> None:
+        """Re-point the ToolManager at a new workspace directory."""
+        resolved = Path(workspace_dir).expanduser().resolve()
+        if not resolved.is_dir():
+            raise ValueError(f"Workspace directory does not exist: {workspace_dir}")
+        if resolved == self.workspace_dir:
+            LOGGER.debug("ToolManager workspace already set to %s; skipping update", resolved)
+            return
+        self.workspace_dir = resolved
+        LOGGER.info("ToolManager workspace updated to %s", self.workspace_dir)
+
     # ------------------------------------------------------------------ #
     # File operation helpers
     # ------------------------------------------------------------------ #

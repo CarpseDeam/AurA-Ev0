@@ -143,7 +143,31 @@ class ProjectDialog(QDialog):
             return
 
         description = self._desc_input.toPlainText().strip() or None
-        working_directory = self._workdir_input.text().strip() or None
+        working_dir_input = self._workdir_input.text().strip()
+        if not working_dir_input:
+            QMessageBox.warning(
+                self,
+                "Working Directory Required",
+                "Every project must reference a working directory. Please select one.",
+            )
+            return
+        try:
+            working_directory_path = Path(working_dir_input).expanduser().resolve()
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(
+                self,
+                "Invalid Directory",
+                f"Unable to use '{working_dir_input}': {exc}",
+            )
+            return
+        if not working_directory_path.is_dir():
+            QMessageBox.warning(
+                self,
+                "Invalid Directory",
+                f"The selected directory does not exist: {working_directory_path}",
+            )
+            return
+        working_directory = str(working_directory_path)
         custom_instructions = self._instructions_input.toPlainText().strip() or None
 
         try:
