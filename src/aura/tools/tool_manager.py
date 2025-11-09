@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import json
 import logging
 import os
 import statistics
@@ -265,13 +266,17 @@ class ToolManager:
         pattern: str,
         directory: str = ".",
         file_extension: str = ".py",
-    ) -> dict[str, object]:
-        """Search for a case-insensitive pattern within workspace files."""
+    ) -> str:
+        """Search for a case-insensitive pattern within workspace files.
+
+        Returns:
+            JSON string with format: {"matches": [{"file": str, "line_number": int, "content": str}]}
+        """
         LOGGER.info("🔧 TOOL CALLED: search_in_files(%s)", pattern)
         try:
             base = self._resolve_directory(directory)
             if not base.exists():
-                return {"matches": []}
+                return json.dumps({"matches": []})
 
             suffix = file_extension if file_extension.startswith(".") else f".{file_extension}"
             matches = []
@@ -298,13 +303,13 @@ class ToolManager:
                         )
                         if len(matches) >= 50:
                             LOGGER.info("Search hit 50 match limit")
-                            return {"matches": matches}
+                            return json.dumps({"matches": matches})
 
             LOGGER.info("Search found %d matches for pattern: %s", len(matches), pattern)
-            return {"matches": matches}
+            return json.dumps({"matches": matches})
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to search files for pattern %s: %s", pattern, exc)
-            return {"matches": [], "error": f"Error searching for '{pattern}': {exc}"}
+            return json.dumps({"matches": [], "error": f"Error searching for '{pattern}': {exc}"})
 
     def read_multiple_files(self, file_paths: list[str]) -> str:
         """Read multiple files and return formatted contents.
@@ -526,19 +531,23 @@ class ToolManager:
             LOGGER.exception("Failed to get git diff: %s", exc)
             return f"Error getting diff: {exc}"
 
-    def git_blame(self, file_path: str, line_number: int) -> dict[str, Any]:
-        """Return author and commit metadata for a specific file line."""
+    def git_blame(self, file_path: str, line_number: int) -> str:
+        """Return author and commit metadata for a specific file line.
+
+        Returns:
+            JSON string with blame info or error
+        """
         LOGGER.info("🔧 TOOL CALLED: git_blame(%s:%s)", file_path, line_number)
         if line_number <= 0:
-            return {"error": "Line number must be greater than zero."}
+            return json.dumps({"error": "Line number must be greater than zero."})
 
         repo = self._load_repo()
         if isinstance(repo, dict):
-            return repo
+            return json.dumps(repo)
 
         target_path = self._resolve_repo_path(repo, file_path)
         if target_path is None:
-            return {"error": f"File '{file_path}' is outside the repository."}
+            return json.dumps({"error": f"File '{file_path}' is outside the repository."})
 
         rel = os.fspath(target_path)
         rel = rel.replace("\\", "/")
@@ -547,14 +556,14 @@ class ToolManager:
             blame_data = repo.blame("HEAD", rel)
         except GitCommandError as exc:  # pragma: no cover
             LOGGER.error("git blame failed: %s", exc)
-            return {"error": f"git blame failed: {exc}"}
+            return json.dumps({"error": f"git blame failed: {exc}"})
 
         counter = 0
         for commit, lines in blame_data:
             for line in lines:
                 counter += 1
                 if counter == line_number:
-                    return {
+                    return json.dumps({
                         "file": rel,
                         "line": line_number,
                         "author": commit.author.name,
@@ -563,36 +572,40 @@ class ToolManager:
                         "summary": commit.summary,
                         "committed_datetime": commit.committed_datetime.isoformat(),
                         "context": line.rstrip("\n"),
-                    }
+                    })
 
-        return {"error": f"Line {line_number} is beyond the end of {file_path}."}
+        return json.dumps({"error": f"Line {line_number} is beyond the end of {file_path}."})
 
-    def create_new_branch(self, branch_name: str, start_point: str = "HEAD") -> dict[str, Any]:
-        """Create and check out a new git branch based on start_point."""
+    def create_new_branch(self, branch_name: str, start_point: str = "HEAD") -> str:
+        """Create and check out a new git branch based on start_point.
+
+        Returns:
+            JSON string with success status and details
+        """
         LOGGER.info("🔧 TOOL CALLED: create_new_branch(%s)", branch_name)
         if not branch_name or branch_name.strip() == "":
-            return {"success": False, "error": "Branch name cannot be empty."}
+            return json.dumps({"success": False, "error": "Branch name cannot be empty."})
 
         repo = self._load_repo()
         if isinstance(repo, dict):
-            return repo
+            return json.dumps(repo)
 
         branch_name = branch_name.strip()
         existing_names = {head.name for head in repo.branches}
         if branch_name in existing_names:
-            return {"success": False, "error": f"Branch '{branch_name}' already exists."}
+            return json.dumps({"success": False, "error": f"Branch '{branch_name}' already exists."})
 
         try:
             new_branch = repo.create_head(branch_name, start_point)
             new_branch.checkout()
-            return {
+            return json.dumps({
                 "success": True,
                 "branch": branch_name,
                 "start_point": start_point,
-            }
+            })
         except GitCommandError as exc:  # pragma: no cover
             LOGGER.error("Failed to create branch %s: %s", branch_name, exc)
-            return {"success": False, "error": f"Failed to create branch: {exc}"}
+            return json.dumps({"success": False, "error": f"Failed to create branch: {exc}"})
 
     def _load_repo(self) -> Repo | dict[str, Any]:
         """Load git repository starting from workspace directory."""
@@ -618,7 +631,7 @@ class ToolManager:
     # ------------------------------------------------------------------ #
     # Python tool operations
     # ------------------------------------------------------------------ #
-    def run_tests(self, test_path: str = "tests/", verbose: bool = False) -> dict[str, object]:
+    def run_tests(self, test_path: str = "tests/", verbose: bool = False) -> str:
         """Run pytest on the codebase and return test results.
 
         Args:
@@ -626,7 +639,7 @@ class ToolManager:
             verbose: Enable verbose output (default: False)
 
         Returns:
-            Dictionary with keys: passed, failed, duration, output
+            JSON string with keys: passed, failed, duration, output
         """
         LOGGER.info("🔧 TOOL CALLED: run_tests(%s)", test_path)
         try:
@@ -671,31 +684,31 @@ class ToolManager:
                         duration = float(match.group(1))
 
             LOGGER.info("Tests completed: passed=%d, failed=%d", passed, failed)
-            return {
+            return json.dumps({
                 "passed": passed,
                 "failed": failed,
                 "duration": duration,
                 "output": output.strip(),
-            }
+            })
 
         except FileNotFoundError:
             LOGGER.error("pytest is not installed or not found in PATH")
-            return {
+            return json.dumps({
                 "passed": 0,
                 "failed": 0,
                 "duration": 0.0,
                 "output": "Error: pytest is not installed. Install with: pip install pytest",
-            }
+            })
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to run tests: %s", exc)
-            return {
+            return json.dumps({
                 "passed": 0,
                 "failed": 0,
                 "duration": 0.0,
                 "output": f"Error running tests: {exc}",
-            }
+            })
 
-    def lint_code(self, file_paths: list[str] | None = None, directory: str = ".") -> dict[str, object]:
+    def lint_code(self, file_paths: list[str] | None = None, directory: str = ".") -> str:
         """Run pylint to catch errors and code quality issues.
 
         Args:
@@ -703,7 +716,7 @@ class ToolManager:
             directory: Directory to lint if file_paths not provided (default: ".")
 
         Returns:
-            Dictionary with keys: errors (list), warnings (list), score (float), output (str)
+            JSON string with keys: errors (list), warnings (list), score (float), output (str)
         """
         LOGGER.info("🔧 TOOL CALLED: lint_code(%s)", file_paths or directory)
         try:
@@ -719,20 +732,20 @@ class ToolManager:
                 if base.exists():
                     py_files = [str(f) for f in base.rglob("*.py") if f.is_file()]
                     if not py_files:
-                        return {
+                        return json.dumps({
                             "errors": [],
                             "warnings": [],
                             "score": 10.0,
                             "output": "No Python files found to lint.",
-                        }
+                        })
                     cmd.extend(py_files[:20])
                 else:
-                    return {
+                    return json.dumps({
                         "errors": [],
                         "warnings": [],
                         "score": 0.0,
                         "output": f"Error: directory '{directory}' does not exist.",
-                    }
+                    })
 
             result = subprocess.run(
                 cmd,
@@ -763,12 +776,12 @@ class ToolManager:
 
             if "No module named" in output or "not found" in output.lower():
                 LOGGER.error("pylint is not installed or not found in PATH")
-                return {
+                return json.dumps({
                     "errors": ["pylint is not installed. Install with: pip install pylint"],
                     "warnings": [],
                     "score": 0.0,
                     "output": output.strip(),
-                }
+                })
 
             LOGGER.info(
                 "Linting completed: errors=%d, warnings=%d, score=%.2f",
@@ -776,29 +789,29 @@ class ToolManager:
                 len(warnings),
                 score,
             )
-            return {
+            return json.dumps({
                 "errors": errors[:20],
                 "warnings": warnings[:20],
                 "score": score,
                 "output": output.strip(),
-            }
+            })
 
         except FileNotFoundError:
             LOGGER.error("pylint is not installed or not found in PATH")
-            return {
+            return json.dumps({
                 "errors": ["pylint is not installed. Install with: pip install pylint"],
                 "warnings": [],
                 "score": 0.0,
                 "output": "Error: pylint not found",
-            }
+            })
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to lint code: %s", exc)
-            return {
+            return json.dumps({
                 "errors": [str(exc)],
                 "warnings": [],
                 "score": 0.0,
                 "output": f"Error linting code: {exc}",
-            }
+            })
 
     def install_package(self, package: str, version: str = "") -> str:
         """Install a Python package using pip.
@@ -847,7 +860,7 @@ class ToolManager:
     def format_code(
         self,
         file_paths: list[str] | None = None, directory: str = "."
-    ) -> dict[str, object]:
+    ) -> str:
         """Format Python code using Black formatter.
 
         Args:
@@ -855,7 +868,7 @@ class ToolManager:
             directory: Directory to format if file_paths not provided (default: ".")
 
         Returns:
-            Dictionary with keys: formatted (count), errors (list), message (summary)
+            JSON string with keys: formatted (count), errors (list), message (summary)
         """
         LOGGER.info("🔧 TOOL CALLED: format_code(%s)", file_paths or directory)
         try:
@@ -894,36 +907,36 @@ class ToolManager:
                 formatted_count,
                 len(errors),
             )
-            return {
+            return json.dumps({
                 "formatted": formatted_count,
                 "errors": errors,
                 "message": message,
-            }
+            })
 
         except FileNotFoundError:
             LOGGER.error("Black is not installed or not found in PATH")
-            return {
+            return json.dumps({
                 "formatted": 0,
                 "errors": ["Black is not installed. Install with: pip install black"],
                 "message": "Error: Black formatter not found",
-            }
+            })
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to format code: %s", exc)
-            return {
+            return json.dumps({
                 "formatted": 0,
                 "errors": [str(exc)],
                 "message": f"Error formatting code: {exc}",
-            }
+            })
 
-    def get_function_definitions(self, file_path: str) -> list[dict[str, object]]:
+    def get_function_definitions(self, file_path: str) -> str:
         """Extract function signatures from a Python file.
 
         Args:
             file_path: Path to the Python file to analyze
 
         Returns:
-            List of dictionaries with keys: name, params, line, docstring
-            Example: [{"name": "generate_password", "params": ["length", "use_numbers"], "line": 5}]
+            JSON string containing list of function definitions
+            Example: [{"name": "generate_password", "params": ["length", "use_numbers"], "line": 5, "docstring": "..."}]
         """
         LOGGER.info("🔧 TOOL CALLED: get_function_definitions(%s)", file_path)
         try:
@@ -933,11 +946,11 @@ class ToolManager:
 
             if not target.exists():
                 LOGGER.error("File does not exist: %s", file_path)
-                return []
+                return json.dumps([])
 
             if not target.suffix == ".py":
                 LOGGER.error("File is not a Python file: %s", file_path)
-                return []
+                return json.dumps([])
 
             content = target.read_text(encoding="utf-8")
             tree = ast.parse(content, filename=str(target))
@@ -961,35 +974,39 @@ class ToolManager:
                     )
 
             LOGGER.info("Extracted %d function definitions from %s", len(functions), file_path)
-            return functions
+            return json.dumps(functions)
 
         except SyntaxError as exc:
             LOGGER.error("Syntax error in file %s: %s", file_path, exc)
-            return []
+            return json.dumps([])
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to extract function definitions from %s: %s", file_path, exc)
-            return []
+            return json.dumps([])
 
-    def get_cyclomatic_complexity(self, file_path: str) -> dict[str, Any]:
-        """Calculate cyclomatic complexity metrics for the provided Python file."""
+    def get_cyclomatic_complexity(self, file_path: str) -> str:
+        """Calculate cyclomatic complexity metrics for the provided Python file.
+
+        Returns:
+            JSON string with complexity metrics
+        """
         LOGGER.info("🔧 TOOL CALLED: get_cyclomatic_complexity(%s)", file_path)
         try:
             from radon.complexity import cc_visit
         except ImportError:
-            return {
+            return json.dumps({
                 "error": "Radon is not installed. Install it with: pip install radon",
-            }
+            })
 
         target = self._resolve_python_path(file_path)
         if not target.exists():
-            return {"error": f"File does not exist: {file_path}"}
+            return json.dumps({"error": f"File does not exist: {file_path}"})
 
         try:
             content = target.read_text(encoding="utf-8")
             blocks = cc_visit(content)
         except Exception as exc:  # noqa: BLE001
             LOGGER.error("Failed to compute complexity for %s: %s", file_path, exc)
-            return {"error": f"Failed to compute complexity: {exc}"}
+            return json.dumps({"error": f"Failed to compute complexity: {exc}"})
 
         entries: list[dict[str, Any]] = []
         complexities: list[float] = []
@@ -1015,36 +1032,40 @@ class ToolManager:
             "high_complexity": [item for item in entries if item.get("rank") in {"D", "E", "F"}],
         }
 
-        return {
+        return json.dumps({
             "file": str(target),
             "results": entries,
             "summary": summary,
-        }
+        })
 
     def generate_test_file(
         self,
         source_file: str,
         tests_root: str = "tests",
         overwrite: bool = False,
-    ) -> dict[str, Any]:
-        """Create or extend a pytest test file with stubs for public callables in source_file."""
+    ) -> str:
+        """Create or extend a pytest test file with stubs for public callables in source_file.
+
+        Returns:
+            JSON string with generation results
+        """
         LOGGER.info("🔧 TOOL CALLED: generate_test_file(%s)", source_file)
         source_path = self._resolve_python_path(source_file)
         if not source_path.exists():
-            return {"success": False, "error": f"Source file does not exist: {source_file}"}
+            return json.dumps({"success": False, "error": f"Source file does not exist: {source_file}"})
         if source_path.suffix != ".py":
-            return {"success": False, "error": "Source file must be a Python module."}
+            return json.dumps({"success": False, "error": "Source file must be a Python module."})
 
         try:
             content = source_path.read_text(encoding="utf-8")
             tree = ast.parse(content, filename=str(source_path))
         except Exception as exc:  # noqa: BLE001
             LOGGER.error("Failed to parse %s: %s", source_file, exc)
-            return {"success": False, "error": f"Failed to parse source file: {exc}"}
+            return json.dumps({"success": False, "error": f"Failed to parse source file: {exc}"})
 
         symbols = self._collect_public_callables(tree)
         if not symbols["functions"] and not symbols["methods"]:
-            return {"success": False, "error": "No public callables found to generate tests for."}
+            return json.dumps({"success": False, "error": "No public callables found to generate tests for."})
 
         module_parts = self._module_parts_from_source(source_path)
         module_path = ".".join(module_parts) if module_parts else source_path.stem
@@ -1063,29 +1084,29 @@ class ToolManager:
                 if f"def test_{name}" not in existing
             ]
             if not missing_blocks:
-                return {
+                return json.dumps({
                     "success": True,
                     "created": False,
                     "path": str(destination),
                     "message": "Test file already contains stubs for all public callables.",
-                }
+                })
             updated = existing.rstrip() + "\n\n" + "\n\n".join(block for _, block in missing_blocks) + "\n"
             destination.write_text(updated, encoding="utf-8")
-            return {
+            return json.dumps({
                 "success": True,
                 "created": False,
                 "path": str(destination),
                 "added_tests": [name for name, _ in missing_blocks],
-            }
+            })
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(new_content, encoding="utf-8")
-        return {
+        return json.dumps({
             "success": True,
             "created": True,
             "path": str(destination),
             "tests_created": [name for name, _ in stubs],
-        }
+        })
 
     def _resolve_python_path(self, path_like: str) -> Path:
         """Resolve Python file path relative to workspace."""
@@ -1189,7 +1210,7 @@ class ToolManager:
     # ------------------------------------------------------------------ #
     # Symbol analysis tools
     # ------------------------------------------------------------------ #
-    def find_definition(self, symbol_name: str, search_directory: str = ".") -> dict[str, Any]:
+    def find_definition(self, symbol_name: str, search_directory: str = ".") -> str:
         """Find where a symbol (class/function/variable) is defined.
 
         Args:
@@ -1197,12 +1218,12 @@ class ToolManager:
             search_directory: Directory to search recursively (default ".")
 
         Returns:
-            Dictionary with keys: found, file, line, type, signature, docstring, context
+            JSON string with keys: found, file, line, type, signature, docstring, context
         """
         LOGGER.info("🔧 TOOL CALLED: find_definition(symbol_name=%s)", symbol_name)
         search_path = self._resolve_directory(search_directory)
         if not search_path.exists():
-            return {"found": False, "error": f"Directory does not exist: {search_directory}"}
+            return json.dumps({"found": False, "error": f"Directory does not exist: {search_directory}"})
 
         for py_file in search_path.rglob("*.py"):
             try:
@@ -1213,12 +1234,12 @@ class ToolManager:
                     result = self._match_definition_node(node, symbol_name, py_file, lines)
                     if result:
                         LOGGER.debug("Found %s in %s at line %s", symbol_name, result['file'], result['line'])
-                        return result
+                        return json.dumps(result)
             except Exception as exc:
                 LOGGER.warning("Failed to parse %s: %s", py_file, exc)
 
         LOGGER.debug("Symbol %s not found in %s", symbol_name, search_directory)
-        return {"found": False, "error": f"Symbol '{symbol_name}' not found"}
+        return json.dumps({"found": False, "error": f"Symbol '{symbol_name}' not found"})
 
     def _match_definition_node(self, node: ast.AST, symbol_name: str, file_path: Path, lines: list[str]) -> dict[str, Any] | None:
         """Match AST node against symbol name."""
@@ -1242,7 +1263,7 @@ class ToolManager:
             "docstring": ast.get_docstring(node) or "", "context": lines[start:end]
         }
 
-    def find_usages(self, symbol_name: str, search_directory: str = ".") -> dict[str, Any]:
+    def find_usages(self, symbol_name: str, search_directory: str = ".") -> str:
         """Find all usages of a symbol in Python files.
 
         Args:
@@ -1250,12 +1271,12 @@ class ToolManager:
             search_directory: Directory to search recursively (default ".")
 
         Returns:
-            Dictionary with keys: total_usages, files_count, usages (list of usage dicts)
+            JSON string with keys: total_usages, files_count, usages (list of usage dicts)
         """
         LOGGER.info("🔧 TOOL CALLED: find_usages(symbol_name=%s)", symbol_name)
         search_path = self._resolve_directory(search_directory)
         if not search_path.exists():
-            return {"total_usages": 0, "files_count": 0, "error": f"Directory does not exist: {search_directory}"}
+            return json.dumps({"total_usages": 0, "files_count": 0, "error": f"Directory does not exist: {search_directory}"})
 
         all_usages: list[dict[str, Any]] = []
         files_with_usages = set()
@@ -1281,7 +1302,7 @@ class ToolManager:
                 break
 
         LOGGER.debug("Found %d usages of %s in %d files", len(all_usages), symbol_name, len(files_with_usages))
-        return {"total_usages": len(all_usages), "files_count": len(files_with_usages), "usages": all_usages[:100]}
+        return json.dumps({"total_usages": len(all_usages), "files_count": len(files_with_usages), "usages": all_usages[:100]})
 
     def _classify_usage_type(self, node: ast.AST, symbol_name: str) -> str | None:
         """Classify how a symbol is being used."""
@@ -1295,19 +1316,19 @@ class ToolManager:
             return "reference"
         return None
 
-    def get_imports(self, file_path: str) -> dict[str, Any]:
+    def get_imports(self, file_path: str) -> str:
         """Extract and categorize all imports from a Python file.
 
         Args:
             file_path: Path to the Python file to analyze
 
         Returns:
-            Dictionary with keys: stdlib, third_party, local, import_details
+            JSON string with keys: stdlib, third_party, local, import_details
         """
         LOGGER.info("🔧 TOOL CALLED: get_imports(file_path=%s)", file_path)
         path = self._resolve_path(file_path)
         if not path.exists():
-            return {"error": f"File does not exist: {file_path}"}
+            return json.dumps({"error": f"File does not exist: {file_path}"})
 
         try:
             content = path.read_text(encoding="utf-8")
@@ -1327,13 +1348,13 @@ class ToolManager:
                         third_party_imports.append(module)
 
             LOGGER.debug("Extracted %d imports from %s", len(import_details), file_path)
-            return {
+            return json.dumps({
                 "stdlib": sorted(set(stdlib_imports)), "third_party": sorted(set(third_party_imports)),
                 "local": sorted(set(local_imports)), "import_details": import_details
-            }
+            })
         except Exception as exc:
             LOGGER.warning("Failed to parse %s: %s", file_path, exc)
-            return {"error": f"Failed to parse file: {exc}"}
+            return json.dumps({"error": f"Failed to parse file: {exc}"})
 
     def _parse_import_node(self, node: ast.Import | ast.ImportFrom) -> dict[str, Any]:
         """Parse import node into structured data."""
@@ -1356,22 +1377,26 @@ class ToolManager:
         """Check if module is from standard library."""
         return module.split(".")[0] in STDLIB_MODULES
 
-    def get_dependency_graph(self, symbol_name: str, search_directory: str = ".") -> dict[str, Any]:
-        """Build a lightweight dependency graph for a symbol across the project."""
+    def get_dependency_graph(self, symbol_name: str, search_directory: str = ".") -> str:
+        """Build a lightweight dependency graph for a symbol across the project.
+
+        Returns:
+            JSON string with dependency graph data
+        """
         LOGGER.info("🔧 TOOL CALLED: get_dependency_graph(%s)", symbol_name)
         search_path = self._resolve_directory(search_directory)
         if not search_path.exists():
-            return {"error": f"Directory does not exist: {search_directory}"}
+            return json.dumps({"error": f"Directory does not exist: {search_directory}"})
 
         target = self._locate_symbol(symbol_name, search_path)
         if not target:
-            return {"error": f"Symbol '{symbol_name}' not found in {search_directory}"}
+            return json.dumps({"error": f"Symbol '{symbol_name}' not found in {search_directory}"})
 
         node, source_path, lines = target
         dependencies = self._collect_symbol_dependencies(node, source_path, lines)
         dependents = self._collect_symbol_dependents(symbol_name, search_path, limit=150)
 
-        return {
+        return json.dumps({
             "symbol": symbol_name,
             "defined_in": str(source_path),
             "line": getattr(node, "lineno", None),
@@ -1382,14 +1407,18 @@ class ToolManager:
                 "dependency_count": len(dependencies),
                 "dependents_count": len(dependents),
             },
-        }
+        })
 
-    def get_class_hierarchy(self, class_name: str, search_directory: str = ".") -> dict[str, Any]:
-        """Return inheritance details for a class, including parents and subclasses."""
+    def get_class_hierarchy(self, class_name: str, search_directory: str = ".") -> str:
+        """Return inheritance details for a class, including parents and subclasses.
+
+        Returns:
+            JSON string with class hierarchy data
+        """
         LOGGER.info("🔧 TOOL CALLED: get_class_hierarchy(%s)", class_name)
         search_path = self._resolve_directory(search_directory)
         if not search_path.exists():
-            return {"error": f"Directory does not exist: {search_directory}"}
+            return json.dumps({"error": f"Directory does not exist: {search_directory}"})
 
         class_map: dict[str, dict[str, Any]] = {}
         children_map: dict[str, list[str]] = defaultdict(list)
@@ -1413,12 +1442,12 @@ class ToolManager:
                         children_map[base].append(node.name)
 
         if class_name not in class_map:
-            return {"error": f"Class '{class_name}' not found in {search_directory}"}
+            return json.dumps({"error": f"Class '{class_name}' not found in {search_directory}"})
 
         ancestors = self._collect_ancestors(class_name, class_map)
         descendants = self._collect_descendants(class_name, children_map)
 
-        return {
+        return json.dumps({
             "class": class_name,
             "defined_in": class_map[class_name]["file"],
             "line": class_map[class_name]["line"],
@@ -1426,7 +1455,7 @@ class ToolManager:
             "ancestors": ancestors,
             "descendants": descendants,
             "hierarchy": self._build_hierarchy_branch(class_name, class_map, children_map),
-        }
+        })
 
     def safe_rename_symbol(
         self,
@@ -1434,35 +1463,39 @@ class ToolManager:
         symbol_name: str,
         new_name: str,
         project_root: str | None = None,
-    ) -> dict[str, Any]:
-        """Perform a project-wide, refactor-aware rename using Rope."""
+    ) -> str:
+        """Perform a project-wide, refactor-aware rename using Rope.
+
+        Returns:
+            JSON string with rename results
+        """
         LOGGER.info("🔧 TOOL CALLED: safe_rename_symbol(%s -> %s)", symbol_name, new_name)
         if not new_name or not new_name.isidentifier():
-            return {"success": False, "error": "New name must be a valid identifier."}
+            return json.dumps({"success": False, "error": "New name must be a valid identifier."})
 
         try:
             from rope.base import project as rope_project
             from rope.base.exceptions import RopeError
             from rope.refactor.rename import Rename
         except ImportError:
-            return {
+            return json.dumps({
                 "success": False,
                 "error": "Rope is not installed. Install it with: pip install rope",
-            }
+            })
 
         target_path = self._resolve_path(file_path)
         if not target_path.exists():
-            return {"success": False, "error": f"File does not exist: {file_path}"}
+            return json.dumps({"success": False, "error": f"File does not exist: {file_path}"})
 
         try:
             source = target_path.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(target_path))
         except Exception as exc:  # noqa: BLE001
-            return {"success": False, "error": f"Failed to parse file: {exc}"}
+            return json.dumps({"success": False, "error": f"Failed to parse file: {exc}"})
 
         target_node = self._find_symbol_node(tree, symbol_name)
         if not target_node:
-            return {"success": False, "error": f"Symbol '{symbol_name}' not found in {file_path}"}
+            return json.dumps({"success": False, "error": f"Symbol '{symbol_name}' not found in {file_path}"})
 
         offset = self._calculate_offset(source, getattr(target_node, "lineno", 1), getattr(target_node, "col_offset", 0))
         root = Path(project_root).resolve() if project_root else self.workspace_dir
@@ -1474,7 +1507,7 @@ class ToolManager:
         except ValueError:
             if proj:
                 proj.close()
-            return {"success": False, "error": f"File {file_path} is outside the project root {root}"}
+            return json.dumps({"success": False, "error": f"File {file_path} is outside the project root {root}"})
 
         try:
             resource = proj.find_resource(relative)
@@ -1482,14 +1515,14 @@ class ToolManager:
             changes = rename_refactor.get_changes(new_name)
             proj.do(changes)
             changed = [res.path for res in changes.get_changed_resources()]
-            return {
+            return json.dumps({
                 "success": True,
                 "message": f"Renamed {symbol_name} to {new_name}",
                 "files_updated": changed,
-            }
+            })
         except RopeError as exc:
             LOGGER.error("Rope rename failed: %s", exc)
-            return {"success": False, "error": f"Rename failed: {exc}"}
+            return json.dumps({"success": False, "error": f"Rename failed: {exc}"})
         finally:
             if proj:
                 try:
