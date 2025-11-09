@@ -25,15 +25,7 @@ from aura.events import (
     ToolCallStarted,
 )
 from aura.prompts import ANALYST_PROMPT
-from aura.tools.git_tools import get_git_status, git_diff
 from aura.tools.local_agent_tools import generate_commit_message
-from aura.tools.python_tools import (
-    format_code,
-    get_function_definitions,
-    lint_code,
-    run_tests,
-)
-from aura.tools.symbol_tools import find_definition, find_usages, get_imports
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
@@ -104,15 +96,15 @@ class AnalystAgentService:
                 self.tool_manager.read_project_file,
                 self.tool_manager.read_multiple_files,
                 self.tool_manager.search_in_files,
-                get_function_definitions,
-                find_definition,
-                find_usages,
-                get_imports,
-                get_git_status,
-                git_diff,
-                run_tests,
-                lint_code,
-                format_code,
+                self.tool_manager.get_function_definitions,
+                self.tool_manager.find_definition,
+                self.tool_manager.find_usages,
+                self.tool_manager.get_imports,
+                self.tool_manager.get_git_status,
+                self.tool_manager.git_diff,
+                self.tool_manager.run_tests,
+                self.tool_manager.lint_code,
+                self.tool_manager.format_code,
                 generate_commit_message,
             ]
             request_config = types.GenerateContentConfig(

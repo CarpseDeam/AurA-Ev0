@@ -13,16 +13,7 @@ from google.genai import types
 
 from aura import config
 from aura.prompt import AURA_SYSTEM_PROMPT
-from aura.tools.git_tools import git_commit, git_diff, git_push, get_git_status
 from aura.tools.local_agent_tools import generate_commit_message
-from aura.tools.python_tools import (
-    format_code,
-    get_function_definitions,
-    install_package,
-    lint_code,
-    run_tests,
-)
-from aura.tools.symbol_tools import find_definition, find_usages, get_imports
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
@@ -64,19 +55,19 @@ class ChatService:
                     self.tool_manager.search_in_files,
                     self.tool_manager.read_project_file,
                     self.tool_manager.read_multiple_files,
-                    get_function_definitions,
-                    run_tests,
-                    lint_code,
-                    format_code,
-                    install_package,
-                    get_git_status,
-                    git_commit,
-                    git_push,
-                    git_diff,
+                    self.tool_manager.get_function_definitions,
+                    self.tool_manager.run_tests,
+                    self.tool_manager.lint_code,
+                    self.tool_manager.format_code,
+                    self.tool_manager.install_package,
+                    self.tool_manager.get_git_status,
+                    self.tool_manager.git_commit,
+                    self.tool_manager.git_push,
+                    self.tool_manager.git_diff,
                     generate_commit_message,
-                    find_definition,
-                    find_usages,
-                    get_imports,
+                    self.tool_manager.find_definition,
+                    self.tool_manager.find_usages,
+                    self.tool_manager.get_imports,
                     self.tool_manager.create_file,
                     self.tool_manager.modify_file,
                     self.tool_manager.replace_file_lines,
