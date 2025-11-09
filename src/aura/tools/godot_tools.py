@@ -83,51 +83,72 @@ def read_godot_scene_tree(scene_path: str) -> dict:
         with open(resolved_scene, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        # Basic validation
-        if not content.startswith('[gd_scene '):
+        lines = content.splitlines()
+
+        if not lines or not lines[0].startswith('[gd_scene '):
             return {"error": "Not a valid .tscn file."}
 
         nodes = {}
-        node_pattern = re.compile(r'[node name="([^"]+)" type="([^"]+)"(?: parent="([^"]+)")?]')
-        script_pattern = re.compile(r'script = ExtResource\("([^"]+)"\)')
+        node_order = []  # Track the order nodes appear in the file
 
-        # Split content by [node] sections to process them individually
-        node_sections = content.split('[node ')
-        
-        for section in node_sections[1:]: # Skip the header part
-            full_section = '[node ' + section
-            match = node_pattern.search(full_section)
-            if not match:
-                continue
+        for line in lines:
+            line = line.strip()
 
-            name, type, parent = match.groups()
-            parent = parent if parent else "." # Root nodes have parent="."
+            # Look for [node ...] sections
+            if line.startswith('[node '):
+                # Extract attributes from the node section header
+                name_match = re.search(r'name="([^"]+)"', line)
+                type_match = re.search(r'type="([^"]+)"', line)
+                parent_match = re.search(r'parent="([^"]+)"', line)
 
-            script_match = script_pattern.search(full_section)
-            script_path = script_match.group(1) if script_match else None
+                if name_match and type_match:
+                    node_name = name_match.group(1)
+                    node_type = type_match.group(1)
+                    parent_path = parent_match.group(1) if parent_match else "."
 
-            nodes[name] = {
-                "type": type,
-                "parent": parent,
-                "script": script_path,
-                "children": []
-            }
+                    # Create node entry
+                    node_data = {
+                        "name": node_name,
+                        "type": node_type,
+                        "parent_path": parent_path,
+                        "children": []
+                    }
+                    nodes[node_name] = node_data
+                    node_order.append(node_name)
 
-        # Build the hierarchy
-        tree = {}
-        for name, data in nodes.items():
-            if data['parent'] != '.' and data['parent'] in nodes:
-                nodes[data['parent']]['children'].append(nodes[name])
-            elif data['parent'] == '.':
-                tree[name] = data
-        
-        # Clean up children from the top-level nodes that have been moved
-        final_tree = {}
-        for name, data in nodes.items():
-            if data['parent'] == '.':
-                final_tree[name] = data
+        # Build the tree hierarchy
+        root_nodes = {}
 
-        return {"success": True, "scene_tree": final_tree}
+        for node_name in node_order:
+            node_data = nodes[node_name]
+            parent_path = node_data["parent_path"]
+
+            # Root node has parent "."
+            if parent_path == ".":
+                # This is a root node
+                root_nodes[node_name] = node_data
+            else:
+                # Find the parent node by matching the path
+                # The parent_path can be "." for direct children of root
+                # or "ParentName" or "ParentName/GrandParent" for nested nodes
+                parent_name = parent_path.split('/')[-1] if '/' in parent_path else parent_path
+
+                # If parent_path is just ".", it's a child of the first root
+                if parent_path == ".":
+                    if node_order:
+                        first_root = node_order[0]
+                        if first_root in nodes:
+                            nodes[first_root]["children"].append(node_data)
+                elif parent_name in nodes:
+                    nodes[parent_name]["children"].append(node_data)
+                else:
+                    # If we can't find the parent, add as root
+                    root_nodes[node_name] = node_data
+
+            # Remove parent_path from the final output as it's just for building the tree
+            node_data.pop("parent_path", None)
+
+        return {"success": True, "scene_tree": root_nodes}
 
     except FileNotFoundError:
         return {"error": f"Scene file not found at {resolved_scene}"}
@@ -144,14 +165,11 @@ def get_project_godot_config() -> dict:
         A dictionary with input map and autoload singletons, or an error message.
     """
     try:
-        # Assuming project.godot is in the root of the workspace.
-        # This might need to be adjusted if the project is in a subdirectory.
         with open('project.godot', 'r', encoding='utf-8') as f:
             content = f.read()
 
         config = {}
         
-        # Extract autoload singletons
         autoloads = {}
         autoload_pattern = re.compile(r'[autoload]\n([^\n]+)', re.DOTALL)
         autoload_match = autoload_pattern.search(content)
@@ -165,17 +183,14 @@ def get_project_godot_config() -> dict:
                     autoloads[name] = path
         config['autoloads'] = autoloads
 
-        # Extract input map
         input_map = {}
         input_map_pattern = re.compile(r'[input]\n([^\n]+)', re.DOTALL)
         input_map_match = input_map_pattern.search(content)
         if input_map_match:
             input_map_block = input_map_match.group(1)
-            # This is a simplification. Godot's input map is more complex.
-            # This regex just looks for action names.
-            action_pattern = re.compile(r'"([^"]+)"=\{')
+            action_pattern = re.compile(r'"([^"]+)"={{')
             actions = action_pattern.findall(input_map_block)
-            input_map['actions'] = list(set(actions)) # Get unique actions
+            input_map['actions'] = list(set(actions))
 
         config['input_map'] = input_map
 
@@ -222,21 +237,16 @@ extends {extends}
 const SPEED = 300.0
 const JUMP_VELOCITY = -400.0
 
-# Get the gravity from the project settings to be synced with RigidBody nodes.
 var gravity = ProjectSettings.get_setting("physics/2d/default_gravity")
 
 
 func _physics_process(delta):
-	# Add the gravity.
 	if not is_on_floor():
 		velocity.y += gravity * delta
 
-	# Handle Jump.
 	if Input.is_action_just_pressed("ui_accept") and is_on_floor():
 		velocity.y = JUMP_VELOCITY
 
-	# Get the input direction and handle the movement/deceleration.
-	# As good practice, you should replace UI actions with custom gameplay actions.
 	var direction = Input.get_axis("ui_left", "ui_right")
 	if direction:
 		velocity.x = direction * SPEED
@@ -254,7 +264,6 @@ extends {extends}
 func _ready():
     print("Singleton is ready!")
 
-# Add your global functions here.
 func my_global_function():
     pass
 """
