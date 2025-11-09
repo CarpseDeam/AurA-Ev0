@@ -66,11 +66,9 @@ class AnalystAgentService:
         on_chunk: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Analyze user request and build comprehensive prompt for executor.
-
         Args:
             user_request: The user's request to analyze
             on_chunk: Optional callback for streaming output
-
         Returns:
             Comprehensive engineered prompt for the executor agent
         """
@@ -107,106 +105,72 @@ class AnalystAgentService:
                 self.tool_manager.format_code,
                 generate_commit_message,
             ]
-            request_config = types.GenerateContentConfig(
-                tools=self._instrument_tools(tool_catalog, source=_ANALYST_SOURCE),
-                system_instruction=ANALYST_PROMPT,
-            )
+            
+            messages = [{"role": "user", "parts": [{"text": user_request}]}]
+            max_iterations = 10  # Prevent infinite loops
 
-            stream = self._client.models.generate_content_stream(
-                model=self.model_name,
-                contents=user_request,
-                config=request_config,
-            )
-
-            try:
-                iterator = iter(stream)
-            except TypeError:
-                LOGGER.debug(
-                    "Streaming unavailable; falling back to blocking response"
-                )
-                fallback_response = self._client.models.generate_content(
+            for iteration in range(max_iterations):
+                response = self._client.models.generate_content(
                     model=self.model_name,
-                    contents=user_request,
-                    config=request_config,
-                )
-                # Use robust text extraction
-                final_text = self._coalesce_response_text(fallback_response)
-                duration = time.perf_counter() - started
-                if final_text:
-                    self._emit_streaming_chunk(
-                        final_text,
-                        source=_ANALYST_SOURCE,
-                        on_chunk=on_chunk,
-                    )
-                    self._emit_streaming_chunk(
-                        "",
-                        source=_ANALYST_SOURCE,
-                        on_chunk=on_chunk,
-                        is_final=True,
-                    )
-                self._emit_status("Analyst agent: plan ready", "analyst.complete")
-                self._event_bus.emit(
-                    PhaseTransition(from_phase="analyst", to_phase="idle", source=_ANALYST_SOURCE)
-                )
-                self._emit_completion(final_text, success=True)
-                LOGGER.info(
-                    "Analyst analysis completed (fallback) | duration=%.2fs | text_length=%d",
-                    duration,
-                    len(final_text),
-                )
-                return final_text
-
-            aggregated_text = ""
-            collected_parts: list[str] = []
-            streamed_text = False
-
-            for chunk in iterator:
-                addition, aggregated_text = self._extract_stream_addition(
-                    chunk, aggregated_text
-                )
-                if addition:
-                    collected_parts.append(addition)
-                    self._emit_streaming_chunk(
-                        addition,
-                        source=_ANALYST_SOURCE,
-                        on_chunk=on_chunk,
-                    )
-                    streamed_text = True
-
-            final_text = "".join(collected_parts) or aggregated_text
-
-            # Last resort: try to get text from the stream object itself
-            if not final_text and hasattr(stream, "text"):
-                final_text = getattr(stream, "text") or ""
-
-            if streamed_text:
-                self._emit_streaming_chunk(
-                    "",
-                    source=_ANALYST_SOURCE,
-                    on_chunk=on_chunk,
-                    is_final=True,
+                    contents=messages,
+                    generation_config=types.GenerationConfig(
+                        temperature=0.0,
+                    ),
+                    tools=self._instrument_tools(tool_catalog, source=_ANALYST_SOURCE),
+                    system_instruction=ANALYST_PROMPT,
                 )
 
-            duration = time.perf_counter() - started
-            self._emit_status("Analyst agent: plan ready", "analyst.complete")
-            self._event_bus.emit(
-                PhaseTransition(from_phase="analyst", to_phase="idle", source=_ANALYST_SOURCE)
-            )
-            self._emit_completion(final_text, success=True)
-            LOGGER.info(
-                "Analyst analysis completed | duration=%.2fs | streamed=%s | text_length=%d",
-                duration,
-                streamed_text,
-                len(final_text),
-            )
+                if response.candidates and response.candidates[0].content.parts:
+                    parts = response.candidates[0].content.parts
+                    
+                    function_calls = [p for p in parts if p.function_call]
+                    
+                    if function_calls:
+                        messages.append(response.candidates[0].content)
 
-            if not final_text:
-                LOGGER.warning(
-                    "Analyst returned empty text despite successful execution. "
-                    "This may indicate a response parsing issue."
-                )
+                        for fc in function_calls:
+                            tool_name = fc.function_call.name
+                            tool_args = dict(fc.function_call.args)
+                            
+                            LOGGER.info(f"Executing tool: {tool_name} with args: {tool_args}")
+                            
+                            result = self._execute_tool(tool_name, tool_args)
+                            
+                            messages.append({
+                                "role": "user",
+                                "parts": [{
+                                    "function_response": {
+                                        "name": tool_name,
+                                        "response": {"result": result},
+                                    }
+                                }]
+                            })
+                        
+                        continue
+                    
+                    final_text = self._coalesce_response_text(response)
+                    if final_text:
+                        if on_chunk:
+                            self._emit_streaming_chunk(final_text, source=_ANALYST_SOURCE, on_chunk=on_chunk)
+                            self._emit_streaming_chunk("", source=_ANALYST_SOURCE, on_chunk=on_chunk, is_final=True)
 
-            return final_text
+                        duration = time.perf_counter() - started
+                        self._emit_status("Analyst agent: plan ready", "analyst.complete")
+                        self._event_bus.emit(
+                            PhaseTransition(from_phase="analyst", to_phase="idle", source=_ANALYST_SOURCE)
+                        )
+                        self._emit_completion(final_text, success=True)
+                        LOGGER.info(
+                            "Analyst analysis completed | duration=%.2fs | text_length=%d",
+                            duration,
+                            len(final_text),
+                        )
+                        return final_text
+
+                break
+
+            LOGGER.error("Analyst failed to produce text response after function calls")
+            return ""
 
         except Exception as exc:  # noqa: BLE001
             duration = time.perf_counter() - started
@@ -225,6 +189,50 @@ class AnalystAgentService:
             )
             self._emit_completion(error_message, success=False)
             return error_message
+
+    def _execute_tool(self, tool_name: str, tool_args: dict) -> Any:
+        """Execute a tool call and return the result."""
+        try:
+            self._event_bus.emit(
+                ToolCallStarted(tool_name=tool_name, parameters=tool_args, source=_ANALYST_SOURCE)
+            )
+            started = time.perf_counter()
+            
+            method = getattr(self.tool_manager, tool_name, None)
+            if not method:
+                 method = globals().get(tool_name)
+            
+            if not method:
+                 raise ValueError(f"Tool '{tool_name}' not found")
+
+            result = method(**tool_args)
+            duration = time.perf_counter() - started
+            
+            self._event_bus.emit(
+                ToolCallCompleted(
+                    tool_name=tool_name,
+                    result=self._summarize_result(result),
+                    duration=duration,
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            LOGGER.info(f"Tool {tool_name} executed successfully")
+            return result
+        except Exception as e:
+            duration = time.perf_counter() - started
+            LOGGER.exception(f"Tool {tool_name} failed: {e}")
+            self._event_bus.emit(
+                ToolCallFailed(
+                    tool_name=tool_name,
+                    error=str(e),
+                    duration=duration,
+                    source=_ANALYST_SOURCE,
+                    parameters=tool_args,
+                )
+            )
+            return f"Error executing {tool_name}: {str(e)}"
+
+
 
     @staticmethod
     def _extract_stream_addition(
@@ -347,6 +355,7 @@ class AnalystAgentService:
             keys = set(part.keys())
             keys.discard("text")
             keys.discard("thought")
+            keys.discard("thought_signature")
             return bool(keys)
         structured_fields = (
             "function_call",
