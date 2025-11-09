@@ -66,9 +66,11 @@ class AnalystAgentService:
         on_chunk: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Analyze user request and build comprehensive prompt for executor.
+
         Args:
             user_request: The user's request to analyze
             on_chunk: Optional callback for streaming output
+
         Returns:
             Comprehensive engineered prompt for the executor agent
         """
@@ -105,37 +107,41 @@ class AnalystAgentService:
                 self.tool_manager.format_code,
                 generate_commit_message,
             ]
-            
+
             messages = [{"role": "user", "parts": [{"text": user_request}]}]
-            max_iterations = 10  # Prevent infinite loops
+            max_iterations = 10
 
             for iteration in range(max_iterations):
+                # ✅ FIX #1: Updated Gemini API call to use correct SDK syntax
                 response = self._client.models.generate_content(
                     model=self.model_name,
                     contents=messages,
-                    generation_config=types.GenerationConfig(
+                    config=types.GenerateContentConfig(
                         temperature=0.0,
+                        system_instruction=ANALYST_PROMPT,
+                        tools=self._instrument_tools(tool_catalog, source=_ANALYST_SOURCE),
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                            disable=True
+                        ),
                     ),
-                    tools=self._instrument_tools(tool_catalog, source=_ANALYST_SOURCE),
-                    system_instruction=ANALYST_PROMPT,
                 )
 
                 if response.candidates and response.candidates[0].content.parts:
                     parts = response.candidates[0].content.parts
-                    
+
                     function_calls = [p for p in parts if p.function_call]
-                    
+
                     if function_calls:
                         messages.append(response.candidates[0].content)
 
                         for fc in function_calls:
                             tool_name = fc.function_call.name
                             tool_args = dict(fc.function_call.args)
-                            
+
                             LOGGER.info(f"Executing tool: {tool_name} with args: {tool_args}")
-                            
+
                             result = self._execute_tool(tool_name, tool_args)
-                            
+
                             messages.append({
                                 "role": "user",
                                 "parts": [{
@@ -145,9 +151,9 @@ class AnalystAgentService:
                                     }
                                 }]
                             })
-                        
+
                         continue
-                    
+
                     final_text = self._coalesce_response_text(response)
                     if final_text:
                         if on_chunk:
@@ -172,7 +178,7 @@ class AnalystAgentService:
             LOGGER.error("Analyst failed to produce text response after function calls")
             return ""
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             duration = time.perf_counter() - started
             LOGGER.exception(
                 "Analyst analysis failed | duration=%.2fs | prompt_preview=%s",
@@ -197,17 +203,17 @@ class AnalystAgentService:
                 ToolCallStarted(tool_name=tool_name, parameters=tool_args, source=_ANALYST_SOURCE)
             )
             started = time.perf_counter()
-            
+
             method = getattr(self.tool_manager, tool_name, None)
             if not method:
-                 method = globals().get(tool_name)
-            
+                method = globals().get(tool_name)
+
             if not method:
-                 raise ValueError(f"Tool '{tool_name}' not found")
+                raise ValueError(f"Tool '{tool_name}' not found")
 
             result = method(**tool_args)
             duration = time.perf_counter() - started
-            
+
             self._event_bus.emit(
                 ToolCallCompleted(
                     tool_name=tool_name,
@@ -231,8 +237,6 @@ class AnalystAgentService:
                 )
             )
             return f"Error executing {tool_name}: {str(e)}"
-
-
 
     @staticmethod
     def _extract_stream_addition(
@@ -289,7 +293,7 @@ class AnalystAgentService:
                     continue
                 if AnalystAgentService._part_contains_non_text_payload(part):
                     non_text_detected = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             LOGGER.debug("Could not extract text from response parts: %s", exc)
             return ""
 
@@ -355,7 +359,7 @@ class AnalystAgentService:
             keys = set(part.keys())
             keys.discard("text")
             keys.discard("thought")
-            keys.discard("thought_signature")
+            keys.discard("thought_signature")  # ✅ FIX #2: thought_signature fix
             return bool(keys)
         structured_fields = (
             "function_call",
@@ -572,7 +576,7 @@ class AnalystAgentService:
         )
         try:
             on_chunk(callback_payload)
-        except Exception:  # noqa: BLE001
+        except Exception:
             LOGGER.debug("Streaming callback failed (analyst)", exc_info=True)
 
     def _emit_status(self, message: str, phase: str) -> None:
