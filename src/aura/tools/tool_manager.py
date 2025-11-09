@@ -306,17 +306,19 @@ class ToolManager:
             LOGGER.exception("Failed to search files for pattern %s: %s", pattern, exc)
             return {"matches": [], "error": f"Error searching for '{pattern}': {exc}"}
 
-    def read_multiple_files(self, file_paths: list[str]) -> dict[str, str]:
-        """Read multiple files and return a mapping of path → contents/error.
+    def read_multiple_files(self, file_paths: list[str]) -> str:
+        """Read multiple files and return formatted contents.
 
-        Unexpected failures yield {"__error__": "..."} for easier debugging.
+        Returns a formatted string with file contents separated by headers.
+        Format: === path/to/file.py ===\n[content]\n\n
+        Errors are included inline with format: === path/to/file.py ===\nERROR: [message]\n\n
         """
-        LOGGER.info("?? TOOL CALLED: read_multiple_files(%s)", file_paths)
+        LOGGER.info("🔧 TOOL CALLED: read_multiple_files(%s)", file_paths)
         try:
             if not file_paths:
-                return {}
+                return "No files specified."
 
-            results: dict[str, str] = {}
+            output_parts: list[str] = []
             for user_path in file_paths:
                 try:
                     target = self._resolve_path(user_path)
@@ -326,30 +328,31 @@ class ToolManager:
                         exc,
                         self.workspace_dir,
                     )
-                    results[user_path] = f"Error reading '{user_path}': {exc}"
+                    output_parts.append(f"=== {user_path} ===\nERROR: {exc}")
                     continue
 
                 if not target.exists():
                     LOGGER.warning("read_multiple_files missing path: %s", target)
-                    results[user_path] = f"Error: file '{user_path}' does not exist."
+                    output_parts.append(f"=== {user_path} ===\nERROR: file does not exist")
                     continue
 
                 if not target.is_file():
                     LOGGER.warning("read_multiple_files non-file path: %s", target)
-                    results[user_path] = f"Error: '{user_path}' is not a file."
+                    output_parts.append(f"=== {user_path} ===\nERROR: not a file")
                     continue
 
                 try:
                     LOGGER.debug("Reading multiple file entry: %s", target)
-                    results[user_path] = target.read_text(encoding="utf-8")
+                    content = target.read_text(encoding="utf-8")
+                    output_parts.append(f"=== {user_path} ===\n{content}")
                 except Exception as exc:  # noqa: BLE001
                     LOGGER.exception("Failed to read %s: %s", user_path, exc)
-                    results[user_path] = f"Error reading '{user_path}': {exc}"
+                    output_parts.append(f"=== {user_path} ===\nERROR: {exc}")
 
-            return results
+            return "\n\n".join(output_parts)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to read multiple files: %s", exc)
-            return {"__error__": f"Error reading files: {exc}"}
+            return f"ERROR: Failed to read files: {exc}"
 
     # ------------------------------------------------------------------ #
     # Git operations
