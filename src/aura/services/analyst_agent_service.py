@@ -27,6 +27,7 @@ from aura.events import (
 )
 from aura.models import ExecutionPlan, Message, MessageRole, ToolCallLog
 from aura.prompts import ANALYST_PROMPT
+from aura.tools import godot_tools
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
@@ -86,6 +87,8 @@ class AnalystAgentService:
             "get_dependency_graph": self.tool_manager.get_dependency_graph,
             "get_code_metrics": self.tool_manager.get_code_metrics,
             "submit_execution_plan": self._handle_submit_execution_plan,
+            "read_godot_scene_tree": godot_tools.read_godot_scene_tree,
+            "get_project_godot_config": godot_tools.get_project_godot_config,
         }
 
     def analyze_and_plan(

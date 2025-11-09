@@ -27,6 +27,7 @@ from aura.events import (
 )
 from aura.models import ExecutionPlan, ToolCallLog
 from aura.prompts import EXECUTOR_PROMPT
+from aura.tools import godot_tools
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
@@ -223,6 +224,7 @@ class ExecutorAgentService:
             build_anthropic_tool_schema(self.tool_manager.create_file, name="create_file"),
             build_anthropic_tool_schema(self.tool_manager.modify_file, name="modify_file"),
             build_anthropic_tool_schema(self.tool_manager.delete_file, name="delete_file"),
+            build_anthropic_tool_schema(godot_tools.create_godot_script, name="create_godot_script"),
         ]
         return tools
 
@@ -305,6 +307,14 @@ class ExecutorAgentService:
             path = tool_input.get("path", "")
             result = self.tool_manager.delete_file(path)
             return f"- Deleted {path}\n{result}"
+
+        if tool_name == "create_godot_script":
+            path = tool_input.get("path", "")
+            class_name = tool_input.get("class_name", "")
+            extends = tool_input.get("extends", "Node")
+            template = tool_input.get("template", "basic")
+            result = godot_tools.create_godot_script(path, class_name, extends, template)
+            return json.dumps(result, ensure_ascii=False)
 
         raise ValueError(f"Unknown tool '{tool_name}'")
 
