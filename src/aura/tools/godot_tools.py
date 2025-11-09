@@ -7,12 +7,62 @@ This module provides functionality for reading Godot project configuration,
 parsing scene files, and generating GDScript boilerplate code.
 """
 
+import logging
 import re
 from pathlib import Path
-import logging
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+def _get_agent_workspace() -> Path | None:
+    """Return the agent's configured working directory, if available."""
+    try:
+        from aura.state import get_app_state  # Local import to avoid Qt dependency at import.
+    except Exception:  # noqa: BLE001 - fallback when state module is unavailable.
+        return None
+
+    app_state = get_app_state()
+    working_dir = getattr(app_state, "working_directory", "") if app_state else ""
+    if not working_dir:
+        return None
+
+    try:
+        return Path(working_dir).expanduser().resolve()
+    except OSError as exc:
+        logger.warning("Unable to resolve working directory %s: %s", working_dir, exc)
+    return None
+
+
+def _resolve_scene_file(scene_path: str) -> Path:
+    """Resolve a Godot scene path so it resides within the active workspace."""
+    normalized = (scene_path or "").strip()
+    if not normalized:
+        raise ValueError("Scene path must be provided.")
+    if normalized.lower().startswith("res://"):
+        normalized = normalized[6:]
+    normalized = normalized.strip()
+    if not normalized:
+        raise ValueError("Scene path must be provided.")
+
+    candidate = Path(normalized).expanduser()
+    workspace = _get_agent_workspace()
+    base_dir = workspace or Path.cwd()
+
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        resolved = (base_dir / candidate).resolve()
+
+    if workspace:
+        try:
+            resolved.relative_to(workspace)
+        except ValueError as exc:
+            raise ValueError(
+                f"Scene path '{scene_path}' is outside the working directory: {workspace}"
+            ) from exc
+    return resolved
+
 
 def read_godot_scene_tree(scene_path: str) -> dict:
     """
@@ -25,7 +75,12 @@ def read_godot_scene_tree(scene_path: str) -> dict:
         A dictionary representing the scene tree or an error message.
     """
     try:
-        with open(scene_path, 'r', encoding='utf-8') as f:
+        resolved_scene = _resolve_scene_file(scene_path)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    try:
+        with open(resolved_scene, 'r', encoding='utf-8') as f:
             content = f.read()
 
         # Basic validation
@@ -75,9 +130,9 @@ def read_godot_scene_tree(scene_path: str) -> dict:
         return {"success": True, "scene_tree": final_tree}
 
     except FileNotFoundError:
-        return {"error": f"Scene file not found at {scene_path}"}
+        return {"error": f"Scene file not found at {resolved_scene}"}
     except Exception as e:
-        logger.error(f"Error parsing scene file {scene_path}: {e}")
+        logger.error(f"Error parsing scene file {resolved_scene}: {e}")
         return {"error": f"An unexpected error occurred: {e}"}
 
 

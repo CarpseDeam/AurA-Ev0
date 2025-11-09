@@ -137,6 +137,7 @@ class AnalystAgentService:
         try:
             max_tool_calls = 15
             tool_calls_count = 0
+            final_response_text = ""
             while True:
                 if tool_calls_count >= max_tool_calls:
                     error_message = "Error: Analyst exceeded the maximum number of tool calls."
@@ -177,6 +178,7 @@ class AnalystAgentService:
 
                 final_text = self._collect_text(response.content)
                 if final_text:
+                    final_response_text = final_text
                     self._emit_streaming_chunk(
                         final_text,
                         source=_ANALYST_SOURCE,
@@ -185,47 +187,74 @@ class AnalystAgentService:
                     )
                 break
 
-            if not self._latest_plan:
-                error_message = (
-                    "Error: Analyst did not provide a submit_execution_plan tool call."
+            if self._latest_plan:
+                duration = time.perf_counter() - started
+                LOGGER.info(
+                    "Analyst plan completed | duration=%.2fs | operations=%d",
+                    duration,
+                    len(self._latest_plan.operations),
                 )
-                self._emit_status("Analyst agent: failed", "analyst.error")
+                self._emit_status("Analyst agent: execution plan ready", "analyst.complete")
                 self._event_bus.emit(
                     PhaseTransition(
                         from_phase="analyst",
-                        to_phase="analyst.error",
+                        to_phase="idle",
                         source=_ANALYST_SOURCE,
                     )
                 )
-                self._emit_completion(error_message, success=False)
-                return error_message
+                self._event_bus.emit(
+                    TaskProgressEvent(
+                        message="Analyst execution plan ready",
+                        percent=0.45,
+                        source=_ANALYST_SOURCE,
+                    )
+                )
+                summary = (
+                    f"Analyst completed execution plan with {len(self._latest_plan.operations)} operations."
+                )
+                self._emit_completion(summary, success=True)
+                return self._latest_plan
 
-            duration = time.perf_counter() - started
-            LOGGER.info(
-                "Analyst plan completed | duration=%.2fs | operations=%d",
-                duration,
-                len(self._latest_plan.operations),
-            )
-            self._emit_status("Analyst agent: execution plan ready", "analyst.complete")
+            if final_response_text:
+                duration = time.perf_counter() - started
+                LOGGER.info(
+                    "Analyst direct answer provided | duration=%.2fs | tool_calls=%d",
+                    duration,
+                    tool_calls_count,
+                )
+                self._emit_status("Analyst agent: response ready", "analyst.complete")
+                self._event_bus.emit(
+                    PhaseTransition(
+                        from_phase="analyst",
+                        to_phase="idle",
+                        source=_ANALYST_SOURCE,
+                    )
+                )
+                self._event_bus.emit(
+                    TaskProgressEvent(
+                        message="Analyst provided direct answer",
+                        percent=0.45,
+                        source=_ANALYST_SOURCE,
+                    )
+                )
+                summary = self._safe_value(final_response_text, limit=200)
+                self._emit_completion(
+                    f"Analyst provided a direct answer: {summary}",
+                    success=True,
+                )
+                return final_response_text
+
+            error_message = "Error: Analyst did not provide a submit_execution_plan tool call."
+            self._emit_status("Analyst agent: failed", "analyst.error")
             self._event_bus.emit(
                 PhaseTransition(
                     from_phase="analyst",
-                    to_phase="idle",
+                    to_phase="analyst.error",
                     source=_ANALYST_SOURCE,
                 )
             )
-            self._event_bus.emit(
-                TaskProgressEvent(
-                    message="Analyst execution plan ready",
-                    percent=0.45,
-                    source=_ANALYST_SOURCE,
-                )
-            )
-            summary = (
-                f"Analyst completed execution plan with {len(self._latest_plan.operations)} operations."
-            )
-            self._emit_completion(summary, success=True)
-            return self._latest_plan
+            self._emit_completion(error_message, success=False)
+            return error_message
 
         except anthropic.APIError as exc:
             duration = time.perf_counter() - started
