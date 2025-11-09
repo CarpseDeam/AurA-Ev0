@@ -97,7 +97,15 @@ class ExecutorAgentService:
         tools = self._build_anthropic_tools()
 
         try:
+            max_tool_calls = 15
+            tool_calls_count = 0
             while True:
+                if tool_calls_count >= max_tool_calls:
+                    error_message = "Error: Executor exceeded the maximum number of tool calls."
+                    self._emit_status("Executor agent: failed", "executor.error")
+                    self._emit_completion(error_message, success=False)
+                    return error_message
+
                 response = self._client.messages.create(
                     model=self.model_name,
                     max_tokens=8096,
@@ -108,6 +116,7 @@ class ExecutorAgentService:
                 messages.append({"role": "assistant", "content": response.content})
 
                 if response.stop_reason == "tool_use":
+                    tool_calls_count += 1
                     tool_results = []
                     for block in response.content:
                         if block.type != "tool_use":
@@ -208,45 +217,14 @@ class ExecutorAgentService:
     # ------------------------------------------------------------------ #
     def _build_anthropic_tools(self) -> list[dict[str, Any]]:
         """Return Claude tool schema for allowed write operations."""
-        return [
-            {
-                "name": "create_file",
-                "description": "Create a new file using content from the ExecutionPlan.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Workspace-relative file path"},
-                        "content": {"type": "string", "description": "Full file contents."},
-                    },
-                    "required": ["path", "content"],
-                },
-            },
-            {
-                "name": "modify_file",
-                "description": (
-                    "Replace existing text in a file using the exact `old_content` / `new_content` "
-                    "strings from the ExecutionPlan."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "old_content": {"type": "string"},
-                        "new_content": {"type": "string"},
-                    },
-                    "required": ["path", "old_content", "new_content"],
-                },
-            },
-            {
-                "name": "delete_file",
-                "description": "Delete a file specified by the ExecutionPlan.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string", "description": "File to delete"}},
-                    "required": ["path"],
-                },
-            },
+        from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema
+
+        tools = [
+            build_anthropic_tool_schema(self.tool_manager.create_file),
+            build_anthropic_tool_schema(self.tool_manager.modify_file),
+            build_anthropic_tool_schema(self.tool_manager.delete_file),
         ]
+        return tools
 
     def _invoke_workspace_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
         """Execute a workspace tool with auditing, logging, and DB persistence."""

@@ -77,6 +77,33 @@ class StreamingChunk:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentEvent:
+    """Generic lifecycle event emitted by analyst/executor agents."""
+
+    name: str
+    payload: Mapping[str, Any] | None = None
+    source: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskProgressEvent:
+    """Continuous progress update for UI components."""
+
+    message: str
+    percent: float | None = None
+    source: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SystemErrorEvent:
+    """Structured error payload broadcast across the app."""
+
+    error: str
+    details: Mapping[str, Any] | None = None
+    source: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionComplete:
     """Summary emitted when a service finishes executing."""
 
@@ -113,28 +140,3 @@ __all__ = [
     "ToolCallFailed",
     "ToolCallStarted",
 ]
-@dataclass(frozen=True, slots=True)
-class AgentEvent:
-    """Generic lifecycle event emitted by analyst/executor agents."""
-
-    name: str
-    payload: Mapping[str, Any] | None = None
-    source: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TaskProgressEvent:
-    """Continuous progress update for UI components."""
-
-    message: str
-    percent: float | None = None
-    source: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SystemErrorEvent:
-    """Structured error payload broadcast across the app."""
-
-    error: str
-    details: Mapping[str, Any] | None = None
-    source: str | None = None

@@ -258,8 +258,8 @@ class Orchestrator(QObject):
         else:
             if not effective_analyst_key:
                 raise AuraConfigurationError(
-                    "Analyst API key (GEMINI_API_KEY) is required to initialize the chat service.",
-                    context={"env_var": "GEMINI_API_KEY"},
+                    "Analyst API key (ANTHROPIC_API_KEY) is required to initialize the chat service.",
+                    context={"env_var": "ANTHROPIC_API_KEY"},
                 )
             self._chat_service = ChatService(
                 api_key=effective_analyst_key,
@@ -522,7 +522,7 @@ class Orchestrator(QObject):
             self._finalize_conversation(session, outcome)
         except Exception as exc:
             error = AuraExecutionError(
-                "Unable to contact the analyst agent. Verify GEMINI_API_KEY and your connection, then try again.",
+                "Unable to contact the analyst agent. Verify ANTHROPIC_API_KEY and your connection, then try again.",
                 context={"detail": str(exc)},
             )
             LOGGER.exception("Conversation execution failed")
@@ -571,7 +571,7 @@ class Orchestrator(QObject):
         LOGGER.error("Conversation worker failed: %s", message)
         self.error_occurred.emit(
             message
-            or "Unable to contact the analyst agent. Verify GEMINI_API_KEY and your connection, then try again."
+            or "Unable to contact the analyst agent. Verify ANTHROPIC_API_KEY and your connection, then try again."
         )
         self.all_sessions_complete.emit()
         self.progress_update.emit(FAILURE_MESSAGE)

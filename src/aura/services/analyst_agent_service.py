@@ -116,7 +116,15 @@ class AnalystAgentService:
         )
 
         try:
+            max_tool_calls = 15
+            tool_calls_count = 0
             while True:
+                if tool_calls_count >= max_tool_calls:
+                    error_message = "Error: Analyst exceeded the maximum number of tool calls."
+                    self._emit_status("Analyst agent: failed", "analyst.error")
+                    self._emit_completion(error_message, success=False)
+                    return error_message
+
                 response = self._client.messages.create(
                     model=self.model_name,
                     system=ANALYST_PROMPT,
@@ -128,6 +136,7 @@ class AnalystAgentService:
                 messages.append({"role": "assistant", "content": response.content})
 
                 if response.stop_reason == "tool_use":
+                    tool_calls_count += 1
                     tool_results = []
                     for block in response.content:
                         if block.type != "tool_use":
@@ -249,245 +258,12 @@ class AnalystAgentService:
     # ------------------------------------------------------------------ #
     def _build_tool_definitions(self) -> list[dict[str, Any]]:
         """Return Claude-compatible tool schemas."""
-        return [
-            {
-                "name": "list_project_files",
-                "description": "List files beneath a directory filtered by extension.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "directory": {
-                            "type": "string",
-                            "description": "Directory relative to the workspace.",
-                            "default": ".",
-                        },
-                        "extension": {
-                            "type": "string",
-                            "description": "File extension filter such as .py.",
-                            "default": ".py",
-                        },
-                    },
-                    "required": [],
-                },
-            },
-            {
-                "name": "read_project_file",
-                "description": "Read a single file relative to the workspace root.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path relative to the workspace.",
-                        }
-                    },
-                    "required": ["path"],
-                },
-            },
-            {
-                "name": "get_imports",
-                "description": "Analyze import statements inside a Python file.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {"type": "string", "description": "Python file path."}
-                    },
-                    "required": ["file_path"],
-                },
-            },
-            {
-                "name": "get_project_structure",
-                "description": "Summarize folders and files up to a certain depth.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "directory": {"type": "string", "default": "."},
-                        "max_depth": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 5,
-                            "default": 2,
-                        },
-                    },
-                    "required": [],
-                },
-            },
-            {
-                "name": "search_in_files",
-                "description": "Search for a case-insensitive pattern across files.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string"},
-                        "directory": {"type": "string", "default": "."},
-                        "file_extension": {"type": "string", "default": ".py"},
-                    },
-                    "required": ["pattern"],
-                },
-            },
-            {
-                "name": "get_git_status",
-                "description": "Return the short git status for the workspace.",
-                "input_schema": {"type": "object", "properties": {}, "required": []},
-            },
-            {
-                "name": "get_cyclomatic_complexity",
-                "description": "Compute cyclomatic complexity metrics for a Python file.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {"type": "string", "description": "Python file path."}
-                    },
-                    "required": ["file_path"],
-                },
-            },
-            {
-                "name": "detect_duplicate_code",
-                "description": "Identify duplicated function or class bodies across the repo.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "min_lines": {
-                            "type": "integer",
-                            "minimum": 3,
-                            "default": 5,
-                        }
-                    },
-                    "required": [],
-                },
-            },
-            {
-                "name": "check_naming_conventions",
-                "description": "Report classes or functions that violate naming conventions.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"directory": {"type": "string", "default": "."}},
-                    "required": [],
-                },
-            },
-            {
-                "name": "analyze_type_hints",
-                "description": "List functions missing parameter or return annotations.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"directory": {"type": "string", "default": "."}},
-                    "required": [],
-                },
-            },
-            {
-                "name": "inspect_docstrings",
-                "description": "Find modules, classes, or functions without docstrings.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "directory": {"type": "string", "default": "."},
-                        "include_private": {"type": "boolean", "default": False},
-                    },
-                    "required": [],
-                },
-            },
-            {
-                "name": "get_function_signatures",
-                "description": "Return function signatures (name, params, docstring).",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {"type": "string", "description": "Python file path."}
-                    },
-                    "required": ["file_path"],
-                },
-            },
-            {
-                "name": "find_unused_imports",
-                "description": "Detect unused imports inside a Python file.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {"type": "string", "description": "Python file path."}
-                    },
-                    "required": ["file_path"],
-                },
-            },
-            {
-                "name": "get_class_hierarchy",
-                "description": "Show parents and children for a specific class.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "class_name": {"type": "string"},
-                        "search_directory": {"type": "string", "default": "."},
-                    },
-                    "required": ["class_name"],
-                },
-            },
-            {
-                "name": "get_dependency_graph",
-                "description": "Inspect dependencies and dependents for a symbol.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "symbol_name": {"type": "string"},
-                        "search_directory": {"type": "string", "default": "."},
-                    },
-                    "required": ["symbol_name"],
-                },
-            },
-            {
-                "name": "get_code_metrics",
-                "description": "Aggregate LOC, TODOs, and symbol counts for a directory.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"directory": {"type": "string", "default": "."}},
-                    "required": [],
-                },
-            },
-            {
-                "name": "submit_execution_plan",
-                "description": "Submit the final JSON execution plan for the executor.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "task_summary": {"type": "string"},
-                        "project_context": {"type": "string"},
-                        "estimated_files": {"type": "integer", "minimum": 0},
-                        "quality_checklist": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                        "operations": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "operation_type": {
-                                        "type": "string",
-                                        "enum": ["CREATE", "MODIFY", "DELETE"],
-                                    },
-                                    "file_path": {"type": "string"},
-                                    "content": {"type": "string"},
-                                    "old_str": {"type": "string"},
-                                    "new_str": {"type": "string"},
-                                    "rationale": {"type": "string"},
-                                    "dependencies": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
-                                    },
-                                },
-                                "required": ["operation_type", "file_path", "rationale"],
-                            },
-                        },
-                    },
-                    "required": [
-                        "task_summary",
-                        "project_context",
-                        "estimated_files",
-                        "quality_checklist",
-                        "operations",
-                    ],
-                },
-            },
-        ]
+        from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema
+
+        tools = []
+        for tool_name, handler in self._tool_handlers.items():
+            tools.append(build_anthropic_tool_schema(handler))
+        return tools
 
     def _dispatch_tool_call(self, tool_name: str, tool_input: Mapping[str, Any]) -> str:
         """Execute a tool handler with full logging and auditing."""
