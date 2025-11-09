@@ -109,93 +109,66 @@ class AnalystAgentService:
             ]
 
             messages = [{"role": "user", "parts": [{"text": user_request}]}]
-            max_iterations = 10
 
-            for iteration in range(max_iterations):
-                response = self._client.models.generate_content(
-                    model=self.model_name,
-                    contents=messages,
-                    config=types.GenerateContentConfig(
-                        temperature=0.0,
-                        system_instruction=ANALYST_PROMPT,
-                        tools=self._instrument_tools(tool_catalog, source=_ANALYST_SOURCE),
-                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                            disable=True
-                        ),
+            response = self._client.models.generate_content(
+                model=self.model_name,
+                contents=messages,
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    system_instruction=ANALYST_PROMPT,
+                    tools=self._instrument_tools(tool_catalog, source=_ANALYST_SOURCE),
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                        disable=False
                     ),
+                ),
+            )
+
+            # ✅ FIX #3: Defensive check for None content
+            if not response.candidates:
+                LOGGER.warning("Response has no candidates")
+                LOGGER.error("Analyst failed to produce text response after function calls")
+                return ""
+
+            candidate = response.candidates[0]
+            if not candidate.content:
+                LOGGER.warning("Candidate has no content")
+                finish_reason = getattr(candidate, "finish_reason", None)
+                LOGGER.warning(
+                    "Candidate finish_reason: %s",
+                    finish_reason if finish_reason is not None else "Unavailable",
                 )
+                safety_ratings = getattr(candidate, "safety_ratings", None)
+                if safety_ratings:
+                    LOGGER.warning("Candidate safety_ratings: %s", safety_ratings)
+                else:
+                    LOGGER.warning("Candidate safety_ratings unavailable or empty")
+                LOGGER.warning("Candidate repr: %r", candidate)
+                LOGGER.error("Analyst failed to produce text response after function calls")
+                return ""
 
-                # ✅ FIX #3: Defensive check for None content
-                if not response.candidates:
-                    LOGGER.warning("Response has no candidates")
-                    break
+            if not candidate.content.parts:
+                LOGGER.warning("Content has no parts")
+                LOGGER.error("Analyst failed to produce text response after function calls")
+                return ""
 
-                candidate = response.candidates[0]
-                if not candidate.content:
-                    LOGGER.warning("Candidate has no content")
-                    finish_reason = getattr(candidate, "finish_reason", None)
-                    LOGGER.warning(
-                        "Candidate finish_reason: %s",
-                        finish_reason if finish_reason is not None else "Unavailable",
-                    )
-                    safety_ratings = getattr(candidate, "safety_ratings", None)
-                    if safety_ratings:
-                        LOGGER.warning("Candidate safety_ratings: %s", safety_ratings)
-                    else:
-                        LOGGER.warning("Candidate safety_ratings unavailable or empty")
-                    LOGGER.warning("Candidate repr: %r", candidate)
-                    break
+            final_text = self._coalesce_response_text(response)
+            if final_text:
+                if on_chunk:
+                    self._emit_streaming_chunk(final_text, source=_ANALYST_SOURCE, on_chunk=on_chunk)
+                    self._emit_streaming_chunk("", source=_ANALYST_SOURCE, on_chunk=on_chunk, is_final=True)
 
-                if not candidate.content.parts:
-                    LOGGER.warning("Content has no parts")
-                    break
-
-                parts = candidate.content.parts
-                function_calls = [p for p in parts if p.function_call]
-
-                if function_calls:
-                    messages.append(candidate.content)
-
-                    for fc in function_calls:
-                        tool_name = fc.function_call.name
-                        tool_args = dict(fc.function_call.args)
-
-                        LOGGER.info(f"Executing tool: {tool_name} with args: {tool_args}")
-
-                        result = self._execute_tool(tool_name, tool_args)
-
-                        messages.append({
-                            "role": "user",
-                            "parts": [{
-                                "function_response": {
-                                    "name": tool_name,
-                                    "response": {"result": result},
-                                }
-                            }]
-                        })
-
-                    continue
-
-                final_text = self._coalesce_response_text(response)
-                if final_text:
-                    if on_chunk:
-                        self._emit_streaming_chunk(final_text, source=_ANALYST_SOURCE, on_chunk=on_chunk)
-                        self._emit_streaming_chunk("", source=_ANALYST_SOURCE, on_chunk=on_chunk, is_final=True)
-
-                    duration = time.perf_counter() - started
-                    self._emit_status("Analyst agent: plan ready", "analyst.complete")
-                    self._event_bus.emit(
-                        PhaseTransition(from_phase="analyst", to_phase="idle", source=_ANALYST_SOURCE)
-                    )
-                    self._emit_completion(final_text, success=True)
-                    LOGGER.info(
-                        "Analyst analysis completed | duration=%.2fs | text_length=%d",
-                        duration,
-                        len(final_text),
-                    )
-                    return final_text
-
-                break
+                duration = time.perf_counter() - started
+                self._emit_status("Analyst agent: plan ready", "analyst.complete")
+                self._event_bus.emit(
+                    PhaseTransition(from_phase="analyst", to_phase="idle", source=_ANALYST_SOURCE)
+                )
+                self._emit_completion(final_text, success=True)
+                LOGGER.info(
+                    "Analyst analysis completed | duration=%.2fs | text_length=%d",
+                    duration,
+                    len(final_text),
+                )
+                return final_text
 
             LOGGER.error("Analyst failed to produce text response after function calls")
             return ""
