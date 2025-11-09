@@ -5,7 +5,7 @@ import inspect
 import re
 from typing import Callable, Dict, Any
 
-def build_anthropic_tool_schema(tool: Callable) -> Dict[str, Any]:
+def build_anthropic_tool_schema(tool: Callable, name_override: str = None) -> Dict[str, Any]:
     """
     Dynamically builds a JSON schema for a given Python tool (callable)
     that is compatible with the Anthropic API.
@@ -65,8 +65,10 @@ def build_anthropic_tool_schema(tool: Callable) -> Dict[str, Any]:
         if param.default is inspect.Parameter.empty:
             required.append(name)
 
+    tool_name = name_override if name_override is not None else tool.__name__
+
     return {
-        "name": tool.__name__,
+        "name": tool_name,
         "description": description,
         "input_schema": {
             "type": "object",

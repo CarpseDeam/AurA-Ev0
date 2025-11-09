@@ -193,7 +193,7 @@ class ChatService:
         """Return Claude-compatible tool schemas."""
         tools = []
         for tool_name, handler in self._tool_handlers.items():
-            tools.append(build_anthropic_tool_schema(handler))
+            tools.append(build_anthropic_tool_schema(handler, name_override=tool_name))
         return tools
 
     def _dispatch_tool_call(self, tool_name: str, tool_input: Mapping[str, Any]) -> str:
