@@ -8,8 +8,8 @@ from typing import Any, Dict, Optional
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-DEFAULT_ANALYST_MODEL = "claude-sonnet-4-5-20250929"
-DEFAULT_EXECUTOR_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_ANALYST_MODEL = "claude-3-sonnet-20240229"
+DEFAULT_EXECUTOR_MODEL = "claude-3-sonnet-20240229"
 DEFAULT_LOCAL_MODEL_ENDPOINT = "http://localhost:11434/api/generate"
 DEFAULT_SPECIALIST_MODEL = "phi-3-mini"
 
@@ -50,7 +50,7 @@ def load_settings() -> Dict[str, Any]:
         with open(settings_path, "r", encoding="utf-8") as f:
             settings = json.load(f)
             # Ensure all keys are present, providing defaults for any missing ones
-            settings.setdefault("analyst_model", DEFAULT_ANALYST_MODEL)
+            settings["analyst_model"] = DEFAULT_ANALYST_MODEL  # Force correct model
             settings.setdefault("executor_model", DEFAULT_EXECUTOR_MODEL)
             settings.setdefault("specialist_model", DEFAULT_SPECIALIST_MODEL)
             settings.setdefault("local_model_endpoint", DEFAULT_LOCAL_MODEL_ENDPOINT)
