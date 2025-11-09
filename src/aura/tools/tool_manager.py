@@ -316,17 +316,23 @@ class ToolManager:
             LOGGER.exception("Failed to search files for pattern %s: %s", pattern, exc)
             return {"matches": [], "total": 0, "error": f"Error searching for '{pattern}': {exc}"}
 
-    def read_multiple_files(self, file_paths: list) -> dict:
+    def read_multiple_files(self, file_paths_json: str) -> dict:
         """Read multiple files and return structured results.
 
         Args:
-            file_paths: List of file paths to read
+            file_paths_json: A JSON string representing a list of file paths to read.
 
         Returns:
-            Dictionary with file paths as keys and content/error info as values
-            Example: {"file1.py": {"success": True, "content": "..."}, "file2.py": {"success": False, "error": "..."}}
+            Dictionary with file paths as keys and content/error info as values.
         """
-        LOGGER.info("🔧 TOOL CALLED: read_multiple_files(%s)", file_paths)
+        LOGGER.info("🔧 TOOL CALLED: read_multiple_files(%s)", file_paths_json)
+        try:
+            file_paths = json.loads(file_paths_json)
+            if not isinstance(file_paths, list):
+                return {"error": "Input must be a JSON array of strings."}
+        except json.JSONDecodeError as exc:
+            return {"error": f"Invalid JSON provided for file paths: {exc}"}
+
         try:
             if not file_paths:
                 return {"error": "No files specified"}
@@ -716,17 +722,26 @@ class ToolManager:
                 "output": f"Error running tests: {exc}",
             }
 
-    def lint_code(self, file_paths: list, directory: str = ".") -> dict:
+    def lint_code(self, file_paths_json: str, directory: str = ".") -> dict:
         """Run pylint to catch errors and code quality issues.
 
         Args:
-            file_paths: List of specific files to lint (empty list to scan directory)
-            directory: Directory to lint if file_paths is empty (default: ".")
+            file_paths_json: A JSON string representing a list of specific files to lint.
+            directory: Directory to lint if file_paths_json is empty (default: ".")
 
         Returns:
             Dictionary with keys: errors (list), warnings (list), score (float), output (str)
         """
-        LOGGER.info("🔧 TOOL CALLED: lint_code(%s)", file_paths or directory)
+        LOGGER.info("🔧 TOOL CALLED: lint_code(%s)", file_paths_json or directory)
+        file_paths = []
+        if file_paths_json:
+            try:
+                file_paths = json.loads(file_paths_json)
+                if not isinstance(file_paths, list):
+                    return {"errors": ["Input must be a JSON array of strings."], "warnings": [], "score": 0.0}
+            except json.JSONDecodeError as exc:
+                return {"errors": [f"Invalid JSON: {exc}"], "warnings": [], "score": 0.0}
+
         try:
             cmd = ["pylint"]
 
@@ -867,18 +882,27 @@ class ToolManager:
 
     def format_code(
         self,
-        file_paths: list, directory: str = "."
+        file_paths_json: str, directory: str = "."
     ) -> dict:
         """Format Python code using Black formatter.
 
         Args:
-            file_paths: List of specific files to format (empty list to format directory)
-            directory: Directory to format if file_paths is empty (default: ".")
+            file_paths_json: A JSON string representing a list of specific files to format.
+            directory: Directory to format if file_paths_json is empty (default: ".")
 
         Returns:
             Dictionary with keys: formatted (count), errors (list), message (summary)
         """
-        LOGGER.info("🔧 TOOL CALLED: format_code(%s)", file_paths or directory)
+        LOGGER.info("🔧 TOOL CALLED: format_code(%s)", file_paths_json or directory)
+        file_paths = []
+        if file_paths_json:
+            try:
+                file_paths = json.loads(file_paths_json)
+                if not isinstance(file_paths, list):
+                    return {"formatted": 0, "errors": ["Input must be a JSON array of strings."]}
+            except json.JSONDecodeError as exc:
+                return {"formatted": 0, "errors": [f"Invalid JSON: {exc}"]}
+
         try:
             cmd = ["black"]
 
