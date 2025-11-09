@@ -91,7 +91,7 @@ def update_documentation(
     }
 
 
-def get_database_schema(connection_url: str = None) -> dict:
+def get_database_schema(connection_url: str = "") -> dict:
     """Inspect a SQL database using SQLAlchemy and return a schema summary."""
     LOGGER.info("?? TOOL CALLED: get_database_schema")
     try:
