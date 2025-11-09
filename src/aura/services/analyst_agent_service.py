@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
+from typing import Any, Callable, Optional
 
 from google import genai
 from google.genai import types
@@ -137,9 +138,7 @@ class AnalystAgentService:
                     config=request_config,
                 )
                 # Use robust text extraction
-                final_text = getattr(fallback_response, "text", "")
-                if not final_text:
-                    final_text = self._extract_text_from_parts(fallback_response)
+                final_text = self._coalesce_response_text(fallback_response)
                 duration = time.perf_counter() - started
                 if final_text:
                     self._emit_streaming_chunk(
@@ -245,11 +244,7 @@ class AnalystAgentService:
         This method robustly extracts text from API responses, even when they
         contain complex multi-part content (e.g., after tool calls).
         """
-        text_snapshot = getattr(chunk, "text", "") or ""
-
-        if not text_snapshot:
-            text_snapshot = AnalystAgentService._extract_text_from_parts(chunk)
-
+        text_snapshot = AnalystAgentService._coalesce_response_text(chunk)
         if not text_snapshot:
             return "", aggregated_text
 
@@ -261,6 +256,19 @@ class AnalystAgentService:
             return addition, text_snapshot
 
         return text_snapshot, aggregated_text + text_snapshot
+
+    @staticmethod
+    def _coalesce_response_text(response: Any) -> str:
+        """Prefer text gathered from structured parts, fallback to plain text."""
+        if response is None:
+            return ""
+
+        text_from_parts = AnalystAgentService._extract_text_from_parts(response)
+        if text_from_parts:
+            return text_from_parts
+
+        fallback_text = AnalystAgentService._get_structured_field(response, "text")
+        return fallback_text if isinstance(fallback_text, str) else ""
 
     @staticmethod
     def _extract_text_from_parts(chunk: types.GenerateContentResponse) -> str:
@@ -297,13 +305,11 @@ class AnalystAgentService:
         chunk: types.GenerateContentResponse,
     ) -> Iterator[Any]:
         """Yield every content part in the response."""
-        candidates = getattr(chunk, "candidates", None)
-        if candidates:
-            for candidate in candidates:
-                yield from AnalystAgentService._parts_from_candidate(candidate)
-            return
+        candidates = AnalystAgentService._get_structured_field(chunk, "candidates")
+        for candidate in AnalystAgentService._iterate_structured_sequence(candidates):
+            yield from AnalystAgentService._parts_from_candidate(candidate)
 
-        content = getattr(chunk, "content", None)
+        content = AnalystAgentService._get_structured_field(chunk, "content")
         yield from AnalystAgentService._parts_from_content(content)
 
     @staticmethod
@@ -311,7 +317,7 @@ class AnalystAgentService:
         """Yield all parts associated with a candidate."""
         if not candidate:
             return
-        content = getattr(candidate, "content", None)
+        content = AnalystAgentService._get_structured_field(candidate, "content")
         yield from AnalystAgentService._parts_from_content(content)
 
     @staticmethod
@@ -320,15 +326,15 @@ class AnalystAgentService:
         if not content:
             return
 
-        if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        if AnalystAgentService._is_non_string_sequence(content):
             for entry in content:
                 yield from AnalystAgentService._parts_from_content(entry)
             return
 
-        content_parts = getattr(content, "parts", None)
+        content_parts = AnalystAgentService._get_structured_field(content, "parts")
         if not content_parts:
             return
-        for part in content_parts:
+        for part in AnalystAgentService._iterate_structured_sequence(content_parts):
             yield part
 
     @staticmethod
@@ -360,6 +366,36 @@ class AnalystAgentService:
             "video_metadata",
         )
         return any(getattr(part, field, None) is not None for field in structured_fields)
+
+    @staticmethod
+    def _get_structured_field(source: Any, field: str) -> Any:
+        """Return an attribute/field regardless of whether the source is obj or dict."""
+        if source is None:
+            return None
+        if isinstance(source, Mapping):
+            return source.get(field)
+        return getattr(source, field, None)
+
+    @staticmethod
+    def _is_non_string_sequence(value: Any) -> bool:
+        """Return True if value behaves like a sequence we can iterate safely."""
+        if value is None:
+            return False
+        return isinstance(value, Sequence) and not isinstance(
+            value,
+            (str, bytes, bytearray, Mapping),
+        )
+
+    @staticmethod
+    def _iterate_structured_sequence(value: Any) -> Iterator[Any]:
+        """Yield items from a sequence-like value while handling scalars."""
+        if value is None:
+            return
+        if AnalystAgentService._is_non_string_sequence(value):
+            for item in value:
+                yield item
+            return
+        yield value
 
     def _instrument_tools(
         self,
