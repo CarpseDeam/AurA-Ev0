@@ -23,7 +23,7 @@ from aura.events import (
     ToolCallStarted,
 )
 from aura.models import ToolCallLog
-from aura.prompts import AURA_SYSTEM_PROMPT
+from aura.prompt import AURA_SYSTEM_PROMPT
 from aura.tools.local_agent_tools import generate_commit_message
 from aura.tools.tool_manager import ToolManager
 from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema
@@ -161,8 +161,9 @@ class ChatService:
         except anthropic.APIError as exc:
             duration = time.perf_counter() - started
             LOGGER.exception("Chat request failed | duration=%.2fs", duration)
-            error_message =
+            error_message = (
                 "Error: Unable to contact Claude. Verify ANTHROPIC_API_KEY and network access."
+            )
             self._emit_status("Chat agent: failed", "chat.error")
             self._event_bus.emit(
                 SystemErrorEvent(
@@ -317,10 +318,11 @@ class ChatService:
         )
         if not on_chunk:
             return
-        callback_payload =
+        callback_payload = (
             f"{config.STREAM_PREFIX}\n"
             if is_final and not payload
             else f"{config.STREAM_PREFIX}{payload}"
+        )
         try:
             on_chunk(callback_payload)
         except Exception:  # noqa: BLE001

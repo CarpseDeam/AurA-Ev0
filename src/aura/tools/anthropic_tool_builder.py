@@ -45,9 +45,18 @@ def build_anthropic_tool_schema(tool: Callable) -> Dict[str, Any]:
     }
 
     for name, param in signature.parameters.items():
-        param_type = "string"  # Default to string if type is not annotated
+        param_type = "string"  # Default to string
         if param.annotation is not inspect.Parameter.empty:
-            param_type = type_mapping.get(param.annotation.__name__, "string")
+            annotation_str = str(param.annotation)
+            if "dict" in annotation_str.lower():
+                param_type = "object"
+            elif "list" in annotation_str.lower():
+                param_type = "array"
+            else:
+                try:
+                    param_type = type_mapping.get(param.annotation.__name__, "string")
+                except AttributeError:
+                    param_type = "string"  # Fallback for complex types without __name__
 
         properties[name] = {
             "type": param_type,
