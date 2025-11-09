@@ -29,6 +29,7 @@ from aura.orchestrator import SessionResult
 from aura.state import AppState
 from aura.ui.output_panel import OutputPanel
 from aura.ui.status_bar_manager import StatusBarManager
+from aura.ui.task_list_display import TaskListDisplay, TaskStatus
 
 LOGGER = logging.getLogger(__name__)
 
@@ -132,6 +133,13 @@ class OrchestrationHandler(QObject):
         self._chunk_buffer_timer.timeout.connect(self._flush_chunk_buffer)
         self._in_thinking_block = False
         self._last_chunk_summary: str = ""
+        self._task_list_display = TaskListDisplay()
+        self._active_task_id: Optional[str] = None
+        self._task_list_enabled = True
+        self._pending_task_updates: list[tuple[str, TaskStatus]] = []
+        self._task_update_timer = QTimer(self)
+        self._task_update_timer.setSingleShot(True)
+        self._task_update_timer.timeout.connect(self._flush_task_updates)
 
     @property
     def verbosity(self) -> VerbosityLevel:
@@ -146,10 +154,21 @@ class OrchestrationHandler(QObject):
         self._verbosity = new_level
         self._reset_chunk_buffer()
 
+    def set_task_list_enabled(self, enabled: bool) -> None:
+        """Enable or disable task list display.
+
+        Args:
+            enabled: Whether to enable task list display
+        """
+        self._task_list_enabled = enabled
+        if not enabled:
+            self._task_list_display.clear()
+
     def handle_planning_started(self) -> None:
         """Reset state and display planning message."""
         try:
             self._reset_chunk_buffer()
+            self._task_list_display.clear()
             self._set_running_state()
             self.request_input_enabled.emit(False)
         except Exception:  # noqa: BLE001
@@ -160,6 +179,7 @@ class OrchestrationHandler(QObject):
         """Display headers for a new session."""
         try:
             self._reset_chunk_buffer()
+            self._task_list_display.clear()  # Clear task list for new session
             self._set_running_state()
             name = getattr(session, "name", "Conversation")
 
@@ -296,6 +316,15 @@ class OrchestrationHandler(QObject):
         text = (event.text or "").rstrip("\r")
         if not text:
             return
+
+        # Parse text for task structures (if task list is enabled and not minimal verbosity)
+        if self._task_list_enabled and self._verbosity is not VerbosityLevel.MINIMAL:
+            new_groups = self._task_list_display.parse_text_for_tasks(text, event.source)
+            if new_groups:
+                groups = self._task_list_display.get_all_groups()
+                if groups:
+                    self._output_panel.display_task_list(groups)
+
         if self._verbosity is VerbosityLevel.VERBOSE:
             _log_handler_recv(text)
             self._output_panel.display_stream_chunk(text, config.COLORS.agent_output)
@@ -332,12 +361,42 @@ class OrchestrationHandler(QObject):
         """Render tool call feedback emitted from the event bus."""
         self._flush_chunk_buffer()
         parsed_args = self._normalize_parameters(event.parameters)
+
+        # Create or update task for this tool call
+        if self._task_list_enabled and self._verbosity is not VerbosityLevel.MINIMAL:
+            task_id = self._task_list_display.create_task_from_tool_call(
+                event.tool_name or "tool",
+                parsed_args,
+            )
+            if task_id:
+                # Mark task as in-progress
+                self._active_task_id = task_id
+                self._queue_task_update(task_id, TaskStatus.IN_PROGRESS)
+
+                # Display updated task list
+                groups = self._task_list_display.get_all_groups()
+                if groups:
+                    self._output_panel.display_task_list(groups)
+
         self._render_tool_call(event.tool_name or "tool", parsed_args)
 
     def _handle_tool_call_completed_event(self, event: ToolCallCompleted) -> None:
         """Surface a concise completion line for every tool call."""
         self._flush_chunk_buffer()
         tool = event.tool_name or "tool"
+
+        # Update task status to completed
+        if self._task_list_enabled and self._verbosity is not VerbosityLevel.MINIMAL:
+            updated = self._task_list_display.update_task_status_by_tool(
+                tool,
+                TaskStatus.COMPLETED,
+            )
+            if updated:
+                # Display updated task list
+                groups = self._task_list_display.get_all_groups()
+                if groups:
+                    self._output_panel.display_task_list(groups)
+
         summary = self._summarize_tool_result(event.result)
         if summary:
             message = f"[OK] {tool} completed: {summary}"
@@ -349,6 +408,19 @@ class OrchestrationHandler(QObject):
         """Always display tool failures, regardless of verbosity."""
         self._flush_chunk_buffer()
         tool = event.tool_name or "tool"
+
+        # Update task status to failed
+        if self._task_list_enabled and self._verbosity is not VerbosityLevel.MINIMAL:
+            updated = self._task_list_display.update_task_status_by_tool(
+                tool,
+                TaskStatus.FAILED,
+            )
+            if updated:
+                # Display updated task list
+                groups = self._task_list_display.get_all_groups()
+                if groups:
+                    self._output_panel.display_task_list(groups)
+
         error = (event.error or "Tool call failed.").strip()
         message = f"[FAIL] {tool} failed: {error}"
         self._output_panel.display_output(message, config.COLORS.error)
@@ -358,6 +430,11 @@ class OrchestrationHandler(QObject):
         self._flush_chunk_buffer()
         previous = (event.from_phase or "unknown").strip() or "unknown"
         current = (event.to_phase or "unknown").strip() or "unknown"
+
+        # Clear task list on major phase transitions
+        if self._task_list_enabled and previous != current:
+            self._task_list_display.clear()
+
         message = f"-> Phase: {previous} -> {current}"
         self._output_panel.display_output(message, config.COLORS.accent)
 
@@ -845,3 +922,29 @@ class OrchestrationHandler(QObject):
         """Set the error state through the status manager."""
         self._status_manager.update_status("Error", config.COLORS.error, persist=True)
 
+    def _queue_task_update(self, task_id: str, status: TaskStatus) -> None:
+        """Queue a task status update for batched processing.
+
+        Args:
+            task_id: The task ID to update
+            status: The new status
+        """
+        self._pending_task_updates.append((task_id, status))
+        if not self._task_update_timer.isActive():
+            self._task_update_timer.start(50)  # 50ms batch window
+
+    def _flush_task_updates(self) -> None:
+        """Flush pending task status updates."""
+        if not self._pending_task_updates:
+            return
+
+        # Apply all pending updates
+        for task_id, status in self._pending_task_updates:
+            self._task_list_display.update_task_status(task_id, status)
+
+        self._pending_task_updates.clear()
+
+        # Re-render task list once with all updates
+        groups = self._task_list_display.get_all_groups()
+        if groups:
+            self._output_panel.display_task_list(groups)

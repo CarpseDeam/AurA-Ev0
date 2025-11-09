@@ -42,9 +42,6 @@ class ToolManager:
             size = len(content.encode("utf-8"))
             LOGGER.info("✅ Created file: %s (%d bytes)", target, size)
             return f"Successfully created '{path}' ({size} bytes)"
-        except PermissionError as exc:
-            LOGGER.warning("Denied create_file outside workspace: %s", exc)
-            return f"Error creating '{path}': {exc}"
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to create file %s: %s", path, exc)
             return f"Error creating '{path}': {exc}"
@@ -54,14 +51,10 @@ class ToolManager:
         LOGGER.info("🔧 TOOL CALLED: modify_file(%s)", path)
         try:
             target = self._resolve_path(path)
-        except PermissionError as exc:
-            LOGGER.warning("Denied modify_file outside workspace: %s", exc)
-            return f"Error modifying '{path}': {exc}"
 
-        if not target.exists():
-            return f"Error: file '{path}' does not exist."
+            if not target.exists():
+                return f"Error: file '{path}' does not exist."
 
-        try:
             current = target.read_text(encoding="utf-8")
             if old_content not in current:
                 return f"Error: old_content not found in '{path}'."
@@ -78,14 +71,8 @@ class ToolManager:
         LOGGER.info("🔧 TOOL CALLED: delete_file(%s)", path)
         try:
             target = self._resolve_path(path)
-        except PermissionError as exc:
-            LOGGER.warning("Denied delete_file outside workspace: %s", exc)
-            return f"Error deleting '{path}': {exc}"
-
-        if not target.exists():
-            return f"Error: file '{path}' does not exist."
-
-        try:
+            if not target.exists():
+                return f"Error: file '{path}' does not exist."
             target.unlink()
             LOGGER.info("✅ Deleted file: %s", target)
             return f"Successfully deleted '{path}'"
@@ -101,19 +88,10 @@ class ToolManager:
         LOGGER.info("🔧 TOOL CALLED: read_project_file(%s)", path)
         try:
             target = self._resolve_path(path)
-        except PermissionError as exc:
-            LOGGER.warning(
-                "Denied read_project_file outside workspace: %s | workspace=%s",
-                exc,
-                self.workspace_dir,
-            )
-            return f"Error reading '{path}': {exc}"
+            if not target.exists():
+                LOGGER.warning("read_project_file missing path: %s", target)
+                return f"Error: file '{path}' does not exist."
 
-        if not target.exists():
-            LOGGER.warning("read_project_file missing path: %s", target)
-            return f"Error: file '{path}' does not exist."
-
-        try:
             LOGGER.debug("Reading file at %s", target)
             return target.read_text(encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
@@ -125,31 +103,26 @@ class ToolManager:
         LOGGER.info("🔧 TOOL CALLED: list_project_files(%s, %s)", directory, extension)
         try:
             base = self._resolve_directory(directory)
-        except PermissionError as exc:
-            LOGGER.warning(
-                "Denied list_project_files outside workspace: %s | workspace=%s",
-                exc,
-                self.workspace_dir,
+            if not base.exists():
+                LOGGER.warning("list_project_files base missing: %s", base)
+                return []
+
+            suffix = extension if extension.startswith(".") else f".{extension}"
+            LOGGER.debug(
+                "Scanning %s for *%s (workspace=%s)", base, suffix, self.workspace_dir
             )
-            return [f"Error: {exc}"]
-
-        if not base.exists():
-            LOGGER.warning("list_project_files base missing: %s", base)
-            return []
-
-        suffix = extension if extension.startswith(".") else f".{extension}"
-        LOGGER.debug(
-            "Scanning %s for *%s (workspace=%s)", base, suffix, self.workspace_dir
-        )
-        files = [
-            self._relative_path(path)
-            for path in base.rglob(f"*{suffix}")
-            if path.is_file() and self._is_within_workspace(path)
-        ]
-        LOGGER.info(
-            "list_project_files returning %d paths from %s", len(files), base
-        )
-        return sorted(files)
+            files = [
+                self._relative_path(path)
+                for path in base.rglob(f"*{suffix}")
+                if path.is_file() and self._is_within_workspace(path)
+            ]
+            LOGGER.info(
+                "list_project_files returning %d paths from %s", len(files), base
+            )
+            return sorted(files)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to list project files in %s: %s", directory, exc)
+            return [f"Error listing files in '{directory}': {exc}"]
 
     def search_in_files(
         self,
@@ -161,84 +134,86 @@ class ToolManager:
         LOGGER.info("🔧 TOOL CALLED: search_in_files(%s)", pattern)
         try:
             base = self._resolve_directory(directory)
-        except PermissionError as exc:
-            LOGGER.warning(
-                "Denied search_in_files outside workspace: %s | workspace=%s",
-                exc,
-                self.workspace_dir,
-            )
-            return {"matches": [], "error": str(exc)}
+            if not base.exists():
+                return {"matches": []}
 
-        if not base.exists():
-            return {"matches": []}
+            suffix = file_extension if file_extension.startswith(".") else f".{file_extension}"
+            matches = []
+            lowered = pattern.lower()
 
-        suffix = file_extension if file_extension.startswith(".") else f".{file_extension}"
-        matches = []
-        lowered = pattern.lower()
+            for file_path in base.rglob(f"*{suffix}"):
+                if not file_path.is_file():
+                    continue
 
-        for file_path in base.rglob(f"*{suffix}"):
-            if not file_path.is_file():
-                continue
+                try:
+                    content = file_path.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, PermissionError) as exc:
+                    LOGGER.debug("Skipping unreadable file %s: %s", file_path, exc)
+                    continue
 
-            try:
-                content = file_path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, PermissionError) as exc:
-                LOGGER.debug("Skipping unreadable file %s: %s", file_path, exc)
-                continue
+                for line_num, line in enumerate(content.splitlines(), start=1):
+                    if lowered in line.lower():
+                        matches.append(
+                            {
+                                "file": self._relative_path(file_path),
+                                "line_number": line_num,
+                                "content": line.strip(),
+                            }
+                        )
+                        if len(matches) >= 50:
+                            LOGGER.info("Search hit 50 match limit")
+                            return {"matches": matches}
 
-            for line_num, line in enumerate(content.splitlines(), start=1):
-                if lowered in line.lower():
-                    matches.append(
-                        {
-                            "file": self._relative_path(file_path),
-                            "line_number": line_num,
-                            "content": line.strip(),
-                        }
-                    )
-                    if len(matches) >= 50:
-                        LOGGER.info("Search hit 50 match limit")
-                        return {"matches": matches}
-
-        LOGGER.info("Search found %d matches for pattern: %s", len(matches), pattern)
-        return {"matches": matches}
+            LOGGER.info("Search found %d matches for pattern: %s", len(matches), pattern)
+            return {"matches": matches}
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to search files for pattern %s: %s", pattern, exc)
+            return {"matches": [], "error": f"Error searching for '{pattern}': {exc}"}
 
     def read_multiple_files(self, file_paths: list[str]) -> dict[str, str]:
-        """Read multiple files and return a mapping of path → contents/error."""
-        LOGGER.info("🔧 TOOL CALLED: read_multiple_files(%s)", file_paths)
-        if not file_paths:
-            return {}
+        """Read multiple files and return a mapping of path → contents/error.
 
-        results: dict[str, str] = {}
-        for user_path in file_paths:
-            try:
-                target = self._resolve_path(user_path)
-            except PermissionError as exc:
-                LOGGER.warning(
-                    "Denied read_multiple_files outside workspace: %s | workspace=%s",
-                    exc,
-                    self.workspace_dir,
-                )
-                results[user_path] = f"Error reading '{user_path}': {exc}"
-                continue
+        Unexpected failures yield {"__error__": "..."} for easier debugging.
+        """
+        LOGGER.info("?? TOOL CALLED: read_multiple_files(%s)", file_paths)
+        try:
+            if not file_paths:
+                return {}
 
-            if not target.exists():
-                LOGGER.warning("read_multiple_files missing path: %s", target)
-                results[user_path] = f"Error: file '{user_path}' does not exist."
-                continue
+            results: dict[str, str] = {}
+            for user_path in file_paths:
+                try:
+                    target = self._resolve_path(user_path)
+                except PermissionError as exc:
+                    LOGGER.warning(
+                        "Denied read_multiple_files outside workspace: %s | workspace=%s",
+                        exc,
+                        self.workspace_dir,
+                    )
+                    results[user_path] = f"Error reading '{user_path}': {exc}"
+                    continue
 
-            if not target.is_file():
-                LOGGER.warning("read_multiple_files non-file path: %s", target)
-                results[user_path] = f"Error: '{user_path}' is not a file."
-                continue
+                if not target.exists():
+                    LOGGER.warning("read_multiple_files missing path: %s", target)
+                    results[user_path] = f"Error: file '{user_path}' does not exist."
+                    continue
 
-            try:
-                LOGGER.debug("Reading multiple file entry: %s", target)
-                results[user_path] = target.read_text(encoding="utf-8")
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("Failed to read %s: %s", user_path, exc)
-                results[user_path] = f"Error reading '{user_path}': {exc}"
+                if not target.is_file():
+                    LOGGER.warning("read_multiple_files non-file path: %s", target)
+                    results[user_path] = f"Error: '{user_path}' is not a file."
+                    continue
 
-        return results
+                try:
+                    LOGGER.debug("Reading multiple file entry: %s", target)
+                    results[user_path] = target.read_text(encoding="utf-8")
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.exception("Failed to read %s: %s", user_path, exc)
+                    results[user_path] = f"Error reading '{user_path}': {exc}"
+
+            return results
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to read multiple files: %s", exc)
+            return {"__error__": f"Error reading files: {exc}"}
 
     # ------------------------------------------------------------------ #
     # Internal helpers

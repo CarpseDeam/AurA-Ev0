@@ -13,6 +13,7 @@ from PySide6.QtGui import QFont, QTextCursor, QTextOption
 from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
 
 from aura import config
+from aura.ui.task_list_display import Task, TaskGroup, TaskStatus
 
 
 from aura.ui.banner import generate_banner_html
@@ -26,6 +27,7 @@ class OutputPanel(QWidget):
         self._text_edit = QTextEdit(self)
         self._stream_buffer: str = ""
         self._needs_leading_break = False
+        self._task_list_container_id: Optional[str] = None
         self._configure_widget()
 
     def _configure_widget(self) -> None:
@@ -277,6 +279,181 @@ AI-Powered Development Assistant
         self._text_edit.clear()
         self._stream_buffer = ""
         self._needs_leading_break = False
+        self._task_list_container_id = None
+
+    def display_task_list(self, groups: list[TaskGroup]) -> None:
+        """Display a task list with groups and tasks.
+
+        Args:
+            groups: List of task groups to display
+        """
+        if not groups:
+            return
+
+        self._flush_stream_buffer()
+        self._ensure_leading_break()
+
+        # Generate a unique container ID for this task list
+        import uuid
+        container_id = f"task-list-{uuid.uuid4()}"
+        self._task_list_container_id = container_id
+
+        html_content = self._build_task_list_html(groups, container_id)
+        self._append_html(html_content)
+
+    def update_task_status(self, task_id: str, status: TaskStatus) -> None:
+        """Update the status of a specific task in real-time.
+
+        Args:
+            task_id: The task ID to update
+            status: The new status
+        """
+        if not self._task_list_container_id:
+            return
+
+        # Use JavaScript-like approach via HTML manipulation
+        # Since we can't use JavaScript directly, we'll need to update via re-rendering
+        # For now, we'll implement a marker-based update system
+        status_symbol = self._get_status_symbol(status)
+        status_color = self._get_status_color(status)
+
+        # We'll need to track task elements and update them
+        # This is a simplified version - full implementation would require
+        # more sophisticated DOM manipulation via Qt's HTML system
+        pass  # Placeholder - actual implementation below in _build_task_list_html
+
+    def _build_task_list_html(self, groups: list[TaskGroup], container_id: str) -> str:
+        """Build HTML for the task list.
+
+        Args:
+            groups: List of task groups
+            container_id: Unique container ID
+
+        Returns:
+            HTML string for the task list
+        """
+        parts: list[str] = []
+        parts.append(
+            f'<div id="{container_id}" class="task-list" style="'
+            "font-family: 'Consolas', 'Monaco', monospace; "
+            "padding: 8px 0; "
+            f'margin: {config.OUTPUT_BLOCK_SPACING_PX}px 0;">'
+        )
+
+        for group in groups:
+            parts.append(self._build_task_group_html(group))
+
+        parts.append("</div>")
+        return "".join(parts)
+
+    def _build_task_group_html(self, group: TaskGroup) -> str:
+        """Build HTML for a single task group.
+
+        Args:
+            group: The task group
+
+        Returns:
+            HTML string for the group
+        """
+        parts: list[str] = []
+        parts.append('<div class="task-group" style="margin-bottom: 12px;">')
+
+        # Group header
+        safe_icon = html.escape(group.icon)
+        safe_header = html.escape(group.header)
+        parts.append(
+            f'<div class="task-header" style="'
+            f"color: {config.COLORS.accent}; "
+            "font-weight: 600; "
+            "margin-bottom: 8px; "
+            'font-size: 14px;">'
+            f"{safe_icon} {safe_header}"
+            "</div>"
+        )
+
+        # Tasks
+        for task in group.tasks:
+            parts.append(self._build_task_item_html(task))
+
+        parts.append("</div>")
+        return "".join(parts)
+
+    def _build_task_item_html(self, task: Task) -> str:
+        """Build HTML for a single task item.
+
+        Args:
+            task: The task
+
+        Returns:
+            HTML string for the task
+        """
+        status_symbol = self._get_status_symbol(task.status)
+        status_color = self._get_status_color(task.status)
+        safe_text = html.escape(task.text)
+
+        # Calculate indentation (16px base + 16px per level)
+        indent = 16 + (task.indent_level * 16)
+
+        task_style = (
+            f"margin-left: {indent}px; "
+            f"color: {status_color}; "
+            "margin-bottom: 4px; "
+            "font-size: 13px; "
+            "line-height: 1.4; "
+        )
+
+        # Add styling based on status
+        status_style = ""
+        if task.status == TaskStatus.IN_PROGRESS:
+            # Bright color for in-progress tasks
+            status_style = f"font-weight: 500; color: {status_color}; "
+        elif task.status == TaskStatus.COMPLETED:
+            # Dimmed and strikethrough for completed
+            task_style += "opacity: 0.7; "
+        elif task.status == TaskStatus.FAILED:
+            # Red color for failed tasks
+            task_style += "font-weight: 500; "
+
+        return (
+            f'<div class="task-item" data-task-id="{task.task_id}" style="{task_style}">'
+            f'<span class="task-status" style="margin-right: 8px; {status_style}">{status_symbol}</span>'
+            f'<span class="task-text">{safe_text}</span>'
+            "</div>"
+        )
+
+    def _get_status_symbol(self, status: TaskStatus) -> str:
+        """Get the checkbox symbol for a task status.
+
+        Args:
+            status: The task status
+
+        Returns:
+            Symbol string
+        """
+        symbols = {
+            TaskStatus.PENDING: "[ ]",
+            TaskStatus.IN_PROGRESS: "[▸]",
+            TaskStatus.COMPLETED: "[✓]",
+            TaskStatus.FAILED: "[✗]",
+        }
+        return symbols.get(status, "[ ]")
+
+    def _get_status_color(self, status: TaskStatus) -> str:
+        """Get the color for a task status.
+
+        Args:
+            status: The task status
+
+        Returns:
+            Color hex string
+        """
+        colors = {
+            TaskStatus.PENDING: "#666666",
+            TaskStatus.IN_PROGRESS: "#4A9EFF",
+            TaskStatus.COMPLETED: "#888888",
+            TaskStatus.FAILED: "#FF6B6B",
+        }
+        return colors.get(status, "#666666")
 
     def _render_formatted_block(
         self,
