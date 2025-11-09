@@ -225,7 +225,7 @@ class ToolManager:
             LOGGER.exception("Failed to read file %s: %s", path, exc)
             return f"Error reading '{path}': {exc}"
 
-    def list_project_files(self, directory: str = ".", extension: str = ".py") -> list:
+    def list_project_files(self, directory: str = ".", extension: str = ".py") -> list[str]:
         """List files that match the provided extension within the workspace."""
         LOGGER.info("🔧 TOOL CALLED: list_project_files(%s, %s)", directory, extension)
         try:
@@ -266,7 +266,7 @@ class ToolManager:
         pattern: str,
         directory: str = ".",
         file_extension: str = ".py",
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Search for a case-insensitive pattern within workspace files.
 
         Args:
@@ -316,7 +316,7 @@ class ToolManager:
             LOGGER.exception("Failed to search files for pattern %s: %s", pattern, exc)
             return {"matches": [], "total": 0, "error": f"Error searching for '{pattern}': {exc}"}
 
-    def read_multiple_files(self, file_paths: list) -> dict:
+    def read_multiple_files(self, file_paths: list[str]) -> dict[str, Any]:
         """Read multiple files and return structured results.
 
         Args:
@@ -539,7 +539,7 @@ class ToolManager:
             LOGGER.exception("Failed to get git diff: %s", exc)
             return f"Error getting diff: {exc}"
 
-    def git_blame(self, file_path: str, line_number: int) -> dict:
+    def git_blame(self, file_path: str, line_number: int) -> dict[str, Any]:
         """Return author and commit metadata for a specific file line.
 
         Returns:
@@ -584,7 +584,7 @@ class ToolManager:
 
         return {"error": f"Line {line_number} is beyond the end of {file_path}."}
 
-    def create_new_branch(self, branch_name: str, start_point: str = "HEAD") -> dict:
+    def create_new_branch(self, branch_name: str, start_point: str = "HEAD") -> dict[str, Any]:
         """Create and check out a new git branch based on start_point.
 
         Returns:
@@ -639,7 +639,7 @@ class ToolManager:
     # ------------------------------------------------------------------ #
     # Python tool operations
     # ------------------------------------------------------------------ #
-    def run_tests(self, test_path: str = "tests/", verbose: bool = False) -> dict:
+    def run_tests(self, test_path: str = "tests/", verbose: bool = False) -> dict[str, Any]:
         """Run pytest on the codebase and return test results.
 
         Args:
@@ -716,7 +716,7 @@ class ToolManager:
                 "output": f"Error running tests: {exc}",
             }
 
-    def lint_code(self, file_paths: list, directory: str = ".") -> dict:
+    def lint_code(self, file_paths: list[str], directory: str = ".") -> dict[str, Any]:
         """Run pylint to catch errors and code quality issues.
 
         Args:
@@ -867,8 +867,8 @@ class ToolManager:
 
     def format_code(
         self,
-        file_paths: list, directory: str = "."
-    ) -> dict:
+        file_paths: list[str], directory: str = "."
+    ) -> dict[str, Any]:
         """Format Python code using Black formatter.
 
         Args:
@@ -936,7 +936,7 @@ class ToolManager:
                 "message": f"Error formatting code: {exc}",
             }
 
-    def get_function_definitions(self, file_path: str) -> dict:
+    def get_function_definitions(self, file_path: str) -> dict[str, Any]:
         """Extract function signatures from a Python file.
 
         Args:
@@ -991,7 +991,7 @@ class ToolManager:
             LOGGER.exception("Failed to extract function definitions from %s: %s", file_path, exc)
             return {"functions": [], "error": str(exc)}
 
-    def get_cyclomatic_complexity(self, file_path: str) -> dict:
+    def get_cyclomatic_complexity(self, file_path: str) -> dict[str, Any]:
         """Calculate cyclomatic complexity metrics for the provided Python file.
 
         Returns:
@@ -1051,7 +1051,7 @@ class ToolManager:
         source_file: str,
         tests_root: str = "tests",
         overwrite: bool = False,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Create or extend a pytest test file with stubs for public callables in source_file.
 
         Returns:
@@ -1123,7 +1123,7 @@ class ToolManager:
             target = self.workspace_dir / target
         return target.resolve()
 
-    def _module_parts_from_source(self, source_path: Path) -> list:
+    def _module_parts_from_source(self, source_path: Path) -> list[str]:
         """Extract module path parts from source file."""
         try:
             relative = source_path.resolve().relative_to(self.workspace_dir)
@@ -1135,7 +1135,7 @@ class ToolManager:
         except ValueError:
             return [source_path.with_suffix("").name]
 
-    def _collect_public_callables(self, tree: ast.AST) -> dict:
+    def _collect_public_callables(self, tree: ast.AST) -> dict[str, Any]:
         """Collect public functions and methods from AST."""
         functions = []
         methods = []
@@ -1160,7 +1160,7 @@ class ToolManager:
             tests_root = self.workspace_dir / tests_root
         return tests_root.resolve()
 
-    def _compute_test_destination(self, module_parts: list, tests_root: Path, source_path: Path) -> Path:
+    def _compute_test_destination(self, module_parts: list[str], tests_root: Path, source_path: Path) -> Path:
         """Compute destination path for test file."""
         if module_parts:
             module_name = module_parts[-1]
@@ -1171,7 +1171,7 @@ class ToolManager:
             destination_dir = tests_root
         return destination_dir / f"test_{module_name}.py"
 
-    def _build_test_header(self, module_path: str, symbols: dict) -> str:
+    def _build_test_header(self, module_path: str, symbols: dict[str, Any]) -> str:
         """Build test file header with imports."""
         imports = sorted(
             set(symbols["functions"]) | {cls for cls, _ in symbols["methods"]}
@@ -1188,7 +1188,7 @@ class ToolManager:
                 lines.append(f"import {module_path}")
         return "\n".join(lines).strip()
 
-    def _build_test_stubs(self, symbols: dict) -> list:
+    def _build_test_stubs(self, symbols: dict[str, Any]) -> list[tuple[str, str]]:
         """Build test stub code for functions and methods."""
         stubs = []
         for func in symbols["functions"]:
@@ -1218,7 +1218,7 @@ class ToolManager:
     # ------------------------------------------------------------------ #
     # Symbol analysis tools
     # ------------------------------------------------------------------ #
-    def find_definition(self, symbol_name: str, search_directory: str = ".") -> dict:
+    def find_definition(self, symbol_name: str, search_directory: str = ".") -> dict[str, Any]:
         """Find where a symbol (class/function/variable) is defined.
 
         Args:
@@ -1249,7 +1249,7 @@ class ToolManager:
         LOGGER.debug("Symbol %s not found in %s", symbol_name, search_directory)
         return {"found": False, "error": f"Symbol '{symbol_name}' not found"}
 
-    def _match_definition_node(self, node: ast.AST, symbol_name: str, file_path: Path, lines: list):
+    def _match_definition_node(self, node: ast.AST, symbol_name: str, file_path: Path, lines: list[str]):
         """Match AST node against symbol name. Returns dict or None."""
         if isinstance(node, ast.ClassDef) and node.name == symbol_name:
             return self._create_def_result(file_path, node, "class", lines)
@@ -1261,7 +1261,7 @@ class ToolManager:
                     return self._create_def_result(file_path, node, "variable", lines)
         return None
 
-    def _create_def_result(self, file_path: Path, node: ast.AST, def_type: str, lines: list) -> dict:
+    def _create_def_result(self, file_path: Path, node: ast.AST, def_type: str, lines: list[str]) -> dict[str, Any]:
         """Create definition result dictionary."""
         line_num = node.lineno
         start, end = max(0, line_num - 4), min(len(lines), line_num + 3)
@@ -1271,7 +1271,7 @@ class ToolManager:
             "docstring": ast.get_docstring(node) or "", "context": lines[start:end]
         }
 
-    def find_usages(self, symbol_name: str, search_directory: str = ".") -> dict:
+    def find_usages(self, symbol_name: str, search_directory: str = ".") -> dict[str, Any]:
         """Find all usages of a symbol in Python files.
 
         Args:
@@ -1324,7 +1324,7 @@ class ToolManager:
             return "reference"
         return ""
 
-    def get_imports(self, file_path: str) -> dict:
+    def get_imports(self, file_path: str) -> dict[str, Any]:
         """Extract and categorize all imports from a Python file.
 
         Args:
@@ -1364,7 +1364,7 @@ class ToolManager:
             LOGGER.warning("Failed to parse %s: %s", file_path, exc)
             return {"error": f"Failed to parse file: {exc}"}
 
-    def _parse_import_node(self, node) -> dict:
+    def _parse_import_node(self, node) -> dict[str, Any]:
         """Parse import node into structured data. Accepts ast.Import or ast.ImportFrom."""
         if isinstance(node, ast.Import):
             return {
@@ -1385,7 +1385,7 @@ class ToolManager:
         """Check if module is from standard library."""
         return module.split(".")[0] in STDLIB_MODULES
 
-    def get_dependency_graph(self, symbol_name: str, search_directory: str = ".") -> dict:
+    def get_dependency_graph(self, symbol_name: str, search_directory: str = ".") -> dict[str, Any]:
         """Build a lightweight dependency graph for a symbol across the project.
 
         Returns:
@@ -1417,7 +1417,7 @@ class ToolManager:
             },
         }
 
-    def get_class_hierarchy(self, class_name: str, search_directory: str = ".") -> dict:
+    def get_class_hierarchy(self, class_name: str, search_directory: str = ".") -> dict[str, Any]:
         """Return inheritance details for a class, including parents and subclasses.
 
         Returns:
@@ -1471,7 +1471,7 @@ class ToolManager:
         symbol_name: str,
         new_name: str,
         project_root: str = "",
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Perform a project-wide, refactor-aware rename using Rope.
 
         Args:
@@ -1555,7 +1555,7 @@ class ToolManager:
                     return node, py_file, content.splitlines()
         return None
 
-    def _collect_symbol_dependencies(self, node: ast.AST, file_path: Path, lines: list) -> list:
+    def _collect_symbol_dependencies(self, node: ast.AST, file_path: Path, lines: list[str]) -> list[dict[str, Any]]:
         """Collect dependencies for a symbol."""
         dependencies = []
         seen = set()
@@ -1611,7 +1611,7 @@ class ToolManager:
 
         return dependencies
 
-    def _collect_symbol_dependents(self, symbol_name: str, search_path: Path, limit: int = 150) -> list:
+    def _collect_symbol_dependents(self, symbol_name: str, search_path: Path, limit: int = 150) -> list[dict[str, Any]]:
         """Collect symbols that depend on this symbol."""
         dependents = []
         seen_locations = set()
@@ -1663,7 +1663,7 @@ class ToolManager:
             return self._expression_to_name(expr.func)
         return ""
 
-    def _collect_ancestors(self, class_name: str, class_map: dict, visited: set = None) -> list:
+    def _collect_ancestors(self, class_name: str, class_map: dict[str, Any], visited: set | None = None) -> list[str]:
         """Collect all ancestor classes."""
         visited = visited or set()
         visited.add(class_name)
@@ -1679,9 +1679,9 @@ class ToolManager:
     def _collect_descendants(
         self,
         class_name: str,
-        children_map: dict,
-        visited: set = None,
-    ) -> list:
+        children_map: dict[str, Any],
+        visited: set | None = None,
+    ) -> list[str]:
         """Collect all descendant classes."""
         visited = visited or set()
         visited.add(class_name)
@@ -1696,10 +1696,10 @@ class ToolManager:
     def _build_hierarchy_branch(
         self,
         class_name: str,
-        class_map: dict,
-        children_map: dict,
-        visited: set = None,
-    ) -> dict:
+        class_map: dict[str, Any],
+        children_map: dict[str, Any],
+        visited: set | None = None,
+    ) -> dict[str, Any]:
         """Build hierarchical tree structure."""
         visited = visited or set()
         visited.add(class_name)
@@ -1734,7 +1734,7 @@ class ToolManager:
         prior = sum(len(lines[i]) for i in range(min(line_index, len(lines))))
         return prior + column
 
-    def _line_text(self, lines: list, lineno: int) -> str:
+    def _line_text(self, lines: list[str], lineno: int | None) -> str:
         """Get text of a specific line."""
         if not lineno or lineno <= 0 or lineno > len(lines):
             return ""
