@@ -90,6 +90,7 @@ class AnalystAgentService:
             "list_project_assets": self.tool_manager.list_project_assets,
             "search_assets_by_pattern": self.tool_manager.search_assets_by_pattern,
             "get_asset_metadata": self.tool_manager.get_asset_metadata,
+            "respect_gitignore": self.tool_manager.respect_gitignore,
             "submit_execution_plan": self._handle_submit_execution_plan,
             "read_godot_scene_tree": godot_tools.read_godot_scene_tree,
             "get_project_godot_config": godot_tools.get_project_godot_config,

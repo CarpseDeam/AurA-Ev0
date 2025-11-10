@@ -129,6 +129,7 @@ class ToolManager:
         self._gitignore_spec: PathSpec | None = None
         self._gitignore_fallback_matchers: list[tuple[str, bool]] = []
         self._gitignore_warning_logged = False
+        self._default_respect_gitignore: bool = False
         self._ensure_gitignore_state()
         LOGGER.info("ToolManager workspace set to %s", self.workspace_dir)
 
@@ -143,6 +144,27 @@ class ToolManager:
         self.workspace_dir = resolved
         self._reset_gitignore_cache()
         LOGGER.info("ToolManager workspace updated to %s", self.workspace_dir)
+
+    def respect_gitignore(self, enabled: bool = True) -> str:
+        """Toggle whether file operations should respect .gitignore rules by default.
+
+        This is a configuration tool for the Analyst to control gitignore behavior
+        across subsequent file discovery operations. When disabled (default), all files
+        including gitignored assets (meshes, textures, etc.) will be visible.
+
+        :param enabled: When True, respect .gitignore rules. When False, show all files.
+        :return: Status message confirming the new state.
+        """
+        LOGGER.info("🔧 TOOL CALLED: respect_gitignore(enabled=%s)", enabled)
+        try:
+            self._default_respect_gitignore = enabled
+            state = "enabled" if enabled else "disabled"
+            message = f"Gitignore filtering {state}. File operations will {'respect' if enabled else 'ignore'} .gitignore rules by default."
+            LOGGER.info("✅ respect_gitignore state updated: %s", state)
+            return message
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to update respect_gitignore state: %s", exc)
+            return f"Error updating gitignore state: {exc}"
 
     # ------------------------------------------------------------------ #
     # File operation helpers
@@ -356,14 +378,19 @@ class ToolManager:
         self,
         directory: str = ".",
         extension: str = ".py",
-        respect_gitignore: bool = False,
+        respect_gitignore: bool | None = None,
     ) -> dict[str, Any]:
         """List files that match the provided extension within the workspace.
 
         :param directory: Directory (relative to the workspace) to search in.
         :param extension: File extension filter (defaults to Python files).
         :param respect_gitignore: When True, apply .gitignore rules during traversal.
+                                   When None, uses the default set by respect_gitignore tool.
         """
+        # Use stored default if not explicitly provided
+        if respect_gitignore is None:
+            respect_gitignore = self._default_respect_gitignore
+
         LOGGER.info(
             "🔧 TOOL CALLED: list_project_files(directory=%s, extension=%s, respect_gitignore=%s)",
             directory,
@@ -663,17 +690,34 @@ class ToolManager:
             response["errors"] = errors
         return response
 
-    def list_project_assets(self, project_root: str = ".", subdirectory: str | None = None) -> dict[str, Any]:
-        """Return a categorized view of asset files beneath a project directory."""
+    def list_project_assets(
+        self,
+        project_root: str = ".",
+        subdirectory: str | None = None,
+        respect_gitignore: bool | None = None,
+    ) -> dict[str, Any]:
+        """Return a categorized view of asset files beneath a project directory.
+
+        :param project_root: Root directory to start searching from.
+        :param subdirectory: Optional subdirectory within project_root.
+        :param respect_gitignore: When True, apply .gitignore rules during traversal.
+                                   When None, uses the default set by respect_gitignore tool.
+        """
+        # Use stored default if not explicitly provided
+        if respect_gitignore is None:
+            respect_gitignore = self._default_respect_gitignore
+
         LOGGER.info(
-            "?? TOOL CALLED: list_project_assets(project_root=%s, subdirectory=%s)",
+            "?? TOOL CALLED: list_project_assets(project_root=%s, subdirectory=%s, respect_gitignore=%s)",
             project_root,
             subdirectory,
+            respect_gitignore,
         )
         response: dict[str, Any] = {
             "project_root": project_root or ".",
             "subdirectory": subdirectory,
             "scanned_path": project_root or ".",
+            "respect_gitignore": respect_gitignore,
             "assets": {asset_type: [] for asset_type in ASSET_TYPE_EXTENSIONS},
             "counts": {asset_type: 0 for asset_type in ASSET_TYPE_EXTENSIONS},
             "total_assets": 0,
@@ -699,7 +743,7 @@ class ToolManager:
             response["project_root"] = self._relative_path(project_path) or "."
             response["scanned_path"] = self._relative_path(target_path) or "."
 
-            for file_path in self._iter_workspace_files(target_path):
+            for file_path in self._iter_workspace_files(target_path, respect_gitignore=respect_gitignore):
                 if not file_path.is_file():
                     continue
                 asset_type = self._classify_asset_extension(file_path.suffix)
@@ -739,21 +783,35 @@ class ToolManager:
         pattern: str,
         file_type: str | None = None,
         directory: str = ".",
+        respect_gitignore: bool | None = None,
     ) -> dict[str, Any]:
-        """Search for asset files that match a glob pattern."""
+        """Search for asset files that match a glob pattern.
+
+        :param pattern: Glob pattern to match asset file names/paths.
+        :param file_type: Optional filter for specific asset type (meshes, textures, sounds).
+        :param directory: Directory to search within.
+        :param respect_gitignore: When True, apply .gitignore rules during traversal.
+                                   When None, uses the default set by respect_gitignore tool.
+        """
+        # Use stored default if not explicitly provided
+        if respect_gitignore is None:
+            respect_gitignore = self._default_respect_gitignore
+
         response: dict[str, Any] = {
             "pattern": pattern,
             "file_type": file_type,
             "directory": directory,
+            "respect_gitignore": respect_gitignore,
             "matches": [],
             "count": 0,
         }
         normalized_pattern = (pattern or "").strip()
         LOGGER.info(
-            "?? TOOL CALLED: search_assets_by_pattern(pattern=%s, file_type=%s, directory=%s)",
+            "?? TOOL CALLED: search_assets_by_pattern(pattern=%s, file_type=%s, directory=%s, respect_gitignore=%s)",
             normalized_pattern,
             file_type,
             directory,
+            respect_gitignore,
         )
 
         if not normalized_pattern:
@@ -775,7 +833,7 @@ class ToolManager:
 
             matches: list[dict[str, Any]] = []
             pattern_lower = normalized_pattern.lower()
-            for file_path in self._iter_workspace_files(base):
+            for file_path in self._iter_workspace_files(base, respect_gitignore=respect_gitignore):
                 if not file_path.is_file():
                     continue
 

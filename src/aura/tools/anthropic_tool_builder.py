@@ -30,8 +30,8 @@ def build_anthropic_tool_schema(tool: Callable, name: Optional[str] = None) -> D
         if line.startswith(":param"):
             match = re.match(r':param\s+([^:]+):\s+(.*)', line)
             if match:
-                name, desc = match.groups()
-                param_descriptions[name.strip()] = desc.strip()
+                param_name_from_doc, desc = match.groups()
+                param_descriptions[param_name_from_doc.strip()] = desc.strip()
 
 
     properties = {}
@@ -56,9 +56,14 @@ def build_anthropic_tool_schema(tool: Callable, name: Optional[str] = None) -> D
                 param_type = "array"
             else:
                 try:
+                    # Try to get the type from __name__ attribute
                     param_type = type_mapping.get(param.annotation.__name__, "string")
                 except AttributeError:
-                    param_type = "string"  # Fallback for complex types without __name__
+                    # If annotation is a string (from stringized annotations), try direct mapping
+                    if isinstance(param.annotation, str):
+                        param_type = type_mapping.get(param.annotation, "string")
+                    else:
+                        param_type = "string"  # Fallback for complex types without __name__
 
         properties[param_name] = {
             "type": param_type,
