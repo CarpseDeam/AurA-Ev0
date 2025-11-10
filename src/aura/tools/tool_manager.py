@@ -12,8 +12,10 @@ import re
 import statistics
 import subprocess
 import sys
+import uuid
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +61,32 @@ STDLIB_MODULES = getattr(
         "pytest",
     },
 )
+
+ASSET_TYPE_EXTENSIONS: dict[str, set[str]] = {
+    "meshes": {".fbx", ".obj"},
+    "textures": {".png", ".jpg", ".jpeg"},
+    "sounds": {".wav", ".mp3"},
+}
+
+ASSET_TYPE_ALIASES: dict[str, str] = {
+    "mesh": "meshes",
+    "meshes": "meshes",
+    "model": "meshes",
+    "models": "meshes",
+    "texture": "textures",
+    "textures": "textures",
+    "image": "textures",
+    "images": "textures",
+    "sound": "sounds",
+    "sounds": "sounds",
+    "audio": "sounds",
+}
+
+ASSET_EXTENSION_LOOKUP: dict[str, str] = {
+    extension: asset_type
+    for asset_type, extensions in ASSET_TYPE_EXTENSIONS.items()
+    for extension in extensions
+}
 
 
 class ToolManager:
@@ -208,6 +236,76 @@ class ToolManager:
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to delete file %s: %s", path, exc)
             return f"Error deleting '{path}': {exc}"
+
+    def create_godot_material(
+        self,
+        path: str,
+        albedo: str | None = None,
+        normal: str | None = None,
+        roughness: str | None = None,
+        metallic: str | None = None,
+        emission: str | None = None,
+    ) -> str:
+        """Create a Godot 4.x StandardMaterial3D .tres file."""
+        LOGGER.info("🔧 TOOL CALLED: create_godot_material(%s)", path)
+        try:
+            target = self._resolve_path(path)
+            if not target.name.endswith(".tres"):
+                return f"Error: Material path '{path}' must end with .tres"
+
+            textures = {
+                "albedo_texture": albedo,
+                "normal_map_texture": normal,
+                "roughness_texture": roughness,
+                "metallic_texture": metallic,
+                "emission_texture": emission,
+            }
+
+            ext_resources = []
+            resource_lines = []
+            load_steps = 1
+            texture_id = 1
+
+            for prop, tex_path in textures.items():
+                if tex_path:
+                    try:
+                        resolved_tex = self._resolve_path(tex_path)
+                        if not resolved_tex.exists():
+                            return f"Error: Texture path '{tex_path}' for '{prop}' does not exist."
+
+                        uid = f"uid://{uuid.uuid4().hex[:12]}"
+                        relative_tex_path = self._relative_path(resolved_tex)
+
+                        ext_resources.append(
+                            f'[ext_resource type="Texture2D" uid="{uid}" path="res://{relative_tex_path}" id="{texture_id}"]'
+                        )
+                        resource_lines.append(f'{prop} = ExtResource("{texture_id}")')
+                        texture_id += 1
+                        load_steps += 1
+                    except PermissionError as exc:
+                        return f"Error resolving texture path '{tex_path}': {exc}"
+
+
+            tres_content = [
+                f'[gd_resource type="StandardMaterial3D" load_steps={load_steps} format=3 uid="uid://{uuid.uuid4().hex[:12]}"]',
+                "",
+            ]
+            tres_content.extend(ext_resources)
+            tres_content.append("")
+            tres_content.append("[resource]")
+            tres_content.extend(resource_lines)
+
+            final_content = "\n".join(tres_content) + "\n"
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(final_content, encoding="utf-8")
+            size = len(final_content.encode("utf-8"))
+            LOGGER.info("✅ Created Godot material: %s (%d bytes)", target, size)
+            return f"Successfully created Godot material '{path}' ({size} bytes)"
+
+        except Exception as exc:
+            LOGGER.exception("Failed to create Godot material %s: %s", path, exc)
+            return f"Error creating Godot material '{path}': {exc}"
 
     # ------------------------------------------------------------------ #
     # File system helpers
@@ -453,6 +551,268 @@ class ToolManager:
             LOGGER.exception("Failed to build project structure for %s: %s", directory, exc)
             summary["error"] = str(exc)
             return summary
+
+    # ------------------------------------------------------------------ #
+    # Asset discovery helpers
+    # ------------------------------------------------------------------ #
+    def verify_asset_paths(self, paths: Sequence[str] | str | None) -> dict[str, Any]:
+        """Check whether each provided asset path exists within the workspace."""
+        response: dict[str, Any] = {
+            "paths": {},
+            "existing": [],
+            "missing": [],
+            "requested": 0,
+        }
+
+        provided: list[str] = []
+        if paths is None:
+            response["error"] = "No asset paths provided."
+            return response
+        if isinstance(paths, str):
+            provided = [paths]
+        else:
+            provided = [str(path) for path in paths if path is not None]
+
+        normalized_inputs = [entry.strip() for entry in provided if entry.strip()]
+        response["requested"] = len(normalized_inputs)
+        LOGGER.info("?? TOOL CALLED: verify_asset_paths(count=%s)", response["requested"])
+        if not normalized_inputs:
+            response["error"] = "No asset paths provided."
+            return response
+
+        errors: dict[str, str] = {}
+        for raw in normalized_inputs:
+            key = raw.replace("\\", "/")
+            exists = False
+            try:
+                resolved = self._resolve_path(raw)
+                key = self._relative_path(resolved) or key
+                exists = resolved.exists()
+            except PermissionError as exc:
+                LOGGER.warning("verify_asset_paths denied for %s: %s", raw, exc)
+                errors[key] = str(exc)
+            except OSError as exc:
+                LOGGER.debug("verify_asset_paths error for %s: %s", raw, exc)
+                errors[key] = str(exc)
+
+            response["paths"][key] = bool(exists)
+            if exists:
+                response["existing"].append(key)
+            else:
+                response["missing"].append(key)
+
+        response["existing"].sort()
+        response["missing"].sort()
+        if errors:
+            response["errors"] = errors
+        return response
+
+    def list_project_assets(self, project_root: str = ".", subdirectory: str | None = None) -> dict[str, Any]:
+        """Return a categorized view of asset files beneath a project directory."""
+        LOGGER.info(
+            "?? TOOL CALLED: list_project_assets(project_root=%s, subdirectory=%s)",
+            project_root,
+            subdirectory,
+        )
+        response: dict[str, Any] = {
+            "project_root": project_root or ".",
+            "subdirectory": subdirectory,
+            "scanned_path": project_root or ".",
+            "assets": {asset_type: [] for asset_type in ASSET_TYPE_EXTENSIONS},
+            "counts": {asset_type: 0 for asset_type in ASSET_TYPE_EXTENSIONS},
+            "total_assets": 0,
+        }
+
+        try:
+            project_path = self._resolve_directory(project_root or ".")
+            if not project_path.exists():
+                response["error"] = f"Directory does not exist: {project_root or '.'}"
+                return response
+
+            target_path = project_path
+            subdirectory_clean = (subdirectory or "").strip()
+            if subdirectory_clean:
+                combined = Path(project_root or ".") / subdirectory_clean
+                target_path = self._resolve_directory(str(combined))
+
+            if not target_path.exists():
+                response["error"] = f"Directory does not exist: {subdirectory_clean or project_root or '.'}"
+                response["scanned_path"] = self._relative_path(target_path) or "."
+                return response
+
+            response["project_root"] = self._relative_path(project_path) or "."
+            response["scanned_path"] = self._relative_path(target_path) or "."
+
+            for file_path in self._iter_workspace_files(target_path):
+                if not file_path.is_file():
+                    continue
+                asset_type = self._classify_asset_extension(file_path.suffix)
+                if not asset_type:
+                    continue
+                try:
+                    stats = file_path.stat()
+                except OSError as exc:
+                    LOGGER.debug("Unable to stat %s: %s", file_path, exc)
+                    continue
+
+                entry = {
+                    "path": self._relative_path(file_path),
+                    "name": file_path.name,
+                    "extension": file_path.suffix.lower(),
+                    "size_bytes": stats.st_size,
+                }
+                modified = self._format_timestamp(stats.st_mtime)
+                if modified:
+                    entry["last_modified"] = modified
+
+                response["assets"][asset_type].append(entry)
+
+            for asset_type, items in response["assets"].items():
+                items.sort(key=lambda item: item["path"])
+                response["counts"][asset_type] = len(items)
+
+            response["total_assets"] = sum(response["counts"].values())
+            return response
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to list project assets: %s", exc)
+            response["error"] = str(exc)
+            return response
+
+    def search_assets_by_pattern(
+        self,
+        pattern: str,
+        file_type: str | None = None,
+        directory: str = ".",
+    ) -> dict[str, Any]:
+        """Search for asset files that match a glob pattern."""
+        response: dict[str, Any] = {
+            "pattern": pattern,
+            "file_type": file_type,
+            "directory": directory,
+            "matches": [],
+            "count": 0,
+        }
+        normalized_pattern = (pattern or "").strip()
+        LOGGER.info(
+            "?? TOOL CALLED: search_assets_by_pattern(pattern=%s, file_type=%s, directory=%s)",
+            normalized_pattern,
+            file_type,
+            directory,
+        )
+
+        if not normalized_pattern:
+            response["error"] = "Search pattern is required."
+            return response
+
+        normalized_type = self._normalize_asset_type_name(file_type)
+        if file_type and normalized_type is None:
+            response["error"] = (
+                "Unsupported file_type. Expected one of: meshes, textures, sounds."
+            )
+            return response
+
+        try:
+            base = self._resolve_directory(directory or ".")
+            if not base.exists():
+                response["error"] = f"Directory does not exist: {directory or '.'}"
+                return response
+
+            matches: list[dict[str, Any]] = []
+            pattern_lower = normalized_pattern.lower()
+            for file_path in self._iter_workspace_files(base):
+                if not file_path.is_file():
+                    continue
+
+                asset_type = self._classify_asset_extension(file_path.suffix)
+                if asset_type is None:
+                    continue
+                if normalized_type and asset_type != normalized_type:
+                    continue
+
+                rel_path = self._relative_path(file_path)
+                rel_posix = rel_path.replace("\\", "/")
+                if not (
+                    fnmatch.fnmatch(rel_posix, normalized_pattern)
+                    or fnmatch.fnmatch(rel_posix.lower(), pattern_lower)
+                    or fnmatch.fnmatch(file_path.name, normalized_pattern)
+                    or fnmatch.fnmatch(file_path.name.lower(), pattern_lower)
+                ):
+                    continue
+
+                try:
+                    stats = file_path.stat()
+                except OSError as exc:
+                    LOGGER.debug("Unable to stat %s: %s", file_path, exc)
+                    continue
+
+                entry = {
+                    "path": rel_posix,
+                    "extension": file_path.suffix.lower(),
+                    "size_bytes": stats.st_size,
+                    "type": asset_type,
+                }
+                modified = self._format_timestamp(stats.st_mtime)
+                if modified:
+                    entry["last_modified"] = modified
+                matches.append(entry)
+
+            matches.sort(key=lambda item: item["path"])
+            response["matches"] = matches
+            response["count"] = len(matches)
+            if normalized_type:
+                response["resolved_type"] = normalized_type
+            return response
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to search assets with pattern %s: %s", pattern, exc)
+            response["error"] = str(exc)
+            return response
+
+    def get_asset_metadata(self, asset_path: str) -> dict[str, Any]:
+        """Return file metadata for a single asset path."""
+        LOGGER.info("?? TOOL CALLED: get_asset_metadata(%s)", asset_path)
+        normalized = (asset_path or "").strip()
+        response: dict[str, Any] = {
+            "path": normalized,
+            "exists": False,
+            "file_size": None,
+            "extension": None,
+            "last_modified": None,
+            "full_path": None,
+            "relative_path": None,
+        }
+
+        if not normalized:
+            response["error"] = "Asset path is required."
+            return response
+
+        try:
+            resolved = self._resolve_path(normalized)
+        except PermissionError as exc:
+            response["error"] = str(exc)
+            return response
+
+        response["relative_path"] = self._relative_path(resolved)
+        response["full_path"] = str(resolved)
+        response["extension"] = resolved.suffix.lower()
+
+        if not resolved.exists():
+            response["error"] = f"Asset not found: {normalized}"
+            return response
+
+        try:
+            stats = resolved.stat()
+        except OSError as exc:  # noqa: BLE001
+            LOGGER.exception("Unable to stat asset %s: %s", asset_path, exc)
+            response["error"] = f"Unable to read metadata: {exc}"
+            return response
+
+        response["exists"] = True
+        response["file_size"] = stats.st_size
+        response["last_modified"] = self._format_timestamp(stats.st_mtime)
+        asset_type = self._classify_asset_extension(resolved.suffix)
+        if asset_type:
+            response["type"] = asset_type
+        return response
 
     def detect_duplicate_code(self, min_lines: int = 5) -> dict[str, Any]:
         """Detect repeated code blocks across Python files."""
@@ -2208,6 +2568,36 @@ class ToolManager:
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
+    def _format_timestamp(self, timestamp: float | None) -> str | None:
+        """Return an ISO-8601 timestamp string for the provided epoch value."""
+        if timestamp is None:
+            return None
+        try:
+            return (
+                datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        except (OSError, OverflowError, ValueError) as exc:
+            LOGGER.debug("Unable to format timestamp %s: %s", timestamp, exc)
+            return None
+
+    def _normalize_asset_type_name(self, asset_type: str | None) -> str | None:
+        """Normalize asset type aliases to canonical keys."""
+        if not asset_type:
+            return None
+        normalized = asset_type.strip().lower()
+        if not normalized:
+            return None
+        return ASSET_TYPE_ALIASES.get(normalized)
+
+    def _classify_asset_extension(self, extension: str | None) -> str | None:
+        """Return the asset category for a file extension."""
+        if not extension:
+            return None
+        return ASSET_EXTENSION_LOOKUP.get(extension.lower())
+
     def _resolve_path(self, user_path: str) -> Path:
         """Resolve a user-supplied path relative to the workspace."""
         candidate = Path(user_path).expanduser() if user_path else Path(".")
