@@ -88,6 +88,56 @@ ASSET_EXTENSION_LOOKUP: dict[str, str] = {
     for extension in extensions
 }
 
+# Binary file extensions that should not be read as UTF-8 text
+BINARY_EXTENSIONS: set[str] = {
+    # 3D Models & Meshes
+    ".fbx", ".blend", ".obj", ".gltf", ".glb", ".dae", ".3ds", ".max", ".ma", ".mb",
+    # Images & Textures
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tga", ".tiff", ".webp", ".ico", ".psd",
+    ".exr", ".hdr", ".dds", ".ktx", ".astc",
+    # Audio
+    ".wav", ".mp3", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".opus",
+    # Video
+    ".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv",
+    # Archives
+    ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".xz",
+    # Executables & Libraries
+    ".exe", ".dll", ".so", ".dylib", ".a", ".lib", ".pyd",
+    # Fonts
+    ".ttf", ".otf", ".woff", ".woff2", ".eot",
+    # Binary Data
+    ".bin", ".dat", ".db", ".sqlite", ".sqlite3",
+    # Game-specific
+    ".unity3d", ".unitypackage", ".pak", ".asset", ".bundle",
+    # Documents
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+}
+
+# Mapping of file extensions to human-readable descriptions
+BINARY_FILE_DESCRIPTIONS: dict[str, str] = {
+    ".fbx": "FBX 3D Model",
+    ".blend": "Blender 3D Project",
+    ".obj": "Wavefront OBJ 3D Model",
+    ".gltf": "glTF 3D Model (JSON)",
+    ".glb": "glTF 3D Model (Binary)",
+    ".png": "PNG Image",
+    ".jpg": "JPEG Image",
+    ".jpeg": "JPEG Image",
+    ".wav": "WAV Audio",
+    ".mp3": "MP3 Audio",
+    ".ogg": "Ogg Vorbis Audio",
+    ".mp4": "MP4 Video",
+    ".zip": "ZIP Archive",
+    ".exe": "Windows Executable",
+    ".dll": "Dynamic Link Library",
+    ".so": "Shared Object Library",
+    ".pdf": "PDF Document",
+    ".db": "Database File",
+    ".sqlite": "SQLite Database",
+    ".unity3d": "Unity Asset Bundle",
+    ".pak": "Packed Game Assets",
+}
+
 DEFAULT_FILTERED_DIR_NAMES: set[str] = {
     ".git",
     ".hg",
@@ -368,8 +418,23 @@ class ToolManager:
                 LOGGER.warning("read_project_file missing path: %s", target)
                 return f"Error: file '{path}' does not exist."
 
+            # Check if this is a known binary file format
+            extension = target.suffix.lower()
+            if extension in BINARY_EXTENSIONS:
+                LOGGER.info("Detected binary file format: %s", extension)
+                return self._format_binary_file_metadata(target, extension)
+
+            # Try to read as UTF-8 text, but catch binary files we didn't recognize
             LOGGER.debug("Reading file at %s", target)
-            return target.read_text(encoding="utf-8")
+            try:
+                return target.read_text(encoding="utf-8")
+            except UnicodeDecodeError as decode_err:
+                LOGGER.warning(
+                    "File %s appears to be binary (UnicodeDecodeError): %s",
+                    target,
+                    decode_err,
+                )
+                return self._format_binary_file_metadata(target, extension, is_unknown=True)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to read file %s: %s", path, exc)
             return f"Error reading '{path}': {exc}"
@@ -2711,6 +2776,77 @@ class ToolManager:
         if not extension:
             return None
         return ASSET_EXTENSION_LOOKUP.get(extension.lower())
+
+    def _format_binary_file_metadata(
+        self,
+        file_path: Path,
+        extension: str,
+        is_unknown: bool = False,
+    ) -> str:
+        """Format metadata for a binary file that cannot be read as UTF-8 text.
+
+        :param file_path: Path to the binary file
+        :param extension: File extension (e.g., '.fbx')
+        :param is_unknown: True if this is an unknown binary format detected via UnicodeDecodeError
+        :return: JSON-formatted string with file metadata
+        """
+        stat = file_path.stat()
+        size_bytes = stat.st_size
+        modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+
+        # Human-readable file size
+        size_human = self._format_file_size(size_bytes)
+
+        # Get file type description
+        if extension in BINARY_FILE_DESCRIPTIONS:
+            file_type = BINARY_FILE_DESCRIPTIONS[extension]
+        elif is_unknown:
+            file_type = f"Unknown Binary File ({extension or 'no extension'})"
+        else:
+            file_type = f"Binary File ({extension or 'no extension'})"
+
+        # Determine helpful context message based on file type
+        if extension in {".fbx", ".blend", ".obj", ".gltf", ".glb", ".dae"}:
+            context = "This is a 3D mesh/model file used by game engines like Godot or Unity."
+        elif extension in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tga", ".webp"}:
+            context = "This is an image/texture file used for graphics and visual assets."
+        elif extension in {".wav", ".mp3", ".ogg", ".flac"}:
+            context = "This is an audio file used for sound effects or music."
+        elif extension in {".mp4", ".avi", ".mov", ".webm"}:
+            context = "This is a video file."
+        elif extension in {".zip", ".tar", ".gz", ".7z", ".rar"}:
+            context = "This is a compressed archive file containing other files."
+        elif extension in {".exe", ".dll", ".so", ".dylib"}:
+            context = "This is a compiled executable or library file."
+        elif is_unknown:
+            context = "File could not be decoded as UTF-8 text - it appears to be binary data."
+        else:
+            context = "Binary file - content not readable as text."
+
+        metadata = {
+            "type": "binary_file",
+            "extension": extension or "(no extension)",
+            "file_type": file_type,
+            "size_bytes": size_bytes,
+            "size_human": size_human,
+            "last_modified": modified.isoformat(),
+            "message": f"Binary file - content not readable as text. {context}",
+            "is_unknown_binary": is_unknown,
+        }
+
+        return json.dumps(metadata, indent=2)
+
+    def _format_file_size(self, size_bytes: int) -> str:
+        """Format file size in human-readable format.
+
+        :param size_bytes: Size in bytes
+        :return: Human-readable string (e.g., '239.9 KB', '1.2 MB')
+        """
+        for unit in ["B", "KB", "MB", "GB", "TB"]:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f} PB"
 
     def _resolve_path(self, user_path: str) -> Path:
         """Resolve a user-supplied path relative to the workspace."""
