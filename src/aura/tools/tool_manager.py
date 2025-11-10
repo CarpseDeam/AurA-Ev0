@@ -88,6 +88,33 @@ ASSET_EXTENSION_LOOKUP: dict[str, str] = {
     for extension in extensions
 }
 
+DEFAULT_FILTERED_DIR_NAMES: set[str] = {
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".idea",
+    ".vscode",
+    ".claude",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".nox",
+    ".tox",
+    "aura-workspace",
+}
+
+DEFAULT_FILTERED_FILE_NAMES: set[str] = {
+    ".DS_Store",
+    "Thumbs.db",
+}
+
+DEFAULT_FILTERED_FILE_SUFFIXES: set[str] = {
+    ".pyc",
+}
+
 
 class ToolManager:
     """Provide workspace-scoped file system utilities."""
@@ -325,12 +352,28 @@ class ToolManager:
             LOGGER.exception("Failed to read file %s: %s", path, exc)
             return f"Error reading '{path}': {exc}"
 
-    def list_project_files(self, directory: str = ".", extension: str = ".py") -> dict[str, Any]:
-        """List files that match the provided extension within the workspace."""
-        LOGGER.info("🔧 TOOL CALLED: list_project_files(directory=%s, extension=%s)", directory, extension)
+    def list_project_files(
+        self,
+        directory: str = ".",
+        extension: str = ".py",
+        respect_gitignore: bool = False,
+    ) -> dict[str, Any]:
+        """List files that match the provided extension within the workspace.
+
+        :param directory: Directory (relative to the workspace) to search in.
+        :param extension: File extension filter (defaults to Python files).
+        :param respect_gitignore: When True, apply .gitignore rules during traversal.
+        """
+        LOGGER.info(
+            "🔧 TOOL CALLED: list_project_files(directory=%s, extension=%s, respect_gitignore=%s)",
+            directory,
+            extension,
+            respect_gitignore,
+        )
         response: dict[str, Any] = {
             "directory": directory,
             "extension": extension,
+            "respect_gitignore": respect_gitignore,
             "files": [],
             "count": 0,
         }
@@ -343,23 +386,36 @@ class ToolManager:
                 return response
 
             self._ensure_gitignore_state()
-            base_relative = self._relative_path(base)
-            if self._is_path_ignored(base_relative, is_dir=True):
-                message = f"Directory '{directory}' is ignored by .gitignore rules."
-                LOGGER.info(
-                    "list_project_files skipping %s because it is ignored by .gitignore",
-                    base_relative or ".",
-                )
-                response["error"] = message
-                return response
+            if respect_gitignore:
+                base_relative = self._relative_path(base)
+                if self._is_path_ignored(base_relative, is_dir=True):
+                    message = f"Directory '{directory}' is ignored by .gitignore rules."
+                    LOGGER.info(
+                        "list_project_files skipping %s because it is ignored by .gitignore",
+                        base_relative or ".",
+                    )
+                    response["error"] = message
+                    return response
 
             suffix = extension if not extension or extension.startswith(".") else f".{extension}"
             LOGGER.debug("Scanning %s for *%s (workspace=%s)", base, suffix or "*", self.workspace_dir)
             files: list[str] = []
-            for path in self._iter_workspace_files(base):
-                if suffix and path.suffix != suffix:
-                    continue
-                files.append(self._relative_path(path))
+            try:
+                for path in self._iter_workspace_files(base, respect_gitignore=respect_gitignore):
+                    if suffix and path.suffix != suffix:
+                        continue
+                    files.append(self._relative_path(path))
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.error(
+                    "list_project_files traversal failed for %s (extension=%s, respect_gitignore=%s): %s",
+                    base,
+                    suffix or "*",
+                    respect_gitignore,
+                    exc,
+                    exc_info=True,
+                )
+                response["error"] = f"Error listing files in '{directory}': {exc}"
+                return response
 
             files.sort()
             response["files"] = files
@@ -2754,8 +2810,13 @@ class ToolManager:
                 ignored = not is_negated
         return ignored
 
-    def _iter_workspace_files(self, root: Path) -> Iterator[Path]:
-        """Yield workspace files beneath `root`, respecting .gitignore rules."""
+    def _iter_workspace_files(
+        self,
+        root: Path,
+        *,
+        respect_gitignore: bool = True,
+    ) -> Iterator[Path]:
+        """Yield workspace files beneath `root`, optionally respecting .gitignore rules."""
         stack = [root]
         while stack:
             current = stack.pop()
@@ -2777,7 +2838,11 @@ class ToolManager:
 
                 relative = self._relative_path(entry)
                 is_dir = entry.is_dir()
-                if self._is_path_ignored(relative, is_dir=is_dir):
+                if self._is_filtered_entry(relative, is_dir=is_dir):
+                    LOGGER.debug("Skipping filtered path: %s", relative)
+                    continue
+
+                if respect_gitignore and self._is_path_ignored(relative, is_dir=is_dir):
                     LOGGER.debug("Skipping .gitignore-matched path: %s", relative)
                     continue
 
@@ -2786,3 +2851,34 @@ class ToolManager:
                     continue
 
                 yield entry
+
+    def _is_filtered_entry(self, relative_path: str, *, is_dir: bool) -> bool:
+        """Return True for paths that should always be filtered out."""
+        if not relative_path or relative_path in {".", ""}:
+            return False
+
+        normalized = relative_path.strip("/")
+        if not normalized:
+            return False
+
+        parts = [part for part in normalized.split("/") if part]
+        if not parts:
+            return False
+
+        # Filter when any parent directory is in the blocked set.
+        parent_segments = parts if is_dir else parts[:-1]
+        if any(segment in DEFAULT_FILTERED_DIR_NAMES for segment in parent_segments):
+            return True
+
+        current_name = parts[-1]
+        if current_name in DEFAULT_FILTERED_DIR_NAMES:
+            return True
+
+        if is_dir:
+            return False
+
+        if current_name in DEFAULT_FILTERED_FILE_NAMES:
+            return True
+
+        suffix = Path(current_name).suffix.lower()
+        return suffix in DEFAULT_FILTERED_FILE_SUFFIXES
