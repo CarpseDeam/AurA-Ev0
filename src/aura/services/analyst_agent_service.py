@@ -568,7 +568,7 @@ class AnalystAgentService:
 
     def _build_tool_definitions(self, allowed_tools: Sequence[str] | None = None) -> list[dict[str, Any]]:
         """Return Claude-compatible tool schemas."""
-        from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema
+        from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema, build_pydantic_tool_schema
 
         tools: list[dict[str, Any]] = []
         if allowed_tools is None:
@@ -581,7 +581,22 @@ class AnalystAgentService:
             ]
 
         for tool_name, handler in tool_items:
-            tools.append(build_anthropic_tool_schema(handler, name=tool_name))
+            # Use explicit Pydantic schema for submit_execution_plan
+            if tool_name == "submit_execution_plan":
+                tools.append(build_pydantic_tool_schema(
+                    model=ExecutionPlan,
+                    name="submit_execution_plan",
+                    description=(
+                        "Submit the final execution plan as a structured JSON object. "
+                        "This plan must include all file operations (CREATE/MODIFY/DELETE), "
+                        "task summary, project context, quality checklist, and estimated file count. "
+                        "Call this tool ONLY when investigation is complete and you have gathered "
+                        "all necessary context about the codebase."
+                    ),
+                    additional_required=["operations", "quality_checklist"],
+                ))
+            else:
+                tools.append(build_anthropic_tool_schema(handler, name=tool_name))
         return tools
 
     def _dispatch_tool_call(self, tool_name: str, tool_input: Mapping[str, Any]) -> str:

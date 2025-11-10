@@ -34,12 +34,37 @@ YOU MUST call submit_execution_plan NOW with a complete ExecutionPlan JSON paylo
 
 Investigation findings are below. Generate the ExecutionPlan and call the tool immediately. Do not provide any other response.
 
-Required fields:
-- task_summary: Actionable goal restatement
-- project_context: Critical observations and constraints
-- operations: Ordered edits (CREATE/MODIFY/DELETE with full content/exact old_str/new_str pairs, rationale, dependencies)
-- quality_checklist: Concrete verifications
-- estimated_files: Integer count
+CRITICAL: Use the EXACT field names shown below. The schema is strictly validated.
+
+ExecutionPlan JSON structure:
+{
+  "task_summary": "Single sentence describing the requested change",
+  "project_context": "Concise repository context and constraints",
+  "operations": [
+    {
+      "operation_type": "CREATE" | "MODIFY" | "DELETE",
+      "file_path": "relative/path/to/file.py",
+      "content": "full file content for CREATE operations",
+      "old_str": "exact string to find for MODIFY operations",
+      "new_str": "exact replacement string for MODIFY operations",
+      "rationale": "why this change is required and how it satisfies the plan",
+      "dependencies": ["list", "of", "file", "paths", "this", "operation", "depends", "on"]
+    }
+  ],
+  "quality_checklist": ["concrete verification step 1", "step 2"],
+  "estimated_files": 3
+}
+
+FIELD NAME REQUIREMENTS (EXACT MATCH REQUIRED):
+- operation_type (NOT "type" or "operation")
+- file_path (NOT "path" or "file")
+- old_str (NOT "old_string" or "old_content")
+- new_str (NOT "new_string" or "new_content")
+
+Operation-specific requirements:
+- CREATE: Must include "content" field with full file contents
+- MODIFY: Must include both "old_str" and "new_str" fields
+- DELETE: Should NOT include content/old_str/new_str
 
 Tool call is mandatory.
 """.strip()
