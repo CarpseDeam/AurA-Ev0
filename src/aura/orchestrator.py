@@ -317,6 +317,8 @@ class Orchestrator(QObject):
         conversation_id: int | None = None
         if self._analyst_agent and self._executor_agent:
             conversation_id = self._ensure_active_conversation()
+            # Load conversation history from database so Analyst has context
+            self.load_conversation_history(conversation_id)
 
         if self._analyst_agent and self._executor_agent:
             if self._use_background_thread:
