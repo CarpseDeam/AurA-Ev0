@@ -33,8 +33,31 @@ from aura.tools.tool_manager import ToolManager
 LOGGER = logging.getLogger(__name__)
 _ANALYST_SOURCE = "analyst"
 
+# History filtering constants
+MAX_HISTORY_MESSAGES = 6  # Last 3 user/assistant pairs
+MAX_HISTORY_CHARS = 12000  # Character limit for history
 
 ToolHandler = Callable[..., Any]
+
+
+def count_message_chars(msg: dict[str, Any]) -> int:
+    """Count characters in a message's content.
+
+    Args:
+        msg: Message dictionary with 'content' key
+
+    Returns:
+        Total character count of text content
+    """
+    total = 0
+    content = msg.get("content", [])
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                total += len(block.get("text", ""))
+    elif isinstance(content, str):
+        total += len(content)
+    return total
 
 
 def unwrap_tool_input(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -51,6 +74,50 @@ def unwrap_tool_input(kwargs: dict[str, Any]) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError) as exc:
             LOGGER.warning("Failed to unwrap tool input payload: %s", exc)
     return kwargs
+
+
+def filter_conversation_history(
+    history: Sequence[dict[str, Any]],
+    max_messages: int = MAX_HISTORY_MESSAGES,
+    max_chars: int = MAX_HISTORY_CHARS,
+) -> list[dict[str, Any]]:
+    """Filter conversation history with sliding window and character limits.
+
+    Args:
+        history: List of message dictionaries with 'role' and 'content' keys
+        max_messages: Maximum number of messages to keep (must be even to preserve pairs)
+        max_chars: Maximum total character count for all message content
+
+    Returns:
+        Filtered list of messages that fits within constraints
+
+    Strategy:
+        1. Filter out tool_result messages - Analyst only needs user/assistant exchanges
+        2. Keep only last N messages (sliding window)
+        3. If exceeds character limit, remove oldest messages while keeping pairs intact
+    """
+    # Step 1: Filter out tool_result messages
+    filtered = [msg for msg in history if msg.get("role") != "tool_result"]
+
+    # Step 2: Apply sliding window - keep last max_messages
+    if len(filtered) > max_messages:
+        filtered = filtered[-max_messages:]
+
+    # Step 3: Apply character limit, removing oldest pairs
+    while filtered:
+        total_chars = sum(count_message_chars(msg) for msg in filtered)
+        if total_chars <= max_chars:
+            break
+
+        # Remove oldest pair (user + assistant) to keep context coherent
+        # Remove at least 2 messages if possible to preserve pairs
+        if len(filtered) >= 2:
+            filtered = filtered[2:]
+        elif filtered:
+            # Last resort: remove single message if only one remains
+            filtered = filtered[1:]
+
+    return filtered
 
 
 @dataclass
@@ -96,29 +163,67 @@ class AnalystAgentService:
             "get_project_godot_config": godot_tools.get_project_godot_config,
         }
 
+    def _has_execution_plan_submission(self, response_content: Sequence[Any]) -> bool:
+        """Check if the response contains a submit_execution_plan tool call."""
+        for block in response_content:
+            if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "submit_execution_plan":
+                return True
+        return False
+
     def analyze_and_plan(
         self,
         user_request: str,
         *,
         on_chunk: Callable[[str], None] | None = None,
         conversation_id: int | None = None,
+        conversation_history: Sequence[dict[str, Any]] | None = None,
     ) -> ExecutionPlan | str:
-        """Gather context with Claude tools and return an execution plan."""
+        """Gather context with Claude tools and return an execution plan.
+
+        Args:
+            user_request: The current user request/goal
+            on_chunk: Optional callback for streaming response chunks
+            conversation_id: Optional conversation ID for message persistence
+            conversation_history: Optional list of previous conversation messages
+
+        Returns:
+            ExecutionPlan object or error string
+        """
         started = time.perf_counter()
         self._latest_plan = None
         self._active_conversation_id = conversation_id
-        messages = [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": user_request}],
-            }
-        ]
+
+        # Apply sliding window history filter
+        filtered_history: list[dict[str, Any]] = []
+        history_chars = 0
+        if conversation_history:
+            filtered_history = filter_conversation_history(
+                conversation_history,
+                max_messages=MAX_HISTORY_MESSAGES,
+                max_chars=MAX_HISTORY_CHARS,
+            )
+            history_chars = sum(count_message_chars(msg) for msg in filtered_history)
+            LOGGER.info(
+                "Analyst using conversation history | messages=%d | total_chars=%d | original_messages=%d",
+                len(filtered_history),
+                history_chars,
+                len(conversation_history),
+            )
+
+        # Build messages list with history + current request
+        messages = list(filtered_history)
+        messages.append({
+            "role": "user",
+            "content": [{"type": "text", "text": user_request}],
+        })
+
         tools = self._build_tool_definitions()
 
         LOGGER.info(
-            "Analyst analysis started | model=%s | prompt_chars=%d",
+            "Analyst analysis started | model=%s | prompt_chars=%d | history_chars=%d",
             self.model_name,
             len(user_request or ""),
+            history_chars,
         )
         self._event_bus.emit(
             PhaseTransition(from_phase="idle", to_phase="analyst", source=_ANALYST_SOURCE)
@@ -141,7 +246,9 @@ class AnalystAgentService:
 
         try:
             max_tool_calls = 15
+            max_narrative_retries = 2
             tool_calls_count = 0
+            narrative_retry_count = 0
             final_response_text = ""
             while True:
                 if tool_calls_count >= max_tool_calls:
@@ -181,9 +288,40 @@ class AnalystAgentService:
                     messages.append({"role": "user", "content": tool_results})
                     continue
 
+                # Collected final response - validate it has ExecutionPlan submission
                 final_text = self._collect_text(response.content)
                 if final_text:
                     final_response_text = final_text
+
+                    # Check if this is narrative without ExecutionPlan submission
+                    has_plan_submission = self._has_execution_plan_submission(response.content)
+
+                    if not has_plan_submission and not self._latest_plan and narrative_retry_count < max_narrative_retries:
+                        # Analyst provided narrative instead of ExecutionPlan - retry with stronger prompt
+                        narrative_retry_count += 1
+                        LOGGER.warning(
+                            "Analyst provided narrative without ExecutionPlan submission (attempt %d/%d). Retrying with enforcement prompt.",
+                            narrative_retry_count,
+                            max_narrative_retries
+                        )
+                        self._emit_status(
+                            f"Analyst agent: enforcing ExecutionPlan submission (retry {narrative_retry_count}/{max_narrative_retries})",
+                            "analyst.retry"
+                        )
+
+                        enforcement_prompt = (
+                            "CRITICAL: You must now generate the complete ExecutionPlan XML and submit it using the submit_execution_plan tool. "
+                            "Do not explain what you will do - generate the actual ExecutionPlan with all operations specified in detail and call submit_execution_plan immediately. "
+                            "Your previous response was narrative text, but you MUST provide a structured ExecutionPlan via the submit_execution_plan tool."
+                        )
+
+                        messages.append({
+                            "role": "user",
+                            "content": [{"type": "text", "text": enforcement_prompt}]
+                        })
+                        continue
+
+                    # Either has plan submission, or we've exceeded retries - emit the text
                     self._emit_streaming_chunk(
                         final_text,
                         source=_ANALYST_SOURCE,
@@ -221,6 +359,38 @@ class AnalystAgentService:
                 return self._latest_plan
 
             if final_response_text:
+                # Check if we exhausted retries trying to get ExecutionPlan
+                if narrative_retry_count >= max_narrative_retries:
+                    duration = time.perf_counter() - started
+                    LOGGER.error(
+                        "Analyst failed to submit ExecutionPlan after %d retries | duration=%.2fs",
+                        narrative_retry_count,
+                        duration,
+                    )
+                    summary = self._safe_value(final_response_text, limit=200)
+                    error_message = (
+                        f"Error: Analyst provided narrative text instead of ExecutionPlan after {narrative_retry_count} retry attempts. "
+                        f"Response: {summary}"
+                    )
+                    self._emit_status("Analyst agent: failed to submit ExecutionPlan", "analyst.error")
+                    self._event_bus.emit(
+                        PhaseTransition(
+                            from_phase="analyst",
+                            to_phase="analyst.error",
+                            source=_ANALYST_SOURCE,
+                        )
+                    )
+                    self._event_bus.emit(
+                        SystemErrorEvent(
+                            error="analyst.narrative_instead_of_plan",
+                            details={"narrative_preview": summary, "retry_count": narrative_retry_count},
+                            source=_ANALYST_SOURCE,
+                        )
+                    )
+                    self._emit_completion(error_message, success=False)
+                    return error_message
+
+                # Valid direct answer case (no retries were needed)
                 duration = time.perf_counter() - started
                 LOGGER.info(
                     "Analyst direct answer provided | duration=%.2fs | tool_calls=%d",

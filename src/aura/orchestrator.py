@@ -136,6 +136,7 @@ class _TwoAgentWorker(QObject):
         goal: str,
         conversation_id: int | None,
         *,
+        conversation_history: List[dict] | None = None,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
@@ -143,6 +144,7 @@ class _TwoAgentWorker(QObject):
         self._executor_agent = executor_agent
         self._goal = goal
         self._conversation_id = conversation_id
+        self._conversation_history = conversation_history or []
         self._progress_callback = progress_callback
 
     def _notify_progress(self, message: str) -> None:
@@ -168,6 +170,7 @@ class _TwoAgentWorker(QObject):
                 self._goal,
                 on_chunk=_on_chunk,
                 conversation_id=self._conversation_id,
+                conversation_history=self._conversation_history,
             )
 
             if isinstance(plan_or_error, str):
@@ -369,6 +372,25 @@ class Orchestrator(QObject):
                 LOGGER.info("Created conversation %s for new execution", conversation_id)
         return conversation_id
 
+    def _prepare_analyst_history(self) -> List[dict]:
+        """Prepare conversation history in Claude API message format for Analyst.
+
+        Converts internal history format (role, text) tuples to Claude API format
+        with dictionaries containing 'role' and 'content' keys.
+
+        Returns:
+            List of message dictionaries suitable for Claude API
+        """
+        analyst_history = []
+        for role, text in self._history:
+            # Convert role to Claude API format (user/assistant)
+            api_role = role.lower() if role else "user"
+            analyst_history.append({
+                "role": api_role,
+                "content": [{"type": "text", "text": text}],
+            })
+        return analyst_history
+
     @property
     def history(self) -> Tuple[Tuple[str, str], ...]:
         """Return the accumulated conversation history."""
@@ -386,12 +408,16 @@ class Orchestrator(QObject):
         conversation_id: int | None,
     ) -> None:
         """Execute two-agent flow on a background QThread."""
+        # Prepare conversation history for Analyst
+        analyst_history = self._prepare_analyst_history()
+
         self._thread = QThread(self)
         self._worker = _TwoAgentWorker(
             self._analyst_agent,
             self._executor_agent,
             goal,
             conversation_id,
+            conversation_history=analyst_history,
             progress_callback=self.progress_update.emit,
         )
         self._worker.moveToThread(self._thread)
@@ -415,6 +441,9 @@ class Orchestrator(QObject):
         started = time.perf_counter()
         streamed = {"value": False}
 
+        # Prepare conversation history for Analyst
+        analyst_history = self._prepare_analyst_history()
+
         def _on_chunk(chunk: str) -> None:
             streamed["value"] = True
             self.session_output.emit(chunk)
@@ -425,6 +454,7 @@ class Orchestrator(QObject):
                 goal,
                 on_chunk=_on_chunk,
                 conversation_id=conversation_id,
+                conversation_history=analyst_history,
             )
 
             if isinstance(plan_or_error, str):
