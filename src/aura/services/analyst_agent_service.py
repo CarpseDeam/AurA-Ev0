@@ -26,7 +26,7 @@ from aura.events import (
     ToolCallStarted,
 )
 from aura.models import ExecutionPlan, Message, MessageRole, ToolCallLog
-from aura.prompts import ANALYST_PROMPT
+from aura.prompts import ANALYST_PROMPT, ANALYST_PLANNING_PROMPT
 from aura.tools import godot_tools
 from aura.tools.tool_manager import ToolManager
 
@@ -36,6 +36,8 @@ _ANALYST_SOURCE = "analyst"
 # History filtering constants
 MAX_HISTORY_MESSAGES = 6  # Last 3 user/assistant pairs
 MAX_HISTORY_CHARS = 12000  # Character limit for history
+INVESTIGATION_MAX_TOKENS = 8192
+PLANNING_MAX_TOKENS = 5000
 
 ToolHandler = Callable[..., Any]
 
@@ -211,13 +213,17 @@ class AnalystAgentService:
             )
 
         # Build messages list with history + current request
-        messages = list(filtered_history)
-        messages.append({
+        investigation_messages = list(filtered_history)
+        investigation_messages.append({
             "role": "user",
             "content": [{"type": "text", "text": user_request}],
         })
 
-        tools = self._build_tool_definitions()
+        investigation_tool_names = [
+            name for name in self._tool_handlers.keys() if name != "submit_execution_plan"
+        ]
+        investigation_tools = self._build_tool_definitions(allowed_tools=investigation_tool_names)
+        planning_tools = self._build_tool_definitions(allowed_tools=["submit_execution_plan"])
 
         LOGGER.info(
             "Analyst analysis started | model=%s | prompt_chars=%d | history_chars=%d",
@@ -245,15 +251,36 @@ class AnalystAgentService:
         )
 
         try:
-            max_tool_calls = 15
+            max_investigation_tool_calls = 15
+            max_plan_tool_calls = 5
             max_narrative_retries = 2
-            tool_calls_count = 0
+            investigation_tool_calls = 0
+            plan_tool_calls_count = 0
             narrative_retry_count = 0
             final_response_text = ""
+            investigation_summary = ""
+
+            # Phase 1: Investigation loop
             while True:
-                if tool_calls_count >= max_tool_calls:
-                    error_message = "Error: Analyst exceeded the maximum number of tool calls."
+                if investigation_tool_calls >= max_investigation_tool_calls:
+                    error_message = (
+                        "Error: Analyst exceeded the maximum number of tool calls during investigation."
+                    )
                     self._emit_status("Analyst agent: failed", "analyst.error")
+                    self._event_bus.emit(
+                        SystemErrorEvent(
+                            error="analyst.investigation_tool_limit",
+                            details={"max_tool_calls": max_investigation_tool_calls},
+                            source=_ANALYST_SOURCE,
+                        )
+                    )
+                    self._event_bus.emit(
+                        PhaseTransition(
+                            from_phase="analyst",
+                            to_phase="analyst.error",
+                            source=_ANALYST_SOURCE,
+                        )
+                    )
                     self._emit_completion(error_message, success=False)
                     return error_message
 
@@ -261,67 +288,161 @@ class AnalystAgentService:
                     model=self.model_name,
                     system=ANALYST_PROMPT,
                     temperature=0,
-                    max_tokens=6000,
-                    tools=tools,
-                    messages=messages,
+                    max_tokens=INVESTIGATION_MAX_TOKENS,
+                    tools=investigation_tools,
+                    messages=investigation_messages,
                 )
-                messages.append({"role": "assistant", "content": response.content})
+                investigation_messages.append({"role": "assistant", "content": response.content})
 
                 if response.stop_reason == "tool_use":
-                    tool_calls_count += 1
-                    tool_results = []
-                    for block in response.content:
-                        if block.type != "tool_use":
-                            continue
-                        tool_name = block.name or "tool"
-                        tool_input = dict(block.input or {})
-                        tool_id = block.id
-                        result_payload = self._dispatch_tool_call(tool_name, tool_input)
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_id,
-                                "content": result_payload,
-                            }
-                        )
-
-                    messages.append({"role": "user", "content": tool_results})
+                    investigation_tool_calls += 1
+                    tool_results = self._collect_tool_results(response.content)
+                    if tool_results:
+                        investigation_messages.append({"role": "user", "content": tool_results})
                     continue
 
-                # Collected final response - validate it has ExecutionPlan submission
+                investigation_summary = (self._collect_text(response.content) or "").strip()
+                if not investigation_summary:
+                    error_message = "Error: Analyst investigation did not return a structured summary."
+                    self._emit_status("Analyst agent: failed", "analyst.error")
+                    self._event_bus.emit(
+                        SystemErrorEvent(
+                            error="analyst.investigation_no_summary",
+                            details={"tool_calls": investigation_tool_calls},
+                            source=_ANALYST_SOURCE,
+                        )
+                    )
+                    self._event_bus.emit(
+                        PhaseTransition(
+                            from_phase="analyst",
+                            to_phase="analyst.error",
+                            source=_ANALYST_SOURCE,
+                        )
+                    )
+                    self._emit_completion(error_message, success=False)
+                    return error_message
+
+                self._emit_streaming_chunk(
+                    investigation_summary,
+                    source=_ANALYST_SOURCE,
+                    on_chunk=on_chunk,
+                    is_final=False,
+                )
+                investigation_duration = time.perf_counter() - started
+                LOGGER.info(
+                    "Analyst investigation summary ready | duration=%.2fs | tool_calls=%d",
+                    investigation_duration,
+                    investigation_tool_calls,
+                )
+                self._emit_status("Analyst agent: investigation summary ready", "analyst.investigation_complete")
+                self._event_bus.emit(
+                    TaskProgressEvent(
+                        message="Analyst investigation summary ready",
+                        percent=0.25,
+                        source=_ANALYST_SOURCE,
+                    )
+                )
+                break
+
+            # Phase 2: Planning loop with fresh prompt
+            planning_messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": self._build_planning_user_message(
+                                user_request=user_request,
+                                investigation_summary=investigation_summary,
+                            ),
+                        }
+                    ],
+                }
+            ]
+
+            self._emit_status("Analyst agent: synthesizing execution plan...", "analyst.plan_start")
+            self._event_bus.emit(
+                TaskProgressEvent(
+                    message="Analyst synthesizing execution plan",
+                    percent=0.35,
+                    source=_ANALYST_SOURCE,
+                )
+            )
+
+            while True:
+                if plan_tool_calls_count >= max_plan_tool_calls:
+                    error_message = (
+                        "Error: Analyst exceeded the maximum number of plan-generation tool calls."
+                    )
+                    self._emit_status("Analyst agent: failed", "analyst.error")
+                    self._event_bus.emit(
+                        SystemErrorEvent(
+                            error="analyst.plan_tool_limit",
+                            details={"max_tool_calls": max_plan_tool_calls},
+                            source=_ANALYST_SOURCE,
+                        )
+                    )
+                    self._event_bus.emit(
+                        PhaseTransition(
+                            from_phase="analyst",
+                            to_phase="analyst.error",
+                            source=_ANALYST_SOURCE,
+                        )
+                    )
+                    self._emit_completion(error_message, success=False)
+                    return error_message
+
+                response = self._client.messages.create(
+                    model=self.model_name,
+                    system=ANALYST_PLANNING_PROMPT,
+                    temperature=0,
+                    max_tokens=PLANNING_MAX_TOKENS,
+                    tools=planning_tools,
+                    tool_choice={"type": "tool", "name": "submit_execution_plan"},
+                    messages=planning_messages,
+                )
+                planning_messages.append({"role": "assistant", "content": response.content})
+
+                if response.stop_reason == "tool_use":
+                    plan_tool_calls_count += 1
+                    tool_results = self._collect_tool_results(response.content)
+                    if tool_results:
+                        planning_messages.append({"role": "user", "content": tool_results})
+                    continue
+
                 final_text = self._collect_text(response.content)
                 if final_text:
                     final_response_text = final_text
 
-                    # Check if this is narrative without ExecutionPlan submission
                     has_plan_submission = self._has_execution_plan_submission(response.content)
 
-                    if not has_plan_submission and not self._latest_plan and narrative_retry_count < max_narrative_retries:
-                        # Analyst provided narrative instead of ExecutionPlan - retry with stronger prompt
+                    if (
+                        not has_plan_submission
+                        and not self._latest_plan
+                        and narrative_retry_count < max_narrative_retries
+                    ):
                         narrative_retry_count += 1
                         LOGGER.warning(
                             "Analyst provided narrative without ExecutionPlan submission (attempt %d/%d). Retrying with enforcement prompt.",
                             narrative_retry_count,
-                            max_narrative_retries
+                            max_narrative_retries,
                         )
                         self._emit_status(
                             f"Analyst agent: enforcing ExecutionPlan submission (retry {narrative_retry_count}/{max_narrative_retries})",
-                            "analyst.retry"
+                            "analyst.retry",
                         )
 
                         enforcement_prompt = (
-                            "CRITICAL: You must now generate the complete ExecutionPlan XML and submit it using the submit_execution_plan tool. "
-                            "Do not explain what you will do - generate the actual ExecutionPlan with all operations specified in detail and call submit_execution_plan immediately. "
-                            "Your previous response was narrative text, but you MUST provide a structured ExecutionPlan via the submit_execution_plan tool."
+                            "Investigation is complete. Immediately generate the full ExecutionPlan JSON and call submit_execution_plan. "
+                            "Do not provide narrative text—respond only by calling submit_execution_plan with the finalized plan."
                         )
 
-                        messages.append({
+                        planning_messages.append({
                             "role": "user",
                             "content": [{"type": "text", "text": enforcement_prompt}]
                         })
                         continue
 
-                    # Either has plan submission, or we've exceeded retries - emit the text
                     self._emit_streaming_chunk(
                         final_text,
                         source=_ANALYST_SOURCE,
@@ -358,66 +479,35 @@ class AnalystAgentService:
                 self._emit_completion(summary, success=True)
                 return self._latest_plan
 
-            if final_response_text:
-                # Check if we exhausted retries trying to get ExecutionPlan
-                if narrative_retry_count >= max_narrative_retries:
-                    duration = time.perf_counter() - started
-                    LOGGER.error(
-                        "Analyst failed to submit ExecutionPlan after %d retries | duration=%.2fs",
-                        narrative_retry_count,
-                        duration,
-                    )
-                    summary = self._safe_value(final_response_text, limit=200)
-                    error_message = (
-                        f"Error: Analyst provided narrative text instead of ExecutionPlan after {narrative_retry_count} retry attempts. "
-                        f"Response: {summary}"
-                    )
-                    self._emit_status("Analyst agent: failed to submit ExecutionPlan", "analyst.error")
-                    self._event_bus.emit(
-                        PhaseTransition(
-                            from_phase="analyst",
-                            to_phase="analyst.error",
-                            source=_ANALYST_SOURCE,
-                        )
-                    )
-                    self._event_bus.emit(
-                        SystemErrorEvent(
-                            error="analyst.narrative_instead_of_plan",
-                            details={"narrative_preview": summary, "retry_count": narrative_retry_count},
-                            source=_ANALYST_SOURCE,
-                        )
-                    )
-                    self._emit_completion(error_message, success=False)
-                    return error_message
-
-                # Valid direct answer case (no retries were needed)
+            if final_response_text and narrative_retry_count >= max_narrative_retries:
                 duration = time.perf_counter() - started
-                LOGGER.info(
-                    "Analyst direct answer provided | duration=%.2fs | tool_calls=%d",
+                LOGGER.error(
+                    "Analyst failed to submit ExecutionPlan after %d retries | duration=%.2fs",
+                    narrative_retry_count,
                     duration,
-                    tool_calls_count,
                 )
-                self._emit_status("Analyst agent: response ready", "analyst.complete")
+                summary = self._safe_value(final_response_text, limit=200)
+                error_message = (
+                    f"Error: Analyst provided narrative text instead of ExecutionPlan after {narrative_retry_count} retry attempts. "
+                    f"Response: {summary}"
+                )
+                self._emit_status("Analyst agent: failed to submit ExecutionPlan", "analyst.error")
                 self._event_bus.emit(
                     PhaseTransition(
                         from_phase="analyst",
-                        to_phase="idle",
+                        to_phase="analyst.error",
                         source=_ANALYST_SOURCE,
                     )
                 )
                 self._event_bus.emit(
-                    TaskProgressEvent(
-                        message="Analyst provided direct answer",
-                        percent=0.45,
+                    SystemErrorEvent(
+                        error="analyst.narrative_instead_of_plan",
+                        details={"narrative_preview": summary, "retry_count": narrative_retry_count},
                         source=_ANALYST_SOURCE,
                     )
                 )
-                summary = self._safe_value(final_response_text, limit=200)
-                self._emit_completion(
-                    f"Analyst provided a direct answer: {summary}",
-                    success=True,
-                )
-                return final_response_text
+                self._emit_completion(error_message, success=False)
+                return error_message
 
             error_message = "Error: Analyst did not provide a submit_execution_plan tool call."
             self._emit_status("Analyst agent: failed", "analyst.error")
@@ -476,12 +566,21 @@ class AnalystAgentService:
             self._emit_completion(error_message, success=False)
             return error_message
 
-    def _build_tool_definitions(self) -> list[dict[str, Any]]:
+    def _build_tool_definitions(self, allowed_tools: Sequence[str] | None = None) -> list[dict[str, Any]]:
         """Return Claude-compatible tool schemas."""
         from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema
 
-        tools = []
-        for tool_name, handler in self._tool_handlers.items():
+        tools: list[dict[str, Any]] = []
+        if allowed_tools is None:
+            tool_items = self._tool_handlers.items()
+        else:
+            tool_items = [
+                (tool_name, self._tool_handlers[tool_name])
+                for tool_name in allowed_tools
+                if tool_name in self._tool_handlers
+            ]
+
+        for tool_name, handler in tool_items:
             tools.append(build_anthropic_tool_schema(handler, name=tool_name))
         return tools
 
@@ -633,6 +732,42 @@ class AnalystAgentService:
             if getattr(block, "type", None) == "text":
                 parts.append(block.text or "")
         return "".join(parts)
+
+    def _collect_tool_results(self, response_content: Sequence[Any]) -> list[dict[str, Any]]:
+        """Build tool_result payloads for Anthropic follow-up messages."""
+        tool_results: list[dict[str, Any]] = []
+        for block in response_content:
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            tool_name = block.name or "tool"
+            tool_input = dict(block.input or {})
+            tool_id = block.id
+            result_payload = self._dispatch_tool_call(tool_name, tool_input)
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": result_payload,
+                }
+            )
+        return tool_results
+
+    def _build_planning_user_message(
+        self,
+        *,
+        user_request: str,
+        investigation_summary: str,
+    ) -> str:
+        """Create the concise planning prompt for Phase 2."""
+        request_text = (user_request or "").strip() or "(no explicit user request provided)"
+        summary_text = (investigation_summary or "").strip()
+        return (
+            "Investigation is complete. Using only the information below, generate the ExecutionPlan and "
+            "submit it via the submit_execution_plan tool.\n\n"
+            f"User request:\n{request_text}\n\n"
+            "Investigation summary (JSON):\n"
+            f"{summary_text}"
+        )
 
     def _sanitize_parameters(
         self,
