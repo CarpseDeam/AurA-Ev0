@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
@@ -38,6 +39,27 @@ MAX_HISTORY_MESSAGES = 6  # Last 3 user/assistant pairs
 MAX_HISTORY_CHARS = 12000  # Character limit for history
 INVESTIGATION_MAX_TOKENS = 8192
 PLANNING_MAX_TOKENS = 5000
+TOOL_RESULT_COMPRESSION_THRESHOLD = 2000
+SHORT_FILE_LINE_LIMIT = 100
+MEDIUM_FILE_LINE_LIMIT = 300
+FILE_HEAD_TAIL_SLICE = 20
+LIST_PREVIEW_THRESHOLD = 30
+LIST_PREVIEW_COUNT = 25
+ANALYSIS_TOOL_NAMES = {
+    "get_cyclomatic_complexity",
+    "detect_duplicate_code",
+    "check_naming_conventions",
+    "analyze_type_hints",
+    "inspect_docstrings",
+    "get_code_metrics",
+    "get_dependency_graph",
+    "get_class_hierarchy",
+}
+STRUCTURE_TOOLS = {"get_project_structure", "list_project_files"}
+FILE_READING_TOOLS = {"read_project_file", "read_multiple_files"}
+SIGNATURE_TOOLS = {"get_function_signatures"}
+DEPENDENCY_TOOLS = {"get_dependency_graph", "get_imports", "verify_asset_paths"}
+SUMMARY_SECTION_LIMIT = 8
 
 ToolHandler = Callable[..., Any]
 
@@ -159,12 +181,14 @@ class AnalystAgentService:
 
     api_key: str
     tool_manager: ToolManager
-    model_name: str
+    investigation_model: str
+    planning_model: str
     _client: anthropic.Anthropic = field(init=False, repr=False)
     _event_bus: Any = field(init=False, repr=False)
     _tool_handlers: Mapping[str, ToolHandler] = field(init=False, repr=False)
     _latest_plan: ExecutionPlan | None = field(default=None, init=False, repr=False)
     _active_conversation_id: int | None = field(default=None, init=False, repr=False)
+    _current_user_request: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._client = anthropic.Anthropic(api_key=self.api_key)
@@ -229,6 +253,7 @@ class AnalystAgentService:
         started = time.perf_counter()
         self._latest_plan = None
         self._active_conversation_id = conversation_id
+        self._current_user_request = user_request
 
         # Apply sliding window history filter
         filtered_history: list[dict[str, Any]] = []
@@ -261,8 +286,9 @@ class AnalystAgentService:
         planning_tools = self._build_tool_definitions(allowed_tools=["submit_execution_plan"])
 
         LOGGER.info(
-            "Analyst analysis started | model=%s | prompt_chars=%d | history_chars=%d",
-            self.model_name,
+            "Analyst analysis started | investigation_model=%s | planning_model=%s | prompt_chars=%d | history_chars=%d",
+            self.investigation_model,
+            self.planning_model,
             len(user_request or ""),
             history_chars,
         )
@@ -273,7 +299,10 @@ class AnalystAgentService:
         self._event_bus.emit(
             AgentEvent(
                 name="analyst.started",
-                payload={"model": self.model_name},
+                payload={
+                    "investigation_model": self.investigation_model,
+                    "planning_model": self.planning_model,
+                },
                 source=_ANALYST_SOURCE,
             )
         )
@@ -294,7 +323,9 @@ class AnalystAgentService:
             narrative_retry_count = 0
             final_response_text = ""
             investigation_summary = ""
+            condensed_investigation_summary = ""
 
+            LOGGER.info("Analyst Phase 1 (investigation) using model=%s", self.investigation_model)
             # Phase 1: Investigation loop
             while True:
                 if investigation_tool_calls >= max_investigation_tool_calls:
@@ -320,7 +351,7 @@ class AnalystAgentService:
                     return error_message
 
                 response = self._client.messages.create(
-                    model=self.model_name,
+                    model=self.investigation_model,
                     system=ANALYST_PROMPT,
                     temperature=0,
                     max_tokens=INVESTIGATION_MAX_TOKENS,
@@ -363,6 +394,16 @@ class AnalystAgentService:
                     on_chunk=on_chunk,
                     is_final=False,
                 )
+                try:
+                    condensed_investigation_summary = self._synthesize_investigation_summary(investigation_messages)
+                    LOGGER.info(
+                        "Investigation summary synthesized | original_chars=%d | condensed_chars=%d",
+                        len(investigation_summary),
+                        len(condensed_investigation_summary),
+                    )
+                except Exception:  # noqa: BLE001
+                    LOGGER.exception("Failed to synthesize investigation summary; falling back to raw narrative")
+                    condensed_investigation_summary = investigation_summary
                 investigation_duration = time.perf_counter() - started
                 LOGGER.info(
                     "Analyst investigation summary ready | duration=%.2fs | tool_calls=%d",
@@ -379,6 +420,7 @@ class AnalystAgentService:
                 )
                 break
 
+            LOGGER.info("Analyst Phase 2 (planning) using model=%s", self.planning_model)
             # Phase 2: Planning loop with fresh prompt
             planning_messages = [
                 {
@@ -388,7 +430,7 @@ class AnalystAgentService:
                             "type": "text",
                             "text": self._build_planning_user_message(
                                 user_request=user_request,
-                                investigation_summary=investigation_summary,
+                                investigation_summary=condensed_investigation_summary or investigation_summary,
                             ),
                         }
                     ],
@@ -428,7 +470,7 @@ class AnalystAgentService:
                     return error_message
 
                 response = self._client.messages.create(
-                    model=self.model_name,
+                    model=self.planning_model,
                     system=ANALYST_PLANNING_PROMPT,
                     temperature=0,
                     max_tokens=PLANNING_MAX_TOKENS,
@@ -644,7 +686,7 @@ class AnalystAgentService:
         return tools
 
     def _dispatch_tool_call(self, tool_name: str, tool_input: Mapping[str, Any]) -> str:
-        """Execute a tool handler with full logging and auditing."""
+        """Execute a tool handler with full logging, auditing, and compression."""
         handler = self._tool_handlers.get(tool_name)
         params = self._sanitize_parameters((), dict(tool_input))
         self._event_bus.emit(
@@ -660,32 +702,34 @@ class AnalystAgentService:
         started = time.perf_counter()
         success = False
         result_obj: Any = {"error": f"Unknown tool: {tool_name}"}
+        serialized_result: str | None = None
+        compressed_payload = ""
         try:
             if not handler:
                 raise ValueError(f"Tool '{tool_name}' is not registered.")
             result_obj = handler(**tool_input)
             success = True
-            return self._serialize_tool_result(result_obj)
+            serialized_result = self._serialize_tool_result(result_obj)
         except ValidationError as exc:
             LOGGER.warning("Tool %s validation failed: %s", tool_name, exc)
             result_obj = {"error": "Validation failed", "details": exc.errors()}
-            serialized = self._serialize_tool_result(result_obj)
-            self._record_tool_failure(tool_name, params, serialized, started)
-            return serialized
+            serialized_result = self._serialize_tool_result(result_obj)
+            self._record_tool_failure(tool_name, params, serialized_result, started)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Tool %s execution failed", tool_name)
             result_obj = {"error": str(exc)}
-            serialized = self._serialize_tool_result(result_obj)
-            self._record_tool_failure(tool_name, params, serialized, started)
-            return serialized
+            serialized_result = self._serialize_tool_result(result_obj)
+            self._record_tool_failure(tool_name, params, serialized_result, started)
         finally:
+            serialized_payload = serialized_result or self._serialize_tool_result(result_obj)
+            compressed_payload = self._compress_tool_result(tool_name, serialized_payload)
             duration = time.perf_counter() - started
             ToolCallLog.record(
                 conversation_id=self._active_conversation_id,
                 agent_role=_ANALYST_SOURCE,
                 tool_name=tool_name,
                 tool_input=json.dumps(tool_input, ensure_ascii=False, default=str),
-                tool_output=self._serialize_tool_result(result_obj),
+                tool_output=serialized_payload,
                 success=success,
                 error_message=None if success else str(result_obj),
                 execution_time_ms=round(duration * 1000, 2),
@@ -706,6 +750,7 @@ class AnalystAgentService:
                         source=_ANALYST_SOURCE,
                     )
                 )
+        return compressed_payload or serialized_payload
 
     def _record_tool_failure(
         self,
@@ -925,6 +970,503 @@ class AnalystAgentService:
                 }
             )
         return tool_results
+
+    def _compress_tool_result(self, tool_name: str, result: str) -> str:
+        """Apply heuristic compression rules to large tool outputs."""
+        if not result:
+            return result
+        original_length = len(result)
+        if original_length <= TOOL_RESULT_COMPRESSION_THRESHOLD:
+            return result
+
+        compressed_text = result
+        parsed: Any = None
+        try:
+            parsed = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            compressed_payload = self._compress_mapping_payload(tool_name, parsed)
+            compressed_text = json.dumps(compressed_payload, ensure_ascii=False)
+        elif isinstance(parsed, list):
+            compressed_list = self._compress_list_payload(parsed)
+            compressed_text = json.dumps(compressed_list, ensure_ascii=False)
+        else:
+            compressed_text = self._compress_text_block(result)
+
+        if not compressed_text or len(compressed_text) >= original_length:
+            return result
+
+        savings = 1 - (len(compressed_text) / original_length)
+        LOGGER.info(
+            "Compressed %s tool payload | original=%d chars | compressed=%d chars | savings=%.1f%%",
+            tool_name,
+            original_length,
+            len(compressed_text),
+            savings * 100,
+        )
+        return compressed_text
+
+    def _compress_mapping_payload(self, tool_name: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Recursively compress mapping structures."""
+        if tool_name in ANALYSIS_TOOL_NAMES:
+            return self._summarize_analysis_payload(payload)
+
+        compact: dict[str, Any] = {}
+        for key, value in payload.items():
+            if isinstance(value, str):
+                compact[key] = (
+                    self._compress_text_block(value) if len(value) > TOOL_RESULT_COMPRESSION_THRESHOLD else value
+                )
+                continue
+            if isinstance(value, list):
+                compact[key] = self._compress_list_payload(value)
+                continue
+            if isinstance(value, Mapping):
+                compact[key] = self._compress_mapping_payload(tool_name, value)
+                continue
+            compact[key] = value
+        return compact
+
+    def _summarize_analysis_payload(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Keep only summary statistics for heavy analysis responses."""
+        summary_keys = [
+            key for key in payload.keys() if any(token in str(key).lower() for token in ("summary", "total", "aggregate", "stats"))
+        ]
+        condensed: dict[str, Any] = {}
+
+        if summary_keys:
+            for key in summary_keys:
+                condensed[key] = payload[key]
+
+        for key, value in payload.items():
+            if key in condensed:
+                continue
+            if isinstance(value, (bool, int, float)) or value is None:
+                condensed[key] = value
+                continue
+            if isinstance(value, str):
+                condensed[key] = value if len(value) <= 400 else f"{value[:400]}... (+{len(value) - 400} chars)"
+                continue
+            if isinstance(value, Mapping):
+                condensed[key] = {
+                    inner_key: inner_val
+                    for inner_key, inner_val in value.items()
+                    if isinstance(inner_val, (bool, int, float, str)) or inner_val is None
+                }
+                continue
+            if isinstance(value, list):
+                condensed[key] = {
+                    "total_items": len(value),
+                    "sample": value[:3],
+                }
+
+        omitted = sorted(set(payload.keys()) - set(condensed.keys()))
+        if omitted:
+            condensed["_detail_fields_omitted"] = omitted
+        return condensed
+
+    def _compress_list_payload(self, items: Sequence[Any]) -> Sequence[Any]:
+        """Keep short lists intact and summarize long ones."""
+        length = len(items)
+        if length <= LIST_PREVIEW_THRESHOLD:
+            return items
+        preview = list(items[:LIST_PREVIEW_COUNT])
+        preview.append(
+            {
+                "_summary": True,
+                "total_items": length,
+                "omitted_count": max(length - LIST_PREVIEW_COUNT, 0),
+            }
+        )
+        return preview
+
+    def _compress_text_block(self, text: str) -> str:
+        """Build textual previews for long file blobs."""
+        lines = text.splitlines()
+        total_lines = len(lines)
+        if total_lines <= SHORT_FILE_LINE_LIMIT:
+            return text
+
+        imports = [line for line in lines if line.strip().startswith(("import ", "from "))]
+        signatures = [
+            line.strip()
+            for line in lines
+            if line.strip().startswith(("def ", "class ", "async def "))
+        ]
+
+        header = f"[compressed file preview | original_lines={total_lines}]"
+
+        if total_lines <= MEDIUM_FILE_LINE_LIMIT:
+            body_sections = [header]
+            if imports:
+                body_sections.append("Imports:\n" + "\n".join(imports[:20]))
+            if signatures:
+                body_sections.append("Signatures:\n" + "\n".join(signatures[:40]))
+            head = "\n".join(lines[:FILE_HEAD_TAIL_SLICE])
+            tail = "\n".join(lines[-FILE_HEAD_TAIL_SLICE:])
+            body_sections.append("First lines:\n" + head)
+            body_sections.append("Last lines:\n" + tail)
+            body_sections.append(
+                f"... {max(total_lines - FILE_HEAD_TAIL_SLICE * 2, 0)} middle lines omitted ..."
+            )
+            preview = "\n\n".join(section for section in body_sections if section.strip())
+            return preview if preview else text
+
+        docstrings = self._extract_docstrings(lines)
+        body_sections = [header]
+        if imports:
+            body_sections.append("Imports:\n" + "\n".join(imports[:20]))
+        if signatures:
+            body_sections.append("Signatures:\n" + "\n".join(signatures[:40]))
+        if docstrings:
+            doc_excerpt = "\n---\n".join(docstrings[:5])
+            body_sections.append("Docstrings:\n" + doc_excerpt)
+        body_sections.append(f"(structure only – {total_lines} lines summarized)")
+        preview = "\n\n".join(section for section in body_sections if section.strip())
+        return preview if preview else text
+
+    def _extract_docstrings(self, lines: Sequence[str]) -> list[str]:
+        """Return up to five docstring excerpts from a file."""
+        docstrings: list[str] = []
+        capturing = False
+        delimiter = ""
+        buffer: list[str] = []
+        for raw in lines:
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            if not capturing and stripped.startswith(('"""', "'''")):
+                delimiter = stripped[:3]
+                capturing = True
+                buffer = [stripped]
+                if stripped.count(delimiter) >= 2 and len(stripped) > 3:
+                    docstrings.append(stripped)
+                    capturing = False
+                    buffer = []
+                    delimiter = ""
+                continue
+            if capturing:
+                buffer.append(stripped)
+                if stripped.endswith(delimiter):
+                    excerpt = "\n".join(buffer)
+                    docstrings.append(excerpt if len(excerpt) <= 400 else f"{excerpt[:400]}...")
+                    capturing = False
+                    buffer = []
+                    delimiter = ""
+            if len(docstrings) >= 5:
+                break
+        return docstrings
+
+    def _synthesize_investigation_summary(self, messages: Sequence[dict[str, Any]]) -> str:
+        """Create a condensed JSON summary of Phase 1 findings."""
+        user_request = (self._current_user_request or "").strip()
+        latest_summary_text = self._extract_latest_assistant_summary(messages)
+        sentences = self._split_sentences(latest_summary_text)
+        tool_trace = self._collect_tool_trace(messages)
+
+        project_structure = self._summarize_project_structure(tool_trace, sentences)
+        relevant_files = self._summarize_relevant_files(tool_trace)
+        code_patterns = self._select_sentences(
+            sentences,
+            keywords=("pattern", "convention", "style", "architecture", "naming", "idiom"),
+        )
+        dependencies = self._summarize_dependencies(tool_trace, sentences)
+        constraints = self._select_sentences(
+            sentences,
+            keywords=("constraint", "must", "should", "avoid", "limitation", "restriction", "compatibility"),
+        )
+        key_signatures = self._gather_signatures(tool_trace, latest_summary_text)
+
+        summary_payload = {
+            "user_request": user_request,
+            "project_structure": project_structure,
+            "relevant_files": relevant_files,
+            "code_patterns": code_patterns,
+            "dependencies": dependencies,
+            "constraints": constraints,
+            "key_signatures": key_signatures,
+        }
+        return json.dumps(summary_payload, ensure_ascii=False, indent=2)
+
+    def _extract_latest_assistant_summary(self, messages: Sequence[dict[str, Any]]) -> str:
+        """Return the most recent assistant text block."""
+        for message in reversed(messages):
+            if message.get("role") != "assistant":
+                continue
+            content = message.get("content")
+            text = self._collect_text(content) if isinstance(content, list) else str(content or "")
+            if text.strip():
+                return text.strip()
+        return ""
+
+    def _split_sentences(self, text: str) -> list[str]:
+        """Split summary text into normalized sentences."""
+        if not text:
+            return []
+        sentences: list[str] = []
+        for raw_line in text.splitlines():
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            parts = re.split(r"(?<=[.!?])\s+", stripped)
+            for part in parts:
+                cleaned = part.strip("•*- \t")
+                if cleaned:
+                    sentences.append(cleaned)
+        return sentences
+
+    def _collect_tool_trace(self, messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Pair tool_use blocks with tool_results for downstream summarization."""
+        tool_requests: dict[str, dict[str, Any]] = {}
+        trace: list[dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "tool_use":
+                    tool_requests[block.get("id")] = {
+                        "tool": block.get("name"),
+                        "input": dict(block.get("input") or {}),
+                    }
+                elif block_type == "tool_result":
+                    tool_use_id = block.get("tool_use_id")
+                    request = tool_requests.get(tool_use_id, {})
+                    block_content = block.get("content")
+                    if isinstance(block_content, list):
+                        text_value = self._collect_text(block_content)
+                    else:
+                        text_value = block_content or ""
+                    trace.append(
+                        {
+                            "tool": request.get("tool"),
+                            "input": request.get("input") or {},
+                            "output": text_value if isinstance(text_value, str) else str(text_value),
+                        }
+                    )
+        return trace
+
+    def _select_sentences(
+        self,
+        sentences: Sequence[str],
+        *,
+        keywords: Sequence[str],
+        limit: int = SUMMARY_SECTION_LIMIT,
+    ) -> list[str]:
+        """Return up to `limit` sentences containing any of the keywords."""
+        selected: list[str] = []
+        lowered_keywords = [token.lower() for token in keywords]
+        for sentence in sentences:
+            lowered = sentence.lower()
+            if any(token in lowered for token in lowered_keywords):
+                selected.append(sentence)
+            if len(selected) >= limit:
+                break
+        return selected
+
+    def _summarize_project_structure(
+        self,
+        tool_trace: Sequence[Mapping[str, Any]],
+        sentences: Sequence[str],
+    ) -> list[str]:
+        """Combine tool outputs and textual hints into a structure summary."""
+        notes: list[str] = []
+        for entry in tool_trace:
+            tool = entry.get("tool")
+            if tool == "get_project_structure":
+                data = self._try_parse_json(entry.get("output"))
+                if isinstance(data, Mapping):
+                    directories = data.get("directories") or []
+                    files = data.get("files") or []
+                    root = data.get("root") or entry.get("input", {}).get("directory") or "."
+                    dir_preview = ", ".join(directories[:SUMMARY_SECTION_LIMIT]) or "no subdirectories"
+                    notes.append(
+                        f"{root}: {len(directories)} dirs / {len(files)} files | sample dirs: {dir_preview}"
+                    )
+            elif tool == "list_project_files":
+                data = self._try_parse_json(entry.get("output"))
+                if isinstance(data, Mapping):
+                    ext = data.get("extension") or entry.get("input", {}).get("extension") or "*"
+                    count = data.get("count")
+                    files = data.get("files") or []
+                    sample = ", ".join(files[:3]) if files else "no matches"
+                    notes.append(f"{count} files matching {ext} (sample: {sample})")
+            if len(notes) >= SUMMARY_SECTION_LIMIT:
+                break
+
+        if notes:
+            return notes[:SUMMARY_SECTION_LIMIT]
+        return self._select_sentences(
+            sentences,
+            keywords=("structure", "directory", "folder", "module", "layout"),
+        )
+
+    def _summarize_relevant_files(self, tool_trace: Sequence[Mapping[str, Any]]) -> list[str]:
+        """Extract per-file insights from tool outputs."""
+        summaries: list[str] = []
+        seen: set[str] = set()
+        for entry in tool_trace:
+            tool = entry.get("tool")
+            if tool not in FILE_READING_TOOLS:
+                continue
+            raw_input = entry.get("input") or {}
+            path = (
+                raw_input.get("path")
+                or raw_input.get("file")
+                or raw_input.get("file_path")
+                or raw_input.get("target")
+            )
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            description = self._describe_file_content(entry.get("output") or "")
+            summaries.append(f"{path}: {description}")
+            if len(summaries) >= SUMMARY_SECTION_LIMIT:
+                break
+        return summaries
+
+    def _describe_file_content(self, text: str) -> str:
+        """Infer the purpose of a file from truncated content."""
+        if not text:
+            return "empty or unavailable"
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for line in lines:
+            if line.startswith("#"):
+                return line.lstrip("# ").strip()[:200]
+            if line.startswith(('"""', "'''")):
+                stripped = line.strip("\"' ")
+                if stripped:
+                    return stripped[:200]
+        for line in lines:
+            if line.startswith(("class ", "def ", "async def ")):
+                return line.split(":")[0][:200]
+        return f"{len(lines)} significant lines"
+
+    def _summarize_dependencies(
+        self,
+        tool_trace: Sequence[Mapping[str, Any]],
+        sentences: Sequence[str],
+    ) -> list[str]:
+        """Summarize dependency signals from tools or narrative sentences."""
+        deps: list[str] = []
+        for entry in tool_trace:
+            tool = entry.get("tool")
+            if tool not in DEPENDENCY_TOOLS:
+                continue
+            data = self._try_parse_json(entry.get("output"))
+            if not isinstance(data, Mapping):
+                continue
+            collected = self._collect_dependency_values(data)
+            if collected:
+                deps.append(f"{tool}: {', '.join(collected[:SUMMARY_SECTION_LIMIT])}")
+        if deps:
+            return deps[:SUMMARY_SECTION_LIMIT]
+        return self._select_sentences(
+            sentences,
+            keywords=("dependency", "import", "library", "package", "requirements"),
+        )
+
+    def _collect_dependency_values(self, payload: Mapping[str, Any]) -> list[str]:
+        """Flatten dependency-like fields into a list."""
+        collected: list[str] = []
+        for key, value in payload.items():
+            lowered = str(key).lower()
+            if any(token in lowered for token in ("dependency", "import", "library", "package", "module", "existing", "missing")):
+                collected.extend(self._flatten_dependency_value(value))
+        return self._dedupe_entries(collected)
+
+    def _flatten_dependency_value(self, value: Any) -> list[str]:
+        """Flatten mixed dependency values into string tokens."""
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (int, float)):
+            return [str(value)]
+        if isinstance(value, Mapping):
+            names: list[str] = []
+            for key in ("name", "module", "package", "import", "path"):
+                candidate = value.get(key)
+                if isinstance(candidate, str):
+                    names.append(candidate)
+            return names
+        if isinstance(value, list):
+            flattened: list[str] = []
+            for item in value:
+                flattened.extend(self._flatten_dependency_value(item))
+            return flattened
+        return []
+
+    def _gather_signatures(
+        self,
+        tool_trace: Sequence[Mapping[str, Any]],
+        narrative: str,
+    ) -> list[str]:
+        """Collect key function/class signatures without bodies."""
+        signatures: list[str] = []
+        seen: set[str] = set()
+
+        for entry in tool_trace:
+            tool = entry.get("tool")
+            if tool == "get_function_signatures":
+                data = self._try_parse_json(entry.get("output"))
+                if isinstance(data, Mapping):
+                    for fn in data.get("functions", []):
+                        if not isinstance(fn, Mapping):
+                            continue
+                        name = fn.get("name")
+                        params = fn.get("params") or []
+                        location = entry.get("input", {}).get("file_path") or entry.get("input", {}).get("path")
+                        signature = f"{name}({', '.join(params)})"
+                        if location:
+                            signature = f"{signature} [{location}]"
+                        if name and signature not in seen:
+                            seen.add(signature)
+                            signatures.append(signature)
+            elif tool in FILE_READING_TOOLS:
+                for line in (entry.get("output") or "").splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith(("def ", "class ", "async def ")):
+                        signature = stripped.split(":")[0]
+                        if signature and signature not in seen:
+                            seen.add(signature)
+                            signatures.append(signature)
+            if len(signatures) >= SUMMARY_SECTION_LIMIT:
+                break
+
+        if len(signatures) < SUMMARY_SECTION_LIMIT and narrative:
+            for line in narrative.splitlines():
+                stripped = line.strip()
+                if stripped.startswith(("def ", "class ", "async def ")) and stripped not in seen:
+                    seen.add(stripped)
+                    signatures.append(stripped.split(":")[0])
+                if len(signatures) >= SUMMARY_SECTION_LIMIT:
+                    break
+        return signatures
+
+    def _dedupe_entries(self, items: Sequence[str]) -> list[str]:
+        """Preserve order while removing duplicates/empty entries."""
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for item in items:
+            normalized = item.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped
+
+    def _try_parse_json(self, text: Any) -> Any:
+        """Attempt to parse JSON; return None on failure."""
+        if not isinstance(text, str):
+            return None
+        try:
+            return json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            return None
 
     def _build_planning_user_message(
         self,

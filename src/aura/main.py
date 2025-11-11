@@ -20,7 +20,8 @@ from aura.ui.main_window import MainWindow
 from aura.ui.cli_heartbeat_display import CliHeartbeatDisplay
 from aura.utils import load_settings
 from aura.utils.settings import (
-    DEFAULT_ANALYST_MODEL,
+    DEFAULT_ANALYST_INVESTIGATION_MODEL,
+    DEFAULT_ANALYST_PLANNING_MODEL,
     DEFAULT_EXECUTOR_MODEL,
     DEFAULT_SPECIALIST_MODEL,
 )
@@ -112,7 +113,16 @@ class ApplicationController:
 
         # Load settings and apply them to the AppState
         settings = load_settings()
-        self.app_state.set_analyst_model(settings.get("analyst_model", DEFAULT_ANALYST_MODEL))
+        planning_model = settings.get(
+            "analyst_planning_model",
+            settings.get("analyst_model", DEFAULT_ANALYST_PLANNING_MODEL),
+        )
+        investigation_model = settings.get(
+            "analyst_investigation_model",
+            DEFAULT_ANALYST_INVESTIGATION_MODEL,
+        )
+        self.app_state.set_analyst_planning_model(planning_model)
+        self.app_state.set_analyst_investigation_model(investigation_model)
         self.app_state.set_executor_model(settings.get("executor_model", DEFAULT_EXECUTOR_MODEL))
         self.app_state.set_specialist_model(settings.get("specialist_model", DEFAULT_SPECIALIST_MODEL))
         

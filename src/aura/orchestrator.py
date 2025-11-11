@@ -275,7 +275,8 @@ class Orchestrator(QObject):
             self._analyst_agent = AnalystAgentService(
                 api_key=effective_analyst_key,
                 tool_manager=self._tool_manager,
-                model_name=self.app_state.analyst_model,
+                investigation_model=self.app_state.analyst_investigation_model,
+                planning_model=self.app_state.analyst_planning_model,
             )
             self._executor_agent = ExecutorAgentService(
                 api_key=effective_executor_key,

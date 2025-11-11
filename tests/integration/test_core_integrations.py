@@ -40,7 +40,8 @@ def test_analyst_service_routes_tool_calls(monkeypatch: pytest.MonkeyPatch) -> N
     service = AnalystAgentService(
         api_key="token",
         tool_manager=fake_tool_manager,
-        model_name="claude-sonnet",
+        investigation_model="claude-haiku",
+        planning_model="claude-sonnet",
     )
 
     handler = service._tool_handlers["list_project_files"]

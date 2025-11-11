@@ -34,6 +34,7 @@ class AgentSettingsDialog(QDialog):
         super().__init__(parent)
         self.app_state = app_state
 
+        self.analyst_investigation_combo = QComboBox(self)
         self.analyst_model_combo = QComboBox(self)
         self.analyst_refresh_button = QPushButton("Refresh", self)
 
@@ -76,10 +77,21 @@ class AgentSettingsDialog(QDialog):
         form.setContentsMargins(0, 8, 0, 0)
         form.setSpacing(12)
 
+        analyst_column = QVBoxLayout()
+        analyst_column.setSpacing(6)
+        investigation_label = QLabel("Phase 1 – investigation (tool calls)", self)
+        investigation_label.setObjectName("analyst_phase_label")
+        analyst_column.addWidget(investigation_label)
+        analyst_column.addWidget(self.analyst_investigation_combo)
+        planning_label = QLabel("Phase 2 – planning (ExecutionPlan)", self)
+        planning_label.setObjectName("analyst_phase_label")
+        analyst_column.addWidget(planning_label)
+        analyst_column.addWidget(self.analyst_model_combo)
+
         analyst_row = QHBoxLayout()
-        analyst_row.addWidget(self.analyst_model_combo, stretch=1)
+        analyst_row.addLayout(analyst_column, stretch=1)
         analyst_row.addWidget(self.analyst_refresh_button)
-        form.addRow("Analyst Model (read-only):", analyst_row)
+        form.addRow("Analyst Models:", analyst_row)
 
         executor_row = QHBoxLayout()
         executor_row.addWidget(self.executor_model_combo, stretch=1)
@@ -111,6 +123,10 @@ class AgentSettingsDialog(QDialog):
                 font-weight: 600;
                 padding: 6px 16px;
             }
+            QLabel#analyst_phase_label {
+                font-size: 12px;
+                color: #8b949e;
+            }
             """
         )
 
@@ -118,6 +134,9 @@ class AgentSettingsDialog(QDialog):
         self.analyst_refresh_button.clicked.connect(self._refresh_cloud_models)
         self.executor_refresh_button.clicked.connect(self._refresh_cloud_models)
         self.specialist_refresh_button.clicked.connect(self._refresh_ollama_models)
+        self.analyst_investigation_combo.currentTextChanged.connect(
+            self._on_analyst_investigation_model_selected
+        )
         self.analyst_model_combo.currentTextChanged.connect(self._on_analyst_model_selected)
         self.executor_model_combo.currentTextChanged.connect(self._on_executor_model_selected)
         self.specialist_model_combo.currentTextChanged.connect(self._on_specialist_model_selected)
@@ -143,6 +162,7 @@ class AgentSettingsDialog(QDialog):
             else "Unable to fetch models (check network/key)"
         )
 
+        self._update_model_combo(self.analyst_investigation_combo, models, error_message)
         self._update_model_combo(self.analyst_model_combo, models, error_message)
         self._update_model_combo(self.executor_model_combo, models, error_message)
 
@@ -174,7 +194,9 @@ class AgentSettingsDialog(QDialog):
 
         if not current_selection:
             if combo is self.analyst_model_combo:
-                current_selection = self.app_state.analyst_model
+                current_selection = self.app_state.analyst_planning_model
+            elif combo is self.analyst_investigation_combo:
+                current_selection = self.app_state.analyst_investigation_model
             elif combo is self.executor_model_combo:
                 current_selection = self.app_state.executor_model
             elif combo is self.specialist_model_combo:
@@ -250,6 +272,11 @@ class AgentSettingsDialog(QDialog):
         if model_id:
             self.app_state.set_analyst_model(model_id)
 
+    def _on_analyst_investigation_model_selected(self, text: str) -> None:
+        model_id = self.analyst_investigation_combo.currentData() or text.strip()
+        if model_id:
+            self.app_state.set_analyst_investigation_model(model_id)
+
     def _on_executor_model_selected(self, text: str) -> None:
         model_id = self.executor_model_combo.currentData() or text.strip()
         if model_id:
@@ -262,7 +289,9 @@ class AgentSettingsDialog(QDialog):
 
     def _save_settings(self) -> None:
         settings = {
-            "analyst_model": self.app_state.analyst_model,
+            "analyst_model": self.app_state.analyst_planning_model,
+            "analyst_planning_model": self.app_state.analyst_planning_model,
+            "analyst_investigation_model": self.app_state.analyst_investigation_model,
             "executor_model": self.app_state.executor_model,
             "specialist_model": self.app_state.specialist_model,
         }

@@ -5,11 +5,14 @@ from pathlib import Path
 from typing import Any, Dict
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 LATEST_CLAUDE_SONNET_MODEL = "claude-sonnet-4-5-20250929"
-DEFAULT_ANALYST_MODEL = LATEST_CLAUDE_SONNET_MODEL
+LATEST_CLAUDE_HAIKU_MODEL = "claude-haiku-4-20250514"
+DEFAULT_ANALYST_PLANNING_MODEL = LATEST_CLAUDE_SONNET_MODEL
+DEFAULT_ANALYST_INVESTIGATION_MODEL = LATEST_CLAUDE_HAIKU_MODEL
+DEFAULT_ANALYST_MODEL = DEFAULT_ANALYST_PLANNING_MODEL
 DEFAULT_EXECUTOR_MODEL = LATEST_CLAUDE_SONNET_MODEL
 DEFAULT_LOCAL_MODEL_ENDPOINT = "http://localhost:11434/api/generate"
 DEFAULT_SPECIALIST_MODEL = "phi-3-mini"
@@ -65,6 +68,8 @@ def load_settings() -> Dict[str, Any]:
         logger.info("Settings file not found. Using default settings.")
         return {
             "analyst_model": DEFAULT_ANALYST_MODEL,
+            "analyst_planning_model": DEFAULT_ANALYST_PLANNING_MODEL,
+            "analyst_investigation_model": DEFAULT_ANALYST_INVESTIGATION_MODEL,
             "executor_model": DEFAULT_EXECUTOR_MODEL,
             "specialist_model": DEFAULT_SPECIALIST_MODEL,
             "local_model_endpoint": DEFAULT_LOCAL_MODEL_ENDPOINT,
@@ -78,12 +83,21 @@ def load_settings() -> Dict[str, Any]:
             settings = json.load(f)
             updated = False
             updated |= _normalize_model_setting(settings, "analyst_model", DEFAULT_ANALYST_MODEL)
+            planning_default = settings.get("analyst_model", DEFAULT_ANALYST_PLANNING_MODEL)
+            updated |= _normalize_model_setting(settings, "analyst_planning_model", planning_default)
+            updated |= _normalize_model_setting(
+                settings,
+                "analyst_investigation_model",
+                DEFAULT_ANALYST_INVESTIGATION_MODEL,
+            )
             updated |= _normalize_model_setting(settings, "executor_model", DEFAULT_EXECUTOR_MODEL)
             settings.setdefault("specialist_model", DEFAULT_SPECIALIST_MODEL)
             settings.setdefault("local_model_endpoint", DEFAULT_LOCAL_MODEL_ENDPOINT)
             settings.setdefault("sidebar_collapsed", False)
             settings.setdefault("sidebar_width", 280)
             settings.setdefault("verbosity", "normal")
+            settings.setdefault("analyst_planning_model", planning_default)
+            settings.setdefault("analyst_investigation_model", DEFAULT_ANALYST_INVESTIGATION_MODEL)
             if updated:
                 save_settings(settings)
             return settings
@@ -91,6 +105,8 @@ def load_settings() -> Dict[str, Any]:
         logger.error(f"Failed to load or parse settings file: {e}. Using default settings.")
         return {
             "analyst_model": DEFAULT_ANALYST_MODEL,
+            "analyst_planning_model": DEFAULT_ANALYST_PLANNING_MODEL,
+            "analyst_investigation_model": DEFAULT_ANALYST_INVESTIGATION_MODEL,
             "executor_model": DEFAULT_EXECUTOR_MODEL,
             "specialist_model": DEFAULT_SPECIALIST_MODEL,
             "local_model_endpoint": DEFAULT_LOCAL_MODEL_ENDPOINT,

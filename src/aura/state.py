@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
-from aura.utils.settings import DEFAULT_ANALYST_MODEL, DEFAULT_EXECUTOR_MODEL, DEFAULT_SPECIALIST_MODEL
+from aura.utils.settings import (
+    DEFAULT_ANALYST_INVESTIGATION_MODEL,
+    DEFAULT_ANALYST_PLANNING_MODEL,
+    DEFAULT_EXECUTOR_MODEL,
+    DEFAULT_SPECIALIST_MODEL,
+)
 
 _APP_STATE: "AppState | None" = None
 
@@ -31,6 +36,8 @@ class AppState(QObject):
     working_directory_changed = Signal(str)
     status_changed = Signal(str, str)  # message, color
     analyst_model_changed = Signal(str)
+    analyst_investigation_model_changed = Signal(str)
+    analyst_planning_model_changed = Signal(str)
     executor_model_changed = Signal(str)
     specialist_model_changed = Signal(str)
     local_model_endpoint_changed = Signal(str)
@@ -43,7 +50,8 @@ class AppState(QObject):
         self._working_directory: str = ""
         self._status_message: str = "Ready"
         self._status_color: str = "#ffffff"
-        self._analyst_model: str = DEFAULT_ANALYST_MODEL
+        self._analyst_planning_model: str = DEFAULT_ANALYST_PLANNING_MODEL
+        self._analyst_investigation_model: str = DEFAULT_ANALYST_INVESTIGATION_MODEL
         self._executor_model: str = DEFAULT_EXECUTOR_MODEL
         self._specialist_model: str = DEFAULT_SPECIALIST_MODEL
         self._local_model_endpoint: str = ""
@@ -103,13 +111,36 @@ class AppState(QObject):
     @property
     def analyst_model(self) -> str:
         """Get the selected analyst model."""
-        return self._analyst_model
+        return self._analyst_planning_model
 
     def set_analyst_model(self, model_id: str) -> None:
         """Set the analyst model and emit change signal."""
-        if self._analyst_model != model_id:
-            self._analyst_model = model_id
-            self.analyst_model_changed.emit(model_id)
+        self.set_analyst_planning_model(model_id)
+
+    @property
+    def analyst_planning_model(self) -> str:
+        """Get the Phase 2 planning model."""
+        return self._analyst_planning_model
+
+    def set_analyst_planning_model(self, model_id: str) -> None:
+        """Set the planning model and emit change signals."""
+        sanitized = (model_id or "").strip()
+        if sanitized and self._analyst_planning_model != sanitized:
+            self._analyst_planning_model = sanitized
+            self.analyst_planning_model_changed.emit(sanitized)
+            self.analyst_model_changed.emit(sanitized)
+
+    @property
+    def analyst_investigation_model(self) -> str:
+        """Get the Phase 1 investigation model."""
+        return self._analyst_investigation_model
+
+    def set_analyst_investigation_model(self, model_id: str) -> None:
+        """Set the investigation model and emit change signal."""
+        sanitized = (model_id or "").strip()
+        if sanitized and self._analyst_investigation_model != sanitized:
+            self._analyst_investigation_model = sanitized
+            self.analyst_investigation_model_changed.emit(sanitized)
 
     @property
     def executor_model(self) -> str:

@@ -17,9 +17,16 @@ from tests.helpers import RecordingOutputPanel, RecordingStatusManager, SimpleCh
 class FakeAnalystAgent:
     """Deterministic analyst that always returns a simple plan."""
 
-    def __init__(self, api_key: str, tool_manager, model_name: str) -> None:  # noqa: ANN001
+    def __init__(
+        self,
+        api_key: str,  # noqa: ANN001
+        tool_manager,
+        investigation_model: str,
+        planning_model: str,
+    ) -> None:
         self.tool_manager = tool_manager
-        self.model_name = model_name
+        self.investigation_model = investigation_model
+        self.planning_model = planning_model
         self.calls: List[str] = []
 
     def analyze_and_plan(self, user_request: str, on_chunk=None, conversation_id=None, conversation_history=None) -> ExecutionPlan:
