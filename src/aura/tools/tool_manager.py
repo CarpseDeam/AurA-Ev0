@@ -164,16 +164,125 @@ DEFAULT_FILTERED_FILE_SUFFIXES: set[str] = {
 }
 
 
+class VerificationConfig:
+    """Configuration for smart file verification with mode options.
+
+    Modes:
+    - "always": Verify all operations (default legacy behavior, slowest)
+    - "smart": Smart verification - verify high-risk operations only (recommended)
+    - "never": Skip verification (fastest but unsafe, not recommended)
+    """
+
+    # File extensions that should always be verified (critical code files)
+    CRITICAL_EXTENSIONS = {
+        ".py",     # Python source
+        ".gd",     # GDScript
+        ".tscn",   # Godot scene
+        ".godot",  # Godot resource
+        ".tres",   # Godot resource
+        ".json",   # Configuration files
+        ".yaml",   # Configuration files
+        ".yml",    # Configuration files
+        ".toml",   # Configuration files
+    }
+
+    # File extensions that can skip verification (assets, media, etc.)
+    SKIP_VERIFICATION_EXTENSIONS = {
+        # Images & Textures
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tga", ".tiff", ".webp", ".ico",
+        ".psd", ".exr", ".hdr", ".dds", ".ktx", ".astc",
+        # Audio
+        ".wav", ".mp3", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".opus",
+        # Video
+        ".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv",
+        # 3D Models & Meshes
+        ".fbx", ".blend", ".obj", ".gltf", ".glb", ".dae", ".3ds",
+        # Archives
+        ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".xz",
+        # Binary files
+        ".exe", ".dll", ".so", ".dylib", ".a", ".lib",
+        # Fonts
+        ".ttf", ".otf", ".woff", ".woff2", ".eot",
+    }
+
+    def __init__(self, mode: str = "smart"):
+        """Initialize verification config.
+
+        Args:
+            mode: Verification mode ("always", "smart", or "never")
+        """
+        # Check environment variable first
+        env_mode = os.getenv("AURA_VERIFICATION_MODE", "").lower()
+        if env_mode in ("always", "smart", "never"):
+            self.mode = env_mode
+        elif mode in ("always", "smart", "never"):
+            self.mode = mode
+        else:
+            LOGGER.warning(
+                "Invalid verification mode '%s', defaulting to 'smart'",
+                mode,
+            )
+            self.mode = "smart"
+
+        LOGGER.info("File verification mode: %s", self.mode)
+
+    def should_verify(
+        self,
+        operation: str,
+        file_path: str,
+    ) -> bool:
+        """Determine if a file operation should be verified.
+
+        Args:
+            operation: Operation type ("CREATE", "MODIFY", "DELETE")
+            file_path: Path to the file being operated on
+
+        Returns:
+            True if verification should be performed, False to skip
+        """
+        # Never mode - skip all verification (unsafe)
+        if self.mode == "never":
+            return False
+
+        # Always mode - verify everything (legacy behavior)
+        if self.mode == "always":
+            return True
+
+        # Smart mode - apply intelligent logic
+        extension = Path(file_path).suffix.lower()
+
+        # Always verify MODIFY operations (highest risk)
+        if operation == "MODIFY":
+            return True
+
+        # Always verify critical file extensions
+        if extension in self.CRITICAL_EXTENSIONS:
+            return True
+
+        # Skip verification for asset files (low risk)
+        if extension in self.SKIP_VERIFICATION_EXTENSIONS:
+            LOGGER.debug(
+                "Skipping verification for asset file: %s (extension: %s)",
+                file_path,
+                extension,
+            )
+            return False
+
+        # Default: verify unknown file types to be safe
+        return True
+
+
 class ToolManager:
     """Provide workspace-scoped file system utilities."""
 
-    def __init__(self, workspace_dir: str) -> None:
+    def __init__(self, workspace_dir: str, verification_mode: str = "smart") -> None:
         resolved = Path(workspace_dir).expanduser().resolve()
         if not resolved.is_dir():
             raise ValueError(f"Workspace directory does not exist: {workspace_dir}")
         self.workspace_dir = resolved
         self.git_tools = GitTools(self.workspace_dir)
         self.python_tools = PythonTools(self, STDLIB_MODULES)
+        self.verification_config = VerificationConfig(mode=verification_mode)
         self._gitignore_mtime: float | None = None
         self._gitignore_patterns: list[str] = []
         self._gitignore_spec: PathSpec | None = None
@@ -333,7 +442,7 @@ class ToolManager:
     # ------------------------------------------------------------------ #
     def create_file(self, path: str, content: str) -> str:
         """Create a file within the workspace."""
-        LOGGER.info("ðŸ”§ TOOL CALLED: create_file(%s)", path)
+        LOGGER.info("ðŸ"§ TOOL CALLED: create_file(%s)", path)
         try:
             target = self._resolve_path(path)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -343,7 +452,13 @@ class ToolManager:
                     {"file": path},
                 )
             target.write_text(content, encoding="utf-8")
-            self._verify_written_file(operation="CREATE", target=target, expected_content=content)
+
+            # Smart verification - only verify if config says so
+            if self.verification_config.should_verify("CREATE", path):
+                self._verify_written_file(operation="CREATE", target=target, expected_content=content)
+            else:
+                LOGGER.debug("Skipping verification for CREATE operation on %s", path)
+
             size = len(content.encode("utf-8"))
             LOGGER.info("âœ… Created file: %s (%d bytes)", target, size)
             return f"Successfully created '{path}' ({size} bytes)"
@@ -383,7 +498,13 @@ class ToolManager:
                 )
             updated = current.replace(old_content, new_content)
             target.write_text(updated, encoding="utf-8")
-            self._verify_written_file(operation="MODIFY", target=target, expected_content=updated)
+
+            # Smart verification - only verify if config says so
+            if self.verification_config.should_verify("MODIFY", path):
+                self._verify_written_file(operation="MODIFY", target=target, expected_content=updated)
+            else:
+                LOGGER.debug("Skipping verification for MODIFY operation on %s", path)
+
             LOGGER.info("✅ Modified file: %s", target)
             return f"Successfully modified '{path}'"
         except Exception as exc:  # noqa: BLE001
@@ -438,11 +559,16 @@ class ToolManager:
             replacement = new_content or ""
             updated_contents = before + replacement + after
             target.write_text(updated_contents, encoding="utf-8")
-            self._verify_written_file(
-                operation="MODIFY",
-                target=target,
-                expected_content=updated_contents,
-            )
+
+            # Smart verification - only verify if config says so
+            if self.verification_config.should_verify("MODIFY", path):
+                self._verify_written_file(
+                    operation="MODIFY",
+                    target=target,
+                    expected_content=updated_contents,
+                )
+            else:
+                LOGGER.debug("Skipping verification for MODIFY operation on %s", path)
 
             replaced_lines = end - start + 1
             message = (
@@ -470,7 +596,13 @@ class ToolManager:
                     {"file": path},
                 )
             target.unlink()
-            self._verify_deletion(target)
+
+            # Smart verification - only verify if config says so
+            if self.verification_config.should_verify("DELETE", path):
+                self._verify_deletion(target)
+            else:
+                LOGGER.debug("Skipping verification for DELETE operation on %s", path)
+
             LOGGER.info("✅ Deleted file: %s", target)
             return f"Successfully deleted '{path}'"
         except Exception as exc:  # noqa: BLE001

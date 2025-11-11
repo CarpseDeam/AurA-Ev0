@@ -50,6 +50,114 @@ _TOOL_TO_OPERATION: dict[str, OperationType] = {
 }
 
 
+class ExecutorRetryStrategy:
+    """Intelligent retry strategy that analyzes failure types and prevents wasted API calls."""
+
+    def __init__(self, max_retries_per_operation: int = 2):
+        """Initialize the retry strategy.
+
+        Args:
+            max_retries_per_operation: Maximum retry attempts per unique operation
+        """
+        self.max_retries_per_operation = max_retries_per_operation
+        self._retry_counts: dict[tuple[str, str], int] = {}  # (tool_name, file_path) -> retry_count
+
+    def should_retry(
+        self,
+        tool_name: str,
+        file_path: str,
+        error_message: str,
+        is_verification_error: bool,
+    ) -> tuple[bool, str | None]:
+        """Determine if an operation should be retried and provide guidance.
+
+        Args:
+            tool_name: Name of the tool that failed
+            file_path: File path being operated on
+            error_message: Error message from the failure
+            is_verification_error: Whether this is a FileVerificationError
+
+        Returns:
+            Tuple of (should_retry, guidance_message)
+            - should_retry: True if retry is viable, False to fail fast
+            - guidance_message: Optional guidance for the model on how to fix the issue
+        """
+        operation_key = (tool_name, file_path)
+        current_retries = self._retry_counts.get(operation_key, 0)
+
+        # Check retry limit first
+        if current_retries >= self.max_retries_per_operation:
+            return (
+                False,
+                f"Maximum retry limit ({self.max_retries_per_operation}) reached for {file_path}. "
+                "Operation cannot be retried further.",
+            )
+
+        # Analyze error type - FileVerificationError means bad plan data, fail fast
+        if is_verification_error:
+            LOGGER.warning(
+                "FileVerificationError detected for %s on %s - failing fast (bad plan data)",
+                tool_name,
+                file_path,
+            )
+            return (
+                False,
+                f"FileVerificationError indicates invalid plan data for {file_path}. "
+                "This operation cannot succeed with the current execution plan. "
+                "The plan may be missing required content or have malformed data.",
+            )
+
+        # Analyze error message patterns
+        error_lower = error_message.lower()
+
+        # "not found" errors - likely dependency issue or bad path
+        if any(pattern in error_lower for pattern in ["not found", "no such file", "does not exist"]):
+            self._retry_counts[operation_key] = current_retries + 1
+            return (
+                True,
+                f"File or dependency not found for {file_path}. "
+                "Verify that all dependencies exist and the file path is correct. "
+                "If this is a MODIFY operation, the file may not exist yet. "
+                "Check if a CREATE operation should run first.",
+            )
+
+        # "old_content not found" - content mismatch, need to re-read
+        if any(pattern in error_lower for pattern in ["old_content", "content mismatch", "does not match"]):
+            self._retry_counts[operation_key] = current_retries + 1
+            return (
+                True,
+                f"Content mismatch detected for {file_path}. "
+                "The file contents have changed or don't match the expected old_content. "
+                "Re-read the file to get the current contents before attempting modification.",
+            )
+
+        # Permission errors - fail fast, not fixable by retry
+        if any(pattern in error_lower for pattern in ["permission denied", "access denied", "readonly"]):
+            return (
+                False,
+                f"Permission denied for {file_path}. "
+                "This is a file system permission issue that cannot be resolved by retrying.",
+            )
+
+        # Generic errors - allow one retry with general guidance
+        self._retry_counts[operation_key] = current_retries + 1
+        return (
+            True,
+            f"Operation failed for {file_path} with error: {error_message[:200]}. "
+            "Review the error and adjust the operation accordingly.",
+        )
+
+    def reset_operation(self, tool_name: str, file_path: str) -> None:
+        """Reset retry count for a successful operation.
+
+        Args:
+            tool_name: Name of the tool
+            file_path: File path being operated on
+        """
+        operation_key = (tool_name, file_path)
+        self._retry_counts.pop(operation_key, None)
+
+
 @dataclass
 class ExecutorAgentService:
     """Apply ExecutionPlan operations via Claude Sonnet 4.5 and file tools."""
@@ -65,10 +173,12 @@ class ExecutorAgentService:
         init=False,
         repr=False,
     )
+    _retry_strategy: ExecutorRetryStrategy = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._event_bus = get_event_bus()
         self._client = anthropic.Anthropic(api_key=self.api_key)
+        self._retry_strategy = ExecutorRetryStrategy(max_retries_per_operation=2)
 
     def execute_plan(
         self,
@@ -264,6 +374,8 @@ class ExecutorAgentService:
         """Execute a workspace tool with auditing, logging, and DB persistence."""
         prepared_input = self._prepare_tool_input(tool_name, dict(tool_input or {}))
         params = self._sanitize_tool_args(prepared_input)
+        file_path = prepared_input.get("path", "unknown")
+
         self._event_bus.emit(
             ToolCallStarted(tool_name=tool_name, parameters=params, source=_EXECUTOR_SOURCE)
         )
@@ -273,12 +385,23 @@ class ExecutorAgentService:
         try:
             result_text = self._execute_tool(tool_name, prepared_input)
             success = True
+            # Reset retry count on successful operation
+            self._retry_strategy.reset_operation(tool_name, file_path)
             self._maybe_emit_file_operation(tool_name, prepared_input)
             return result_text
         except FileVerificationError as exc:
             error_text = str(exc)
             result_text = error_text
             self._emit_verification_failure_event(tool_name, prepared_input, error_text)
+
+            # Check retry strategy for verification errors
+            should_retry, guidance = self._retry_strategy.should_retry(
+                tool_name=tool_name,
+                file_path=file_path,
+                error_message=error_text,
+                is_verification_error=True,
+            )
+
             self._event_bus.emit(
                 ToolCallFailed(
                     tool_name=tool_name,
@@ -291,14 +414,36 @@ class ExecutorAgentService:
             self._event_bus.emit(
                 SystemErrorEvent(
                     error="executor.tool_failure",
-                    details={"tool": tool_name, "message": error_text},
+                    details={
+                        "tool": tool_name,
+                        "message": error_text,
+                        "retry_allowed": should_retry,
+                    },
                     source=_EXECUTOR_SOURCE,
                 )
             )
+
+            # Fail fast for verification errors (bad plan data)
+            LOGGER.error(
+                "FileVerificationError - failing fast | tool=%s | file=%s | guidance=%s",
+                tool_name,
+                file_path,
+                guidance,
+            )
             raise
+
         except Exception as exc:
             error_text = str(exc)
             result_text = error_text
+
+            # Check retry strategy for other errors
+            should_retry, guidance = self._retry_strategy.should_retry(
+                tool_name=tool_name,
+                file_path=file_path,
+                error_message=error_text,
+                is_verification_error=False,
+            )
+
             self._event_bus.emit(
                 ToolCallFailed(
                     tool_name=tool_name,
@@ -311,11 +456,37 @@ class ExecutorAgentService:
             self._event_bus.emit(
                 SystemErrorEvent(
                     error="executor.tool_failure",
-                    details={"tool": tool_name, "message": error_text},
+                    details={
+                        "tool": tool_name,
+                        "message": error_text,
+                        "retry_allowed": should_retry,
+                    },
                     source=_EXECUTOR_SOURCE,
                 )
             )
-            raise
+
+            # If retry is not allowed, fail fast
+            if not should_retry:
+                LOGGER.error(
+                    "Retry denied - failing fast | tool=%s | file=%s | guidance=%s",
+                    tool_name,
+                    file_path,
+                    guidance,
+                )
+                raise
+
+            # If retry is allowed, return guidance as tool result instead of raising
+            # This allows the model to learn from the error and adjust
+            LOGGER.warning(
+                "Retry allowed - returning guidance | tool=%s | file=%s | guidance=%s",
+                tool_name,
+                file_path,
+                guidance,
+            )
+            result_text = f"ERROR: {guidance or error_text}"
+            # Mark as success=False for logging, but don't raise
+            return result_text
+
         finally:
             duration = time.perf_counter() - started
             ToolCallLog.record(

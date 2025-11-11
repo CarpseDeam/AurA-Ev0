@@ -41,29 +41,13 @@ MAX_HISTORY_MESSAGES = 6  # Last 3 user/assistant pairs
 MAX_HISTORY_CHARS = 12000  # Character limit for history
 INVESTIGATION_MAX_TOKENS = 8192
 PLANNING_MAX_TOKENS = 5000
-TOOL_RESULT_COMPRESSION_THRESHOLD = 2000
-SHORT_FILE_LINE_LIMIT = 100
-MEDIUM_FILE_LINE_LIMIT = 300
-FILE_HEAD_TAIL_SLICE = 20
-LIST_PREVIEW_THRESHOLD = 30
-LIST_PREVIEW_COUNT = 25
-SCENE_FILE_INLINE_CHAR_LIMIT = 20_000
-ANALYSIS_TOOL_NAMES = {
-    "get_cyclomatic_complexity",
-    "detect_duplicate_code",
-    "check_naming_conventions",
-    "analyze_type_hints",
-    "inspect_docstrings",
-    "get_code_metrics",
-    "get_dependency_graph",
-    "get_class_hierarchy",
-}
+
+# Tool categorization for emergency plan construction
 STRUCTURE_TOOLS = {"get_project_structure", "list_project_files"}
 FILE_READING_TOOLS = {"read_project_file", "read_multiple_files"}
 SIGNATURE_TOOLS = {"get_function_signatures"}
 DEPENDENCY_TOOLS = {"get_dependency_graph", "get_imports", "verify_asset_paths"}
 SUMMARY_SECTION_LIMIT = 8
-GODOT_SCENE_EXTENSIONS = {".tscn", ".godot", ".tres"}
 
 ToolHandler = Callable[..., Any]
 
@@ -318,6 +302,8 @@ class AnalystAgentService:
             max_tool_calls = 30
             tool_calls = 0
             final_response_text = ""
+            enforcement_retries = 0
+            max_enforcement_retries = 1
 
             # Main loop for investigation and planning
             while True:
@@ -365,6 +351,7 @@ class AnalystAgentService:
                     if tool_results:
                         investigation_messages.append({"role": "user", "content": tool_results})
 
+                    # Check for plan immediately after collecting tool results
                     if self._latest_plan:
                         break
                     continue
@@ -378,10 +365,27 @@ class AnalystAgentService:
                     if tool_results:
                         investigation_messages.append({"role": "user", "content": tool_results})
 
+                    # Check if plan was submitted after collecting tool results
+                    if self._latest_plan:
+                        break
+
+                    # Check enforcement retry limit
+                    if enforcement_retries >= max_enforcement_retries:
+                        LOGGER.warning(
+                            "Analyst failed to submit plan after %d enforcement attempts. "
+                            "Creating emergency fallback plan from investigation context.",
+                            enforcement_retries,
+                        )
+                        self._latest_plan = self._construct_emergency_plan(investigation_messages)
+                        break
+
                     # Force the Analyst to call the tool instead of ending with text
+                    enforcement_retries += 1
                     LOGGER.warning(
                         "Analyst output narrative text instead of calling submit_execution_plan. "
-                        "Injecting enforcement message to force tool call."
+                        "Injecting enforcement message (attempt %d/%d).",
+                        enforcement_retries,
+                        max_enforcement_retries,
                     )
                     investigation_messages.append({
                         "role": "user",
@@ -565,7 +569,6 @@ class AnalystAgentService:
         success = False
         result_obj: Any = {"error": f"Unknown tool: {tool_name}"}
         serialized_result: str | None = None
-        compressed_payload = ""
         try:
             if not handler:
                 raise ValueError(f"Tool '{tool_name}' is not registered.")
@@ -584,7 +587,6 @@ class AnalystAgentService:
             self._record_tool_failure(tool_name, params, serialized_result, started)
         finally:
             serialized_payload = serialized_result or self._serialize_tool_result(result_obj)
-            compressed_payload = self._compress_tool_result(tool_name, serialized_payload, tool_input)
             duration = time.perf_counter() - started
             ToolCallLog.record(
                 conversation_id=self._active_conversation_id,
@@ -612,7 +614,7 @@ class AnalystAgentService:
                         source=_ANALYST_SOURCE,
                     )
                 )
-        return compressed_payload or serialized_payload
+        return serialized_payload
 
     def _record_tool_failure(
         self,
@@ -833,236 +835,6 @@ class AnalystAgentService:
             )
         return tool_results
 
-    def _compress_tool_result(
-        self,
-        tool_name: str,
-        result: str,
-        tool_input: Mapping[str, Any] | None = None,
-    ) -> str:
-        """Apply heuristic compression rules to large tool outputs."""
-        if not result:
-            return result
-
-        if self._should_preserve_scene_file(tool_name, tool_input):
-            return self._preserve_scene_blob(result)
-
-        original_length = len(result)
-        if original_length <= TOOL_RESULT_COMPRESSION_THRESHOLD:
-            return result
-
-        compressed_text = result
-        parsed: Any = None
-        try:
-            parsed = json.loads(result)
-        except (json.JSONDecodeError, TypeError):
-            parsed = None
-
-        if isinstance(parsed, dict):
-            compressed_payload = self._compress_mapping_payload(tool_name, parsed)
-            compressed_text = json.dumps(compressed_payload, ensure_ascii=False)
-        elif isinstance(parsed, list):
-            compressed_list = self._compress_list_payload(parsed)
-            compressed_text = json.dumps(compressed_list, ensure_ascii=False)
-        else:
-            compressed_text = self._compress_text_block(result)
-
-        if not compressed_text or len(compressed_text) >= original_length:
-            return result
-
-        savings = 1 - (len(compressed_text) / original_length)
-        LOGGER.info(
-            "Compressed %s tool payload | original=%d chars | compressed=%d chars | savings=%.1f%%",
-            tool_name,
-            original_length,
-            len(compressed_text),
-            savings * 100,
-        )
-        return compressed_text
-
-    def _should_preserve_scene_file(
-        self,
-        tool_name: str,
-        tool_input: Mapping[str, Any] | None,
-    ) -> bool:
-        """Check if a Godot scene/resource file should bypass compression."""
-        if tool_name != "read_project_file" or not tool_input:
-            return False
-        path = self._extract_tool_path(tool_input)
-        if not path:
-            return False
-        try:
-            suffix = Path(path).suffix.lower()
-        except (ValueError, TypeError):
-            suffix = str(path).lower()
-        return suffix in GODOT_SCENE_EXTENSIONS
-
-    def _extract_tool_path(self, tool_input: Mapping[str, Any]) -> str | None:
-        """Pull a path-like value out of tool kwargs."""
-        if not isinstance(tool_input, Mapping):
-            return None
-        path = tool_input.get("path") or tool_input.get("file_path")
-        return path if isinstance(path, str) else None
-
-    def _preserve_scene_blob(self, text: str) -> str:
-        """Return scene content intact up to the inline limit."""
-        length = len(text)
-        if length <= SCENE_FILE_INLINE_CHAR_LIMIT:
-            return text
-        omitted = length - SCENE_FILE_INLINE_CHAR_LIMIT
-        trimmed = text[:SCENE_FILE_INLINE_CHAR_LIMIT]
-        return f"{trimmed}\n\n[Godot scene truncated: {omitted} additional chars omitted]"
-
-    def _compress_mapping_payload(self, tool_name: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Recursively compress mapping structures."""
-        if tool_name in ANALYSIS_TOOL_NAMES:
-            return self._summarize_analysis_payload(payload)
-
-        compact: dict[str, Any] = {}
-        for key, value in payload.items():
-            if isinstance(value, str):
-                compact[key] = (
-                    self._compress_text_block(value) if len(value) > TOOL_RESULT_COMPRESSION_THRESHOLD else value
-                )
-                continue
-            if isinstance(value, list):
-                compact[key] = self._compress_list_payload(value)
-                continue
-            if isinstance(value, Mapping):
-                compact[key] = self._compress_mapping_payload(tool_name, value)
-                continue
-            compact[key] = value
-        return compact
-
-    def _summarize_analysis_payload(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Keep only summary statistics for heavy analysis responses."""
-        summary_keys = [
-            key for key in payload.keys() if any(token in str(key).lower() for token in ("summary", "total", "aggregate", "stats"))
-        ]
-        condensed: dict[str, Any] = {}
-
-        if summary_keys:
-            for key in summary_keys:
-                condensed[key] = payload[key]
-
-        for key, value in payload.items():
-            if key in condensed:
-                continue
-            if isinstance(value, (bool, int, float)) or value is None:
-                condensed[key] = value
-                continue
-            if isinstance(value, str):
-                condensed[key] = value if len(value) <= 400 else f"{value[:400]}... (+{len(value) - 400} chars)"
-                continue
-            if isinstance(value, Mapping):
-                condensed[key] = {
-                    inner_key: inner_val
-                    for inner_key, inner_val in value.items()
-                    if isinstance(inner_val, (bool, int, float, str)) or inner_val is None
-                }
-                continue
-            if isinstance(value, list):
-                condensed[key] = {
-                    "total_items": len(value),
-                    "sample": value[:3],
-                }
-
-        omitted = sorted(set(payload.keys()) - set(condensed.keys()))
-        if omitted:
-            condensed["_detail_fields_omitted"] = omitted
-        return condensed
-
-    def _compress_list_payload(self, items: Sequence[Any]) -> Sequence[Any]:
-        """Keep short lists intact and summarize long ones."""
-        length = len(items)
-        if length <= LIST_PREVIEW_THRESHOLD:
-            return items
-        preview = list(items[:LIST_PREVIEW_COUNT])
-        preview.append(
-            {
-                "_summary": True,
-                "total_items": length,
-                "omitted_count": max(length - LIST_PREVIEW_COUNT, 0),
-            }
-        )
-        return preview
-
-    def _compress_text_block(self, text: str) -> str:
-        """Build textual previews for long file blobs."""
-        lines = text.splitlines()
-        total_lines = len(lines)
-        if total_lines <= SHORT_FILE_LINE_LIMIT:
-            return text
-
-        imports = [line for line in lines if line.strip().startswith(("import ", "from "))]
-        signatures = [
-            line.strip()
-            for line in lines
-            if line.strip().startswith(("def ", "class ", "async def "))
-        ]
-
-        header = f"[compressed file preview | original_lines={total_lines}]"
-
-        if total_lines <= MEDIUM_FILE_LINE_LIMIT:
-            body_sections = [header]
-            if imports:
-                body_sections.append("Imports:\n" + "\n".join(imports[:20]))
-            if signatures:
-                body_sections.append("Signatures:\n" + "\n".join(signatures[:40]))
-            head = "\n".join(lines[:FILE_HEAD_TAIL_SLICE])
-            tail = "\n".join(lines[-FILE_HEAD_TAIL_SLICE:])
-            body_sections.append("First lines:\n" + head)
-            body_sections.append("Last lines:\n" + tail)
-            body_sections.append(
-                f"... {max(total_lines - FILE_HEAD_TAIL_SLICE * 2, 0)} middle lines omitted ..."
-            )
-            preview = "\n\n".join(section for section in body_sections if section.strip())
-            return preview if preview else text
-
-        docstrings = self._extract_docstrings(lines)
-        body_sections = [header]
-        if imports:
-            body_sections.append("Imports:\n" + "\n".join(imports[:20]))
-        if signatures:
-            body_sections.append("Signatures:\n" + "\n".join(signatures[:40]))
-        if docstrings:
-            doc_excerpt = "\n---\n".join(docstrings[:5])
-            body_sections.append("Docstrings:\n" + doc_excerpt)
-        body_sections.append(f"(structure only – {total_lines} lines summarized)")
-        preview = "\n\n".join(section for section in body_sections if section.strip())
-        return preview if preview else text
-
-    def _extract_docstrings(self, lines: Sequence[str]) -> list[str]:
-        """Return up to five docstring excerpts from a file."""
-        docstrings: list[str] = []
-        capturing = False
-        delimiter = ""
-        buffer: list[str] = []
-        for raw in lines:
-            stripped = raw.strip()
-            if not stripped:
-                continue
-            if not capturing and stripped.startswith(('"""', "'''")):
-                delimiter = stripped[:3]
-                capturing = True
-                buffer = [stripped]
-                if stripped.count(delimiter) >= 2 and len(stripped) > 3:
-                    docstrings.append(stripped)
-                    capturing = False
-                    buffer = []
-                    delimiter = ""
-                continue
-            if capturing:
-                buffer.append(stripped)
-                if stripped.endswith(delimiter):
-                    excerpt = "\n".join(buffer)
-                    docstrings.append(excerpt if len(excerpt) <= 400 else f"{excerpt[:400]}...")
-                    capturing = False
-                    buffer = []
-                    delimiter = ""
-            if len(docstrings) >= 5:
-                break
-        return docstrings
-
     def _sanitize_parameters(
         self,
         args: Sequence[Any],
@@ -1125,6 +897,111 @@ class AnalystAgentService:
                 success=success,
             )
         )
+
+    def _construct_emergency_plan(
+        self,
+        investigation_messages: list[dict[str, Any]],
+    ) -> ExecutionPlan:
+        """Build a minimal valid ExecutionPlan from investigation context as emergency fallback.
+
+        This method is called when the analyst fails to submit a proper execution plan after
+        enforcement attempts. It extracts file paths from tool calls and creates conservative
+        MODIFY operations marked for manual review.
+
+        Args:
+            investigation_messages: The full conversation history with tool calls
+
+        Returns:
+            ExecutionPlan with conservative operations extracted from tool call history
+        """
+        from aura.models.execution_plan import FileOperation, OperationType
+
+        # Extract file paths from tool call history
+        file_paths: set[str] = set()
+        user_request = self._current_user_request or "User request"
+
+        for msg in investigation_messages:
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if getattr(block, "type", None) == "tool_use":
+                        tool_name = getattr(block, "name", "")
+                        tool_input = dict(getattr(block, "input", {}) or {})
+
+                        # Extract file paths from file reading/searching tools
+                        if tool_name in FILE_READING_TOOLS:
+                            path = tool_input.get("path") or tool_input.get("file_path")
+                            if path and isinstance(path, str):
+                                file_paths.add(path)
+                            paths = tool_input.get("paths")
+                            if isinstance(paths, list):
+                                for p in paths:
+                                    if isinstance(p, str):
+                                        file_paths.add(p)
+
+        # Create conservative MODIFY operations for discovered files
+        operations: list[FileOperation] = []
+        for file_path in sorted(file_paths)[:10]:  # Limit to first 10 files to prevent bloat
+            operations.append(
+                FileOperation(
+                    operation_type=OperationType.MODIFY,
+                    file_path=file_path,
+                    content="# EMERGENCY FALLBACK: Content placeholder\n# This operation requires manual review",
+                    old_str="placeholder_old",
+                    new_str="placeholder_new",
+                    rationale=(
+                        "Emergency fallback operation created because analyst failed to submit proper plan. "
+                        "This file was accessed during investigation and may need modification. "
+                        "REQUIRES MANUAL REVIEW AND PROPER CONTENT."
+                    ),
+                    dependencies=[],
+                )
+            )
+
+        # If no files were discovered, create a single placeholder operation
+        if not operations:
+            operations.append(
+                FileOperation(
+                    operation_type=OperationType.MODIFY,
+                    file_path="REVIEW_REQUIRED.txt",
+                    content="# Emergency fallback plan created\n# Analyst failed to submit proper execution plan\n# Manual review required",
+                    old_str="placeholder",
+                    new_str="placeholder",
+                    rationale=(
+                        "Emergency fallback operation. No file operations could be extracted from investigation. "
+                        "Manual review and proper plan creation required."
+                    ),
+                    dependencies=[],
+                )
+            )
+
+        # Build the emergency ExecutionPlan
+        plan = ExecutionPlan(
+            task_summary=f"Emergency fallback plan for: {user_request[:100]}",
+            project_context=(
+                "This is an emergency fallback plan created because the analyst agent failed to submit "
+                "a proper execution plan after enforcement attempts. All operations require manual review "
+                "and proper content before execution."
+            ),
+            operations=operations,
+            quality_checklist=[
+                "⚠️  EMERGENCY FALLBACK - Manual review required",
+                "⚠️  Verify all file operations are correct",
+                "⚠️  Replace placeholder content with actual changes",
+                "⚠️  Confirm operations match user request",
+            ],
+            estimated_files=len(operations),
+        )
+
+        LOGGER.info(
+            "Emergency fallback plan created | operations=%d | files_discovered=%d",
+            len(operations),
+            len(file_paths),
+        )
+
+        return plan
 
 
 __all__ = ["AnalystAgentService"]
