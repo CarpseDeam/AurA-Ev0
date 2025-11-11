@@ -220,12 +220,14 @@ class AnalystAgentService:
             "get_asset_metadata": self.tool_manager.get_asset_metadata,
             "respect_gitignore": self.tool_manager.respect_gitignore,
             "submit_execution_plan": self._handle_submit_execution_plan,
+            # Godot read-only inspection tools
             "read_godot_scene": godot_tools.read_godot_scene,
-            "add_godot_node": godot_tools.add_godot_node,
-            "modify_godot_node_property": godot_tools.modify_godot_node_property,
-            "validate_godot_scene": godot_tools.validate_godot_scene,
             "read_godot_scene_tree": godot_tools.read_godot_scene_tree,
+            "validate_godot_scene": godot_tools.validate_godot_scene,
             "get_project_godot_config": godot_tools.get_project_godot_config,
+            # NOTE: add_godot_node and modify_godot_node_property are NOT included here
+            # because they are investigation tools, not file operations. The Analyst must
+            # use MODIFY operations with full .tscn file content instead.
         }
 
     def _has_execution_plan_submission(self, response_content: Sequence[Any]) -> bool:
