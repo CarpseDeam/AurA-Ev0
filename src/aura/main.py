@@ -169,13 +169,13 @@ class ApplicationController:
 
         self.cli_heartbeat_display.new_message.connect(
             self.main_window.output_panel.display_output,
-            Qt.ConnectionType.UniqueConnection,
+            type=Qt.ConnectionType.UniqueConnection,
         )
 
         if self.orchestrator:
             self.app_state.working_directory_changed.connect(
                 self._on_working_directory_changed,
-                Qt.ConnectionType.UniqueConnection,
+                type=Qt.ConnectionType.UniqueConnection,
             )
             self.app_state.working_directory_changed.connect(
                 self.orchestrator.update_working_directory
@@ -183,12 +183,12 @@ class ApplicationController:
 
             self.main_window.execution_requested.connect(
                 self.orchestrator.execute_goal,
-                Qt.ConnectionType.UniqueConnection,
+                type=Qt.ConnectionType.UniqueConnection,
             )
 
             self.orchestrator.progress_update.connect(
                 self.main_window._on_progress_update,
-                Qt.ConnectionType.UniqueConnection,
+                type=Qt.ConnectionType.UniqueConnection,
             )
 
     def _on_working_directory_changed(self, path: str) -> None:

@@ -1,7 +1,7 @@
 
 import time
 import logging
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 from aura.event_bus import get_event_bus
 from aura.events import (
@@ -19,7 +19,7 @@ class CliHeartbeatDisplay(QObject):
     A QObject that subscribes to the event bus and translates events into
     CLI-style output for display in the UI.
     """
-    new_message = pyqtSignal(str)
+    new_message = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
