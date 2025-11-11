@@ -100,6 +100,8 @@ IGNORED_CHUNK_PHRASES = {
     "considering options",
     "reasoning",
     "pondering",
+    "let me analyze",
+    "i'll need to",
 }
 
 

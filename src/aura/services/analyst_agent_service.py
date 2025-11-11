@@ -890,6 +890,9 @@ class AnalystAgentService:
                 source=_ANALYST_SOURCE,
             )
         )
+        self._emit_status(
+            f"Plan ready: {len(plan.operations)} operations", "analyst.plan_ready"
+        )
         return {
             "success": True,
             "operations": len(plan.operations),

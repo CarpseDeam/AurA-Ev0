@@ -17,6 +17,7 @@ from aura.orchestrator import Orchestrator
 from aura.services import ChatService
 from aura.state import AppState
 from aura.ui.main_window import MainWindow
+from aura.ui.cli_heartbeat_display import CliHeartbeatDisplay
 from aura.utils import load_settings
 from aura.utils.settings import (
     DEFAULT_ANALYST_MODEL,
@@ -85,6 +86,7 @@ class ApplicationController:
         self.chat_service: ChatService | None = None
         self.orchestrator: Orchestrator | None = None
         self.main_window: MainWindow | None = None
+        self.cli_heartbeat_display: CliHeartbeatDisplay | None = None
 
     def setup(self) -> MainWindow:
         """Create and wire all application components.
@@ -136,6 +138,9 @@ class ApplicationController:
             orchestrator=self.orchestrator,
         )
 
+        # Create CLI heartbeat display
+        self.cli_heartbeat_display = CliHeartbeatDisplay()
+
         # Load most recent conversation
         self._load_last_conversation()
 
@@ -149,8 +154,13 @@ class ApplicationController:
 
     def _connect_signals(self) -> None:
         """Connect signals between components."""
-        if not self.main_window or not self.app_state:
+        if not self.main_window or not self.app_state or not self.cli_heartbeat_display:
             return
+
+        self.cli_heartbeat_display.new_message.connect(
+            self.main_window.output_panel.display_output,
+            Qt.ConnectionType.UniqueConnection,
+        )
 
         if self.orchestrator:
             self.app_state.working_directory_changed.connect(

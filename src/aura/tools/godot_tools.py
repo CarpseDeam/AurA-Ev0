@@ -612,6 +612,7 @@ def read_godot_scene(scene_path: str) -> dict[str, Any]:
             },
         }
     except ValueError as exc:
+        logger.warning("Failed to read Godot scene %s: %s", scene_path, exc)
         return {"success": False, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to read Godot scene %s", scene_path)
@@ -620,7 +621,10 @@ def read_godot_scene(scene_path: str) -> dict[str, Any]:
 
 def read_godot_scene_tree(scene_path: str) -> dict[str, Any]:
     """Backward-compatible alias for read_godot_scene."""
-    return read_godot_scene(scene_path)
+    result = read_godot_scene(scene_path)
+    if result.get("success"):
+        result["scene_tree"] = result.pop("scene")
+    return result
 
 
 def add_godot_node(
