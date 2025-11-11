@@ -522,14 +522,23 @@ def _collect_resource_references(parsed: ParsedScene) -> tuple[set[str], set[str
 
 def _load_scene(scene_path: str) -> ParsedScene:
     """Load a scene file, searching common locations if not found directly."""
-    # Try to resolve the path directly first
+    # Keep track of attempted paths for error reporting
+    attempted_paths: list[Path] = []
+    last_exception: Exception | None = None
+
+    # Try to resolve and parse the path directly first
     try:
         resolved = _resolve_scene_file(scene_path)
-        if resolved.exists():
+        attempted_paths.append(resolved)
+        # Try to parse even if doesn't exist (for test compatibility with mocked files)
+        try:
             return _parse_tscn_file(resolved)
-    except ValueError:
-        # Path was outside workspace, will try workspace-relative search below
-        pass
+        except (FileNotFoundError, OSError) as parse_exc:
+            last_exception = parse_exc
+            # File doesn't exist at this location, continue to search
+    except ValueError as exc:
+        last_exception = exc
+        # Path resolution failed (outside workspace), will try workspace-relative search below
 
     # If direct resolution didn't work, search common locations
     workspace = _get_agent_workspace()
@@ -556,20 +565,30 @@ def _load_scene(scene_path: str) -> ParsedScene:
     except Exception:  # noqa: BLE001
         pass  # Ignore glob errors
 
-    # Try each search path
+    # Try each search path, attempting to parse the file
     for candidate in search_paths:
+        # Skip if already tried
+        if candidate in attempted_paths:
+            continue
+
         try:
             resolved_candidate = candidate.resolve()
+            attempted_paths.append(resolved_candidate)
+
+            # Only try to parse if file exists (skip for efficiency)
             if resolved_candidate.exists() and resolved_candidate.suffix == '.tscn':
                 logger.info("Found scene at: %s", resolved_candidate)
                 return _parse_tscn_file(resolved_candidate)
-        except Exception:  # noqa: BLE001
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            last_exception = exc
             continue
 
     # File not found anywhere - provide helpful error message
-    searched_locations = "\n  - ".join(str(p) for p in search_paths[:5])  # Show first 5 locations
+    unique_paths = list(dict.fromkeys(str(p) for p in attempted_paths[:5]))  # Show first 5 unique locations
+    searched_locations = "\n  - ".join(unique_paths)
+    error_detail = f": {last_exception}" if last_exception else ""
     raise ValueError(
-        f"Scene file '{scene_path}' not found. Searched locations:\n  - {searched_locations}"
+        f"Scene file '{scene_path}' not found{error_detail}. Searched locations:\n  - {searched_locations}"
     )
 
 
