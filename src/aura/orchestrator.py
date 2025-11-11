@@ -179,6 +179,22 @@ class _TwoAgentWorker(QObject):
                 return
 
             execution_plan: ExecutionPlan = plan_or_error
+
+            # Check if this is an emergency fallback plan
+            if execution_plan.is_emergency:
+                error_msg = (
+                    "⚠️  Emergency Fallback Plan Detected\n\n"
+                    "The analyst was unable to create a valid execution plan for your request. "
+                    "This usually happens when the request is unclear or ambiguous.\n\n"
+                    "Please try again with:\n"
+                    "• More specific details about what you want to accomplish\n"
+                    "• Clear file paths or component names\n"
+                    "• Step-by-step description of the desired changes\n\n"
+                    "The emergency plan was NOT executed to prevent placeholder content from being written."
+                )
+                self.failed.emit(error_msg)
+                return
+
             self._notify_progress(EXECUTOR_START_MESSAGE)
             result = self._executor_agent.execute_plan(
                 execution_plan,
@@ -472,6 +488,28 @@ class Orchestrator(QObject):
                 return
 
             execution_plan: ExecutionPlan = plan_or_error
+
+            # Check if this is an emergency fallback plan
+            if execution_plan.is_emergency:
+                error_msg = (
+                    "⚠️  Emergency Fallback Plan Detected\n\n"
+                    "The analyst was unable to create a valid execution plan for your request. "
+                    "This usually happens when the request is unclear or ambiguous.\n\n"
+                    "Please try again with:\n"
+                    "• More specific details about what you want to accomplish\n"
+                    "• Clear file paths or component names\n"
+                    "• Step-by-step description of the desired changes\n\n"
+                    "The emergency plan was NOT executed to prevent placeholder content from being written."
+                )
+                self.error_occurred.emit(error_msg)
+                outcome = _ConversationOutcome(
+                    response=error_msg,
+                    duration_seconds=time.perf_counter() - started,
+                    success=False,
+                )
+                self._finalize_conversation(session, outcome)
+                return
+
             self.progress_update.emit(EXECUTOR_START_MESSAGE)
             result = self._executor_agent.execute_plan(
                 execution_plan,

@@ -230,7 +230,7 @@ class ExecutorAgentService:
         tools = self._build_anthropic_tools()
 
         try:
-            max_tool_calls = 15
+            max_tool_calls = min(25, max(15, len(execution_plan.operations) * 2))
             tool_calls_count = 0
             while True:
                 if tool_calls_count >= max_tool_calls:

@@ -102,6 +102,7 @@ class ExecutionPlan(BaseModel):
     operations: list[FileOperation] = Field(default_factory=list)
     quality_checklist: list[str] = Field(default_factory=list)
     estimated_files: int = Field(ge=0, description="Rough number of impacted files.")
+    is_emergency: bool = Field(default=False, description="Indicates this is an emergency fallback plan requiring manual review")
 
     @field_validator("task_summary", "project_context")
     @classmethod

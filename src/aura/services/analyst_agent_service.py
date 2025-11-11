@@ -274,7 +274,7 @@ class AnalystAgentService:
             tool_calls = 0
             final_response_text = ""
             enforcement_retries = 0
-            max_enforcement_retries = 1
+            max_enforcement_retries = 3
 
             # Main loop for investigation and planning
             while True:
@@ -318,6 +318,8 @@ class AnalystAgentService:
 
                 if response.stop_reason == "tool_use":
                     tool_calls += 1
+                    if tool_calls % 5 == 0:
+                        LOGGER.info("Analyst investigation in progress | tool_calls=%d/%d", tool_calls, max_tool_calls)
                     tool_results = self._collect_tool_results(response.content)
                     if tool_results:
                         investigation_messages.append({"role": "user", "content": tool_results})
@@ -698,7 +700,11 @@ class AnalystAgentService:
                 exc,
                 payload_preview,
             )
-            return self._render_plan_validation_error(exc)
+            return {
+                "success": False,
+                "error": "ExecutionPlan validation failed",
+                "details": self._render_plan_validation_error(exc)
+            }
 
         self._latest_plan = plan
         plan_json = plan.to_json(indent=2)
@@ -909,6 +915,7 @@ class AnalystAgentService:
                 "⚠️  Confirm operations match user request",
             ],
             estimated_files=len(operations),
+            is_emergency=True,
         )
 
         LOGGER.info(
