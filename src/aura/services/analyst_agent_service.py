@@ -315,7 +315,7 @@ class AnalystAgentService:
         )
 
         try:
-            max_investigation_tool_calls = 15
+            max_investigation_tool_calls = 30
             max_plan_tool_calls = 5
             max_narrative_retries = 2
             investigation_tool_calls = 0
