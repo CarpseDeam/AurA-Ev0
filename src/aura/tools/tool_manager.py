@@ -442,7 +442,7 @@ class ToolManager:
     # ------------------------------------------------------------------ #
     def create_file(self, path: str, content: str) -> str:
         """Create a file within the workspace."""
-        LOGGER.info("ðŸ"§ TOOL CALLED: create_file(%s)", path)
+        LOGGER.info("[TOOL] create_file(%s)", path)
         try:
             target = self._resolve_path(path)
             target.parent.mkdir(parents=True, exist_ok=True)
