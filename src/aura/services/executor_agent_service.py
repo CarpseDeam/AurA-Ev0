@@ -28,6 +28,7 @@ from aura.events import (
     ToolCallFailed,
     ToolCallStarted,
 )
+from aura.utils.prompt_caching import build_cached_system_and_tools
 from aura.exceptions import AuraExecutionError, FileVerificationError
 from aura.models import (
     ExecutionPlan,
@@ -128,12 +129,18 @@ class ExecutorAgentService:
                     self._emit_completion(error_message, success=False)
                     return error_message
 
+                # Enable prompt caching for system and tools to reduce token costs
+                cached_system, cached_tools = build_cached_system_and_tools(
+                    system_prompt=EXECUTOR_PROMPT,
+                    tools=tools,
+                )
+
                 response = self._client.messages.create(
                     model=self.model_name,
                     max_tokens=8096,
-                    system=EXECUTOR_PROMPT,
+                    system=cached_system,
                     messages=messages,
-                    tools=tools,
+                    tools=cached_tools,
                 )
                 messages.append({"role": "assistant", "content": response.content})
 

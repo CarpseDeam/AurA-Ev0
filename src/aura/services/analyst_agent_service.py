@@ -28,6 +28,7 @@ from aura.events import (
     ToolCallStarted,
 )
 from aura.models import ExecutionPlan, Message, MessageRole, ToolCallLog
+from aura.utils.prompt_caching import build_cached_system_and_tools
 from aura.prompts import ANALYST_PROMPT, ANALYST_PLANNING_PROMPT
 from aura.tools import godot_tools
 from aura.tools.tool_manager import ToolManager
@@ -353,12 +354,18 @@ class AnalystAgentService:
                     self._emit_completion(error_message, success=False)
                     return error_message
 
+                # Enable prompt caching for system and tools to reduce token costs
+                cached_system, cached_tools = build_cached_system_and_tools(
+                    system_prompt=ANALYST_PROMPT,
+                    tools=investigation_tools,
+                )
+
                 response = self._client.messages.create(
                     model=self.investigation_model,
-                    system=ANALYST_PROMPT,
+                    system=cached_system,
                     temperature=0,
                     max_tokens=INVESTIGATION_MAX_TOKENS,
-                    tools=investigation_tools,
+                    tools=cached_tools,
                     messages=investigation_messages,
                 )
                 investigation_messages.append({"role": "assistant", "content": response.content})
@@ -472,12 +479,18 @@ class AnalystAgentService:
                     self._emit_completion(error_message, success=False)
                     return error_message
 
+                # Enable prompt caching for system and tools to reduce token costs
+                cached_system, cached_tools = build_cached_system_and_tools(
+                    system_prompt=ANALYST_PLANNING_PROMPT,
+                    tools=planning_tools,
+                )
+
                 response = self._client.messages.create(
                     model=self.planning_model,
-                    system=ANALYST_PLANNING_PROMPT,
+                    system=cached_system,
                     temperature=0,
                     max_tokens=PLANNING_MAX_TOKENS,
-                    tools=planning_tools,
+                    tools=cached_tools,
                     tool_choice={"type": "tool", "name": "submit_execution_plan"},
                     messages=planning_messages,
                 )

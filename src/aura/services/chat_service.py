@@ -23,6 +23,7 @@ from aura.events import (
     ToolCallStarted,
 )
 from aura.models import ToolCallLog
+from aura.utils.prompt_caching import build_cached_system_and_tools
 from aura.prompts import UNIFIED_AGENT_PROMPT
 from aura.tools.local_agent_tools import generate_commit_message
 from aura.tools.tool_manager import ToolManager
@@ -109,12 +110,18 @@ class ChatService:
                     self._emit_completion(error_message, success=False)
                     return error_message
 
+                # Enable prompt caching for system and tools to reduce token costs
+                cached_system, cached_tools = build_cached_system_and_tools(
+                    system_prompt=UNIFIED_AGENT_PROMPT,
+                    tools=tools,
+                )
+
                 response = self._client.messages.create(
                     model=self.model_name,
-                    system=UNIFIED_AGENT_PROMPT,
+                    system=cached_system,
                     temperature=0,
                     max_tokens=4096,
-                    tools=tools,
+                    tools=cached_tools,
                     messages=messages,
                 )
                 messages.append({"role": "assistant", "content": response.content})
