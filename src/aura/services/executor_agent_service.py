@@ -579,6 +579,20 @@ class ExecutorAgentService:
         for operation in execution_plan.operations:
             normalized_path = self._normalize_plan_path(operation.file_path)
             target = workspace_root / normalized_path
+
+            if operation.operation_type is OperationType.MODIFY:
+                FileVerificationLog.record(
+                    phase="final",
+                    operation=operation.operation_type.value,
+                    file_path=normalized_path,
+                    expected_digest=None,
+                    actual_digest=None,
+                    success=True,
+                    details="Skipped: modify_file already verified during execution.",
+                    conversation_id=self._active_conversation_id,
+                )
+                continue
+
             if operation.operation_type is OperationType.DELETE:
                 exists = target.exists()
                 actual_bytes = target.read_bytes() if exists else None
@@ -594,6 +608,19 @@ class ExecutorAgentService:
                 )
                 if exists:
                     failures.append(f"{operation.file_path} should be deleted")
+                continue
+
+            if operation.operation_type is not OperationType.CREATE:
+                FileVerificationLog.record(
+                    phase="final",
+                    operation=operation.operation_type.value,
+                    file_path=normalized_path,
+                    expected_digest=None,
+                    actual_digest=None,
+                    success=True,
+                    details="Skipped: no final verification required for this operation type.",
+                    conversation_id=self._active_conversation_id,
+                )
                 continue
 
             expected_content = operation.content or ""

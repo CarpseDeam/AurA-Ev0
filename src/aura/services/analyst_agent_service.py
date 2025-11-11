@@ -51,37 +51,6 @@ SUMMARY_SECTION_LIMIT = 8
 
 ToolHandler = Callable[..., Any]
 
-# Common schema mistakes we can point out when validation fails.
-_PLAN_FIELD_NAME_HINTS = {
-    "summary": "task_summary",
-    "context": "project_context",
-    "estimated_file_count": "estimated_files",
-}
-_OPERATION_FIELD_NAME_HINTS = {
-    "type": "operation_type",
-    "action": "operation_type",
-    "operation": "operation_type",
-    "path": "file_path",
-    "filepath": "file_path",
-    "file": "file_path",
-    "target": "file_path",
-    "old": "old_str",
-    "new": "new_str",
-    "replacement": "new_str",
-}
-_FIELD_SUGGESTIONS = {
-    "operation_type": "Allowed values: CREATE, MODIFY, DELETE.",
-    "file_path": "Use a repo-relative path such as 'src/app.py'.",
-    "old_str": "Provide the exact text to replace for MODIFY operations.",
-    "new_str": "Provide the new text for MODIFY operations.",
-    "content": "CREATE/MODIFY operations must include the complete post-change file content.",
-    "rationale": "Explain why the change is needed.",
-    "operations": "Include at least one file operation.",
-    "estimated_files": "Send an integer count of affected files.",
-    "task_summary": "Provide a single-sentence summary of the requested change.",
-    "project_context": "Describe the repository context and constraints.",
-}
-
 
 def count_message_chars(msg: dict[str, Any]) -> int:
     """Count characters in a message's content.
@@ -659,12 +628,8 @@ class AnalystAgentService:
         except TypeError:
             return str(payload)
 
-    def _render_plan_validation_error(
-        self,
-        raw_payload: Mapping[str, Any],
-        exc: ValidationError,
-    ) -> str:
-        """Turn a ValidationError into actionable guidance for Claude."""
+    def _render_plan_validation_error(self, exc: ValidationError) -> str:
+        """Return a compact description of every ExecutionPlan schema failure."""
 
         def format_loc(loc: Sequence[Any] | tuple[Any, ...]) -> str:
             if not loc:
@@ -676,100 +641,40 @@ class AnalystAgentService:
                         parts[-1] = f"{parts[-1]}[{token}]"
                     else:
                         parts.append(f"[{token}]")
-                else:
-                    parts.append(str(token))
+                    continue
+                parts.append(str(token))
             return ".".join(parts)
 
-        payload_mapping: Mapping[str, Any] = raw_payload if isinstance(raw_payload, Mapping) else {}
-        issues: list[str] = []
+        def format_reason(error: dict[str, Any]) -> str:
+            message = str(error.get("msg", "Invalid value")).strip() or "Invalid value"
+            error_type = error.get("type", "")
+            received = error.get("input")
 
+            if error_type == "missing" or message.lower() == "field required":
+                return "field required"
+
+            if error_type.startswith("type_error."):
+                expected = error_type.split(".", 1)[1]
+                received_label = "None" if received is None else type(received).__name__
+                return f"expected {expected}, got {received_label}"
+
+            if error_type.endswith("_type"):
+                expected = error_type.removesuffix("_type")
+                received_label = "None" if received is None else type(received).__name__
+                return f"expected {expected}, got {received_label}"
+
+            return message.rstrip(".")
+
+        issues: list[str] = []
         for error in exc.errors():
-            loc = error.get("loc") or ()
-            location = format_loc(loc)
-            message = error.get("msg", "Invalid value")
-            field_name = next((part for part in reversed(loc) if isinstance(part, str)), None)
-            suggestion_bits: list[str] = []
-            if field_name:
-                if error.get("type") == "missing":
-                    suggestion_bits.append(f"Include '{field_name}' exactly as spelled.")
-                hint = _FIELD_SUGGESTIONS.get(field_name)
-                if hint:
-                    suggestion_bits.append(hint)
-            elif location == "operations":
-                suggestion_bits.append("Provide at least one operation in the list.")
-            suggestion = " ".join(suggestion_bits) if suggestion_bits else ""
-            issue = f"{location}: {message}"
-            if suggestion:
-                issue = f"{issue} — {suggestion}"
-            issues.append(issue)
+            location = format_loc(error.get("loc") or ())
+            reason = format_reason(error)
+            issues.append(f"[{location}] {reason}")
 
         if not issues:
-            issues.append("payload: Unable to parse the schema error. Please compare your payload with the expected ExecutionPlan model.")
+            issues.append("[payload] Invalid ExecutionPlan payload")
 
-        hint_lines = self._collect_field_name_hints(payload_mapping)
-        example_operation = {
-            "operation_type": "MODIFY",
-            "file_path": "src/example.py",
-            "old_str": "prior code snippet",
-            "new_str": "updated code snippet",
-            "rationale": "Explain why this change is necessary.",
-            "dependencies": [],
-        }
-        example_json = json.dumps(example_operation, indent=2)
-        example_block = "\n".join(f"  {line}" for line in example_json.splitlines())
-
-        lines = [
-            "ExecutionPlan validation failed. Update your submit_execution_plan payload before retrying.",
-            "",
-            "Issues detected:",
-            *[f"- {issue}" for issue in issues],
-            "",
-            "Field-name reminders:",
-            *[f"- {hint}" for hint in hint_lines],
-            "",
-            "Example operation payload:",
-            example_block,
-        ]
-        return "\n".join(lines)
-
-    def _collect_field_name_hints(self, payload: Mapping[str, Any] | None) -> list[str]:
-        """Surface concrete field-name corrections plus common reminders."""
-
-        def add_hint(context: str, wrong: str, correct: str) -> None:
-            hints.append(f"{context}: you used '{wrong}' but must use '{correct}'.")
-
-        hints: list[str] = []
-        payload = payload or {}
-
-        if isinstance(payload, Mapping):
-            for wrong, correct in _PLAN_FIELD_NAME_HINTS.items():
-                if wrong in payload:
-                    add_hint("payload", wrong, correct)
-
-            operations = payload.get("operations")
-            if isinstance(operations, Sequence) and not isinstance(operations, (str, bytes, bytearray)):
-                for idx, operation in enumerate(operations):
-                    if not isinstance(operation, Mapping):
-                        continue
-                    for wrong, correct in _OPERATION_FIELD_NAME_HINTS.items():
-                        if wrong in operation:
-                            add_hint(f"operations[{idx}]", wrong, correct)
-
-        default_hints = [
-            "Use 'operation_type' (CREATE/MODIFY/DELETE) instead of 'type' or 'action'.",
-            "Provide 'file_path' for every operation (repo-relative, no leading './').",
-            "CREATE operations must include 'content'. MODIFY operations must include both 'old_str' and 'new_str'.",
-            "Always send 'estimated_files' as an integer count.",
-        ]
-
-        if hints:
-            for note in default_hints:
-                if note not in hints:
-                    hints.append(note)
-        else:
-            hints = default_hints
-
-        return hints
+        return "Validation errors: " + ", ".join(issues)
 
     def _handle_submit_execution_plan(self, **payload: Any) -> dict[str, Any] | str:
         """Validate and persist the submitted execution plan.
@@ -783,8 +688,17 @@ class AnalystAgentService:
         try:
             plan = ExecutionPlan.model_validate(unwrapped)
         except ValidationError as exc:
-            LOGGER.warning("Execution plan validation failed: %s", exc)
-            return self._render_plan_validation_error(unwrapped, exc)
+            try:
+                payload_json = json.dumps(unwrapped, default=str)
+            except TypeError:
+                payload_json = str(unwrapped)
+            payload_preview = payload_json[:1000]
+            LOGGER.error(
+                "Execution plan validation failed: %s | payload preview (first 1000 chars): %s",
+                exc,
+                payload_preview,
+            )
+            return self._render_plan_validation_error(exc)
 
         self._latest_plan = plan
         plan_json = plan.to_json(indent=2)
