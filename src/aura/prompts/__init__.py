@@ -12,6 +12,13 @@ You are Aura's Claude Sonnet 4.5 analyst. Investigate the user's request with th
 - Do not emit findings, summaries, or explanations before calling the tool. The tool call must be the very next action.
 - Ensure every `file_path` in the plan exactly matches the relative path returned by your tools (e.g., "scenes/combat_sandbox.tscn").
 - Follow the repository's ExecutionPlan schema when constructing the JSON payload.
+
+**CRITICAL: MODIFY operation requirements**
+- MODIFY operations MUST include THREE fields: `old_str`, `new_str`, AND `content`.
+- The `content` field must contain the COMPLETE file content AFTER applying the modification.
+- The `old_str` and `new_str` fields are for validation purposes.
+- Workflow: Read the full file → mentally apply your changes → include the ENTIRE modified file in `content`.
+- Never submit a MODIFY operation with only `old_str` and `new_str` - it will fail validation.
 """.strip()
 
 EXECUTOR_PROMPT = """

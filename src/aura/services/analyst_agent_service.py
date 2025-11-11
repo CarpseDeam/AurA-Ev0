@@ -509,7 +509,14 @@ class AnalystAgentService:
                         "This plan must include all file operations (CREATE/MODIFY/DELETE), "
                         "task summary, project context, quality checklist, and estimated file count. "
                         "Call this tool ONLY when investigation is complete and you have gathered "
-                        "all necessary context about the codebase."
+                        "all necessary context about the codebase.\n\n"
+                        "CRITICAL - MODIFY operations require:\n"
+                        "1. old_str: The exact text to replace (for validation)\n"
+                        "2. new_str: The replacement text (for validation)\n"
+                        "3. content: The COMPLETE file content AFTER the modification is applied\n\n"
+                        "The 'content' field is mandatory and must contain the entire post-modification file, "
+                        "not just the changed section. Read the full file, mentally apply your changes, "
+                        "and include the complete result in 'content'."
                     ),
                     additional_required=["operations", "quality_checklist"],
                 ))
