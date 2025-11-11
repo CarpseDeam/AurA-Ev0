@@ -29,7 +29,7 @@ from aura.events import (
 )
 from aura.models import ExecutionPlan, Message, MessageRole, ToolCallLog
 from aura.utils.prompt_caching import build_cached_system_and_tools
-from aura.prompts import ANALYST_PROMPT, ANALYST_PLANNING_PROMPT
+from aura.prompts import ANALYST_PROMPT
 from aura.tools import godot_tools
 from aura.tools.tool_manager import ToolManager
 
@@ -283,12 +283,6 @@ class AnalystAgentService:
             "content": [{"type": "text", "text": user_request}],
         })
 
-        investigation_tool_names = [
-            name for name in self._tool_handlers.keys() if name != "submit_execution_plan"
-        ]
-        investigation_tools = self._build_tool_definitions(allowed_tools=investigation_tool_names)
-        planning_tools = self._build_tool_definitions(allowed_tools=["submit_execution_plan"])
-
         LOGGER.info(
             "Analyst analysis started | investigation_model=%s | planning_model=%s | prompt_chars=%d | history_chars=%d",
             self.investigation_model,
@@ -319,28 +313,21 @@ class AnalystAgentService:
         )
 
         try:
-            max_investigation_tool_calls = 30
-            max_plan_tool_calls = 5
-            max_narrative_retries = 2
-            investigation_tool_calls = 0
-            plan_tool_calls_count = 0
-            narrative_retry_count = 0
+            max_tool_calls = 30
+            tool_calls = 0
             final_response_text = ""
-            investigation_summary = ""
-            condensed_investigation_summary = ""
 
-            LOGGER.info("Analyst Phase 1 (investigation) using model=%s", self.investigation_model)
-            # Phase 1: Investigation loop
+            # Main loop for investigation and planning
             while True:
-                if investigation_tool_calls >= max_investigation_tool_calls:
+                if tool_calls >= max_tool_calls:
                     error_message = (
-                        "Error: Analyst exceeded the maximum number of tool calls during investigation."
+                        "Error: Analyst exceeded the maximum number of tool calls."
                     )
                     self._emit_status("Analyst agent: failed", "analyst.error")
                     self._event_bus.emit(
                         SystemErrorEvent(
-                            error="analyst.investigation_tool_limit",
-                            details={"max_tool_calls": max_investigation_tool_calls},
+                            error="analyst.tool_limit",
+                            details={"max_tool_calls": max_tool_calls},
                             source=_ANALYST_SOURCE,
                         )
                     )
@@ -357,7 +344,7 @@ class AnalystAgentService:
                 # Enable prompt caching for system and tools to reduce token costs
                 cached_system, cached_tools = build_cached_system_and_tools(
                     system_prompt=ANALYST_PROMPT,
-                    tools=investigation_tools,
+                    tools=self._build_tool_definitions(),
                 )
 
                 response = self._client.messages.create(
@@ -371,186 +358,16 @@ class AnalystAgentService:
                 investigation_messages.append({"role": "assistant", "content": response.content})
 
                 if response.stop_reason == "tool_use":
-                    investigation_tool_calls += 1
+                    tool_calls += 1
                     tool_results = self._collect_tool_results(response.content)
                     if tool_results:
                         investigation_messages.append({"role": "user", "content": tool_results})
-                    continue
-
-                investigation_summary = (self._collect_text(response.content) or "").strip()
-                if not investigation_summary:
-                    error_message = "Error: Analyst investigation did not return a structured summary."
-                    self._emit_status("Analyst agent: failed", "analyst.error")
-                    self._event_bus.emit(
-                        SystemErrorEvent(
-                            error="analyst.investigation_no_summary",
-                            details={"tool_calls": investigation_tool_calls},
-                            source=_ANALYST_SOURCE,
-                        )
-                    )
-                    self._event_bus.emit(
-                        PhaseTransition(
-                            from_phase="analyst",
-                            to_phase="analyst.error",
-                            source=_ANALYST_SOURCE,
-                        )
-                    )
-                    self._emit_completion(error_message, success=False)
-                    return error_message
-
-                self._emit_streaming_chunk(
-                    investigation_summary,
-                    source=_ANALYST_SOURCE,
-                    on_chunk=on_chunk,
-                    is_final=False,
-                )
-                try:
-                    condensed_investigation_summary = self._synthesize_investigation_summary(investigation_messages)
-                    LOGGER.info(
-                        "Investigation summary synthesized | original_chars=%d | condensed_chars=%d",
-                        len(investigation_summary),
-                        len(condensed_investigation_summary),
-                    )
-                except Exception:  # noqa: BLE001
-                    LOGGER.exception("Failed to synthesize investigation summary; falling back to raw narrative")
-                    condensed_investigation_summary = investigation_summary
-                investigation_duration = time.perf_counter() - started
-                LOGGER.info(
-                    "Analyst investigation summary ready | duration=%.2fs | tool_calls=%d",
-                    investigation_duration,
-                    investigation_tool_calls,
-                )
-                self._emit_status("Analyst agent: investigation summary ready", "analyst.investigation_complete")
-                self._event_bus.emit(
-                    TaskProgressEvent(
-                        message="Analyst investigation summary ready",
-                        percent=0.25,
-                        source=_ANALYST_SOURCE,
-                    )
-                )
-                break
-
-            LOGGER.info("Analyst Phase 2 (planning) using model=%s", self.planning_model)
-            # Phase 2: Planning loop with fresh prompt
-            planning_messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": self._build_planning_user_message(
-                                user_request=user_request,
-                                investigation_summary=condensed_investigation_summary or investigation_summary,
-                            ),
-                        }
-                    ],
-                }
-            ]
-
-            self._emit_status("Analyst agent: synthesizing execution plan...", "analyst.plan_start")
-            self._event_bus.emit(
-                TaskProgressEvent(
-                    message="Analyst synthesizing execution plan",
-                    percent=0.35,
-                    source=_ANALYST_SOURCE,
-                )
-            )
-
-            while True:
-                if plan_tool_calls_count >= max_plan_tool_calls:
-                    error_message = (
-                        "Error: Analyst exceeded the maximum number of plan-generation tool calls."
-                    )
-                    self._emit_status("Analyst agent: failed", "analyst.error")
-                    self._event_bus.emit(
-                        SystemErrorEvent(
-                            error="analyst.plan_tool_limit",
-                            details={"max_tool_calls": max_plan_tool_calls},
-                            source=_ANALYST_SOURCE,
-                        )
-                    )
-                    self._event_bus.emit(
-                        PhaseTransition(
-                            from_phase="analyst",
-                            to_phase="analyst.error",
-                            source=_ANALYST_SOURCE,
-                        )
-                    )
-                    self._emit_completion(error_message, success=False)
-                    return error_message
-
-                # Enable prompt caching for system and tools to reduce token costs
-                cached_system, cached_tools = build_cached_system_and_tools(
-                    system_prompt=ANALYST_PLANNING_PROMPT,
-                    tools=planning_tools,
-                )
-
-                response = self._client.messages.create(
-                    model=self.planning_model,
-                    system=cached_system,
-                    temperature=0,
-                    max_tokens=PLANNING_MAX_TOKENS,
-                    tools=cached_tools,
-                    tool_choice={"type": "tool", "name": "submit_execution_plan"},
-                    messages=planning_messages,
-                )
-                planning_messages.append({"role": "assistant", "content": response.content})
-
-                if response.stop_reason == "tool_use":
-                    plan_tool_calls_count += 1
-                    tool_results = self._collect_tool_results(response.content)
-                    if tool_results:
-                        planning_messages.append({"role": "user", "content": tool_results})
-
-                    # Check if plan was successfully validated - if so, exit loop immediately
-                    if self._latest_plan is not None:
-                        LOGGER.info(
-                            "Analyst plan validated successfully on first attempt | operations=%d",
-                            len(self._latest_plan.operations),
-                        )
+                    
+                    if self._latest_plan:
                         break
-
                     continue
 
-                final_text = self._collect_text(response.content)
-                if final_text:
-                    final_response_text = final_text
-
-                    has_plan_submission = self._has_execution_plan_submission(response.content)
-
-                    if (
-                        not has_plan_submission
-                        and not self._latest_plan
-                        and narrative_retry_count < max_narrative_retries
-                    ):
-                        narrative_retry_count += 1
-                        LOGGER.warning(
-                            "Analyst provided narrative without ExecutionPlan submission (attempt %d/%d). Retrying with enforcement prompt.",
-                            narrative_retry_count,
-                            max_narrative_retries,
-                        )
-                        self._emit_status(
-                            f"Analyst agent: enforcing ExecutionPlan submission (retry {narrative_retry_count}/{max_narrative_retries})",
-                            "analyst.retry",
-                        )
-
-                        enforcement_prompt = (
-                            "Investigation is complete. Immediately generate the full ExecutionPlan JSON and call submit_execution_plan. "
-                            "Do not provide narrative text—respond only by calling submit_execution_plan with the finalized plan."
-                        )
-
-                        planning_messages.append({
-                            "role": "user",
-                            "content": [{"type": "text", "text": enforcement_prompt}]
-                        })
-                        continue
-
-                    self._emit_streaming_chunk(
-                        final_text,
-                        source=_ANALYST_SOURCE,
-                        on_chunk=on_chunk,
-                        is_final=True,
-                    )
+                final_response_text = (self._collect_text(response.content) or "").strip()
                 break
 
             if self._latest_plan:
@@ -581,16 +398,15 @@ class AnalystAgentService:
                 self._emit_completion(summary, success=True)
                 return self._latest_plan
 
-            if final_response_text and narrative_retry_count >= max_narrative_retries:
+            if final_response_text:
                 duration = time.perf_counter() - started
                 LOGGER.error(
-                    "Analyst failed to submit ExecutionPlan after %d retries | duration=%.2fs",
-                    narrative_retry_count,
+                    "Analyst failed to submit ExecutionPlan | duration=%.2fs",
                     duration,
                 )
                 summary = self._safe_value(final_response_text, limit=200)
                 error_message = (
-                    f"Error: Analyst provided narrative text instead of ExecutionPlan after {narrative_retry_count} retry attempts. "
+                    f"Error: Analyst provided narrative text instead of ExecutionPlan. "
                     f"Response: {summary}"
                 )
                 self._emit_status("Analyst agent: failed to submit ExecutionPlan", "analyst.error")
@@ -604,7 +420,7 @@ class AnalystAgentService:
                 self._event_bus.emit(
                     SystemErrorEvent(
                         error="analyst.narrative_instead_of_plan",
-                        details={"narrative_preview": summary, "retry_count": narrative_retry_count},
+                        details={"narrative_preview": summary},
                         source=_ANALYST_SOURCE,
                     )
                 )
@@ -1216,332 +1032,6 @@ class AnalystAgentService:
             if len(docstrings) >= 5:
                 break
         return docstrings
-
-    def _synthesize_investigation_summary(self, messages: Sequence[dict[str, Any]]) -> str:
-        """Create a condensed JSON summary of Phase 1 findings."""
-        user_request = (self._current_user_request or "").strip()
-        latest_summary_text = self._extract_latest_assistant_summary(messages)
-        sentences = self._split_sentences(latest_summary_text)
-        tool_trace = self._collect_tool_trace(messages)
-
-        project_structure = self._summarize_project_structure(tool_trace, sentences)
-        relevant_files = self._summarize_relevant_files(tool_trace)
-        code_patterns = self._select_sentences(
-            sentences,
-            keywords=("pattern", "convention", "style", "architecture", "naming", "idiom"),
-        )
-        dependencies = self._summarize_dependencies(tool_trace, sentences)
-        constraints = self._select_sentences(
-            sentences,
-            keywords=("constraint", "must", "should", "avoid", "limitation", "restriction", "compatibility"),
-        )
-        key_signatures = self._gather_signatures(tool_trace, latest_summary_text)
-
-        summary_payload = {
-            "user_request": user_request,
-            "project_structure": project_structure,
-            "relevant_files": relevant_files,
-            "code_patterns": code_patterns,
-            "dependencies": dependencies,
-            "constraints": constraints,
-            "key_signatures": key_signatures,
-        }
-        return json.dumps(summary_payload, ensure_ascii=False, indent=2)
-
-    def _extract_latest_assistant_summary(self, messages: Sequence[dict[str, Any]]) -> str:
-        """Return the most recent assistant text block."""
-        for message in reversed(messages):
-            if message.get("role") != "assistant":
-                continue
-            content = message.get("content")
-            text = self._collect_text(content) if isinstance(content, list) else str(content or "")
-            if text.strip():
-                return text.strip()
-        return ""
-
-    def _split_sentences(self, text: str) -> list[str]:
-        """Split summary text into normalized sentences."""
-        if not text:
-            return []
-        sentences: list[str] = []
-        for raw_line in text.splitlines():
-            stripped = raw_line.strip()
-            if not stripped:
-                continue
-            parts = re.split(r"(?<=[.!?])\s+", stripped)
-            for part in parts:
-                cleaned = part.strip("•*- \t")
-                if cleaned:
-                    sentences.append(cleaned)
-        return sentences
-
-    def _collect_tool_trace(self, messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Pair tool_use blocks with tool_results for downstream summarization."""
-        tool_requests: dict[str, dict[str, Any]] = {}
-        trace: list[dict[str, Any]] = []
-        for message in messages:
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                block_type = block.get("type")
-                if block_type == "tool_use":
-                    tool_requests[block.get("id")] = {
-                        "tool": block.get("name"),
-                        "input": dict(block.get("input") or {}),
-                    }
-                elif block_type == "tool_result":
-                    tool_use_id = block.get("tool_use_id")
-                    request = tool_requests.get(tool_use_id, {})
-                    block_content = block.get("content")
-                    if isinstance(block_content, list):
-                        text_value = self._collect_text(block_content)
-                    else:
-                        text_value = block_content or ""
-                    trace.append(
-                        {
-                            "tool": request.get("tool"),
-                            "input": request.get("input") or {},
-                            "output": text_value if isinstance(text_value, str) else str(text_value),
-                        }
-                    )
-        return trace
-
-    def _select_sentences(
-        self,
-        sentences: Sequence[str],
-        *,
-        keywords: Sequence[str],
-        limit: int = SUMMARY_SECTION_LIMIT,
-    ) -> list[str]:
-        """Return up to `limit` sentences containing any of the keywords."""
-        selected: list[str] = []
-        lowered_keywords = [token.lower() for token in keywords]
-        for sentence in sentences:
-            lowered = sentence.lower()
-            if any(token in lowered for token in lowered_keywords):
-                selected.append(sentence)
-            if len(selected) >= limit:
-                break
-        return selected
-
-    def _summarize_project_structure(
-        self,
-        tool_trace: Sequence[Mapping[str, Any]],
-        sentences: Sequence[str],
-    ) -> list[str]:
-        """Combine tool outputs and textual hints into a structure summary."""
-        notes: list[str] = []
-        for entry in tool_trace:
-            tool = entry.get("tool")
-            if tool == "get_project_structure":
-                data = self._try_parse_json(entry.get("output"))
-                if isinstance(data, Mapping):
-                    directories = data.get("directories") or []
-                    files = data.get("files") or []
-                    root = data.get("root") or entry.get("input", {}).get("directory") or "."
-                    dir_preview = ", ".join(directories[:SUMMARY_SECTION_LIMIT]) or "no subdirectories"
-                    notes.append(
-                        f"{root}: {len(directories)} dirs / {len(files)} files | sample dirs: {dir_preview}"
-                    )
-            elif tool == "list_project_files":
-                data = self._try_parse_json(entry.get("output"))
-                if isinstance(data, Mapping):
-                    ext = data.get("extension") or entry.get("input", {}).get("extension") or "*"
-                    count = data.get("count")
-                    files = data.get("files") or []
-                    sample = ", ".join(files[:3]) if files else "no matches"
-                    notes.append(f"{count} files matching {ext} (sample: {sample})")
-            if len(notes) >= SUMMARY_SECTION_LIMIT:
-                break
-
-        if notes:
-            return notes[:SUMMARY_SECTION_LIMIT]
-        return self._select_sentences(
-            sentences,
-            keywords=("structure", "directory", "folder", "module", "layout"),
-        )
-
-    def _summarize_relevant_files(self, tool_trace: Sequence[Mapping[str, Any]]) -> list[str]:
-        """Extract per-file insights from tool outputs."""
-        summaries: list[str] = []
-        seen: set[str] = set()
-        for entry in tool_trace:
-            tool = entry.get("tool")
-            if tool not in FILE_READING_TOOLS:
-                continue
-            raw_input = entry.get("input") or {}
-            path = (
-                raw_input.get("path")
-                or raw_input.get("file")
-                or raw_input.get("file_path")
-                or raw_input.get("target")
-            )
-            if not path or path in seen:
-                continue
-            seen.add(path)
-            description = self._describe_file_content(entry.get("output") or "")
-            summaries.append(f"{path}: {description}")
-            if len(summaries) >= SUMMARY_SECTION_LIMIT:
-                break
-        return summaries
-
-    def _describe_file_content(self, text: str) -> str:
-        """Infer the purpose of a file from truncated content."""
-        if not text:
-            return "empty or unavailable"
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        for line in lines:
-            if line.startswith("#"):
-                return line.lstrip("# ").strip()[:200]
-            if line.startswith(('"""', "'''")):
-                stripped = line.strip("\"' ")
-                if stripped:
-                    return stripped[:200]
-        for line in lines:
-            if line.startswith(("class ", "def ", "async def ")):
-                return line.split(":")[0][:200]
-        return f"{len(lines)} significant lines"
-
-    def _summarize_dependencies(
-        self,
-        tool_trace: Sequence[Mapping[str, Any]],
-        sentences: Sequence[str],
-    ) -> list[str]:
-        """Summarize dependency signals from tools or narrative sentences."""
-        deps: list[str] = []
-        for entry in tool_trace:
-            tool = entry.get("tool")
-            if tool not in DEPENDENCY_TOOLS:
-                continue
-            data = self._try_parse_json(entry.get("output"))
-            if not isinstance(data, Mapping):
-                continue
-            collected = self._collect_dependency_values(data)
-            if collected:
-                deps.append(f"{tool}: {', '.join(collected[:SUMMARY_SECTION_LIMIT])}")
-        if deps:
-            return deps[:SUMMARY_SECTION_LIMIT]
-        return self._select_sentences(
-            sentences,
-            keywords=("dependency", "import", "library", "package", "requirements"),
-        )
-
-    def _collect_dependency_values(self, payload: Mapping[str, Any]) -> list[str]:
-        """Flatten dependency-like fields into a list."""
-        collected: list[str] = []
-        for key, value in payload.items():
-            lowered = str(key).lower()
-            if any(token in lowered for token in ("dependency", "import", "library", "package", "module", "existing", "missing")):
-                collected.extend(self._flatten_dependency_value(value))
-        return self._dedupe_entries(collected)
-
-    def _flatten_dependency_value(self, value: Any) -> list[str]:
-        """Flatten mixed dependency values into string tokens."""
-        if isinstance(value, str):
-            return [value]
-        if isinstance(value, (int, float)):
-            return [str(value)]
-        if isinstance(value, Mapping):
-            names: list[str] = []
-            for key in ("name", "module", "package", "import", "path"):
-                candidate = value.get(key)
-                if isinstance(candidate, str):
-                    names.append(candidate)
-            return names
-        if isinstance(value, list):
-            flattened: list[str] = []
-            for item in value:
-                flattened.extend(self._flatten_dependency_value(item))
-            return flattened
-        return []
-
-    def _gather_signatures(
-        self,
-        tool_trace: Sequence[Mapping[str, Any]],
-        narrative: str,
-    ) -> list[str]:
-        """Collect key function/class signatures without bodies."""
-        signatures: list[str] = []
-        seen: set[str] = set()
-
-        for entry in tool_trace:
-            tool = entry.get("tool")
-            if tool == "get_function_signatures":
-                data = self._try_parse_json(entry.get("output"))
-                if isinstance(data, Mapping):
-                    for fn in data.get("functions", []):
-                        if not isinstance(fn, Mapping):
-                            continue
-                        name = fn.get("name")
-                        params = fn.get("params") or []
-                        location = entry.get("input", {}).get("file_path") or entry.get("input", {}).get("path")
-                        signature = f"{name}({', '.join(params)})"
-                        if location:
-                            signature = f"{signature} [{location}]"
-                        if name and signature not in seen:
-                            seen.add(signature)
-                            signatures.append(signature)
-            elif tool in FILE_READING_TOOLS:
-                for line in (entry.get("output") or "").splitlines():
-                    stripped = line.strip()
-                    if stripped.startswith(("def ", "class ", "async def ")):
-                        signature = stripped.split(":")[0]
-                        if signature and signature not in seen:
-                            seen.add(signature)
-                            signatures.append(signature)
-            if len(signatures) >= SUMMARY_SECTION_LIMIT:
-                break
-
-        if len(signatures) < SUMMARY_SECTION_LIMIT and narrative:
-            for line in narrative.splitlines():
-                stripped = line.strip()
-                if stripped.startswith(("def ", "class ", "async def ")) and stripped not in seen:
-                    seen.add(stripped)
-                    signatures.append(stripped.split(":")[0])
-                if len(signatures) >= SUMMARY_SECTION_LIMIT:
-                    break
-        return signatures
-
-    def _dedupe_entries(self, items: Sequence[str]) -> list[str]:
-        """Preserve order while removing duplicates/empty entries."""
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for item in items:
-            normalized = item.strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            deduped.append(normalized)
-        return deduped
-
-    def _try_parse_json(self, text: Any) -> Any:
-        """Attempt to parse JSON; return None on failure."""
-        if not isinstance(text, str):
-            return None
-        try:
-            return json.loads(text)
-        except (TypeError, json.JSONDecodeError):
-            return None
-
-    def _build_planning_user_message(
-        self,
-        *,
-        user_request: str,
-        investigation_summary: str,
-    ) -> str:
-        """Create the concise planning prompt for Phase 2."""
-        request_text = (user_request or "").strip() or "(no explicit user request provided)"
-        summary_text = (investigation_summary or "").strip()
-        return (
-            "Investigation is complete. Using only the information below, generate the ExecutionPlan and "
-            "submit it via the submit_execution_plan tool.\n\n"
-            f"User request:\n{request_text}\n\n"
-            "Investigation summary (JSON):\n"
-            f"{summary_text}"
-        )
 
     def _sanitize_parameters(
         self,
