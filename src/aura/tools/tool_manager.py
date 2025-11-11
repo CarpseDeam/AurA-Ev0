@@ -24,6 +24,8 @@ try:  # Optional dependency; fallback matcher used if unavailable.
 except ImportError:  # pragma: no cover - pathspec is optional at runtime.
     PathSpec = None  # type: ignore[assignment]
 
+from aura.exceptions import FileVerificationError
+from aura.models import FileVerificationLog
 from aura.tools.git_tools import GitTools
 from aura.tools.python_tools import PythonTools
 from aura.utils.file_filter import load_gitignore_patterns
@@ -204,53 +206,189 @@ class ToolManager:
         :param enabled: When True, respect .gitignore rules. When False, show all files.
         :return: Status message confirming the new state.
         """
-        LOGGER.info("🔧 TOOL CALLED: respect_gitignore(enabled=%s)", enabled)
+        LOGGER.info("ðŸ”§ TOOL CALLED: respect_gitignore(enabled=%s)", enabled)
         try:
             self._default_respect_gitignore = enabled
             state = "enabled" if enabled else "disabled"
             message = f"Gitignore filtering {state}. File operations will {'respect' if enabled else 'ignore'} .gitignore rules by default."
-            LOGGER.info("✅ respect_gitignore state updated: %s", state)
+            LOGGER.info("âœ… respect_gitignore state updated: %s", state)
             return message
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to update respect_gitignore state: %s", exc)
             return f"Error updating gitignore state: {exc}"
 
     # ------------------------------------------------------------------ #
+    # Verification helpers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _digest_content(payload: str | bytes | None) -> str | None:
+        """Return a SHA-256 digest for the provided payload."""
+        if payload is None:
+            return None
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _record_verification_result(
+        self,
+        *,
+        phase: str,
+        operation: str,
+        target: Path,
+        expected: str | bytes | None,
+        actual: str | bytes | None,
+        success: bool,
+        details: str | None = None,
+    ) -> None:
+        """Persist verification telemetry without interrupting tool execution."""
+        rel_path = self._relative_path(target)
+        try:
+            FileVerificationLog.record(
+                phase=phase,
+                operation=operation,
+                file_path=rel_path,
+                expected_digest=self._digest_content(expected),
+                actual_digest=self._digest_content(actual),
+                success=success,
+                details=details,
+            )
+        except Exception:  # noqa: BLE001
+            LOGGER.debug(
+                "Failed to persist verification log for %s (phase=%s, op=%s)",
+                rel_path,
+                phase,
+                operation,
+                exc_info=True,
+            )
+
+    def _verify_written_file(
+        self,
+        *,
+        operation: str,
+        target: Path,
+        expected_content: str,
+    ) -> None:
+        """Ensure the on-disk file precisely matches the expected content."""
+        try:
+            actual_content = target.read_text(encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            self._record_verification_result(
+                phase="write",
+                operation=operation,
+                target=target,
+                expected=expected_content,
+                actual=None,
+                success=False,
+                details=f"Unable to read file for verification: {exc}",
+            )
+            raise FileVerificationError(
+                f"{operation} verification failed for '{self._relative_path(target)}'.",
+                {"file": self._relative_path(target), "error": str(exc)},
+            ) from exc
+
+        success = actual_content == expected_content
+        self._record_verification_result(
+            phase="write",
+            operation=operation,
+            target=target,
+            expected=expected_content,
+            actual=actual_content,
+            success=success,
+            details=None if success else "File contents differ from expected payload.",
+        )
+        if not success:
+            raise FileVerificationError(
+                f"{operation} verification failed for '{self._relative_path(target)}'.",
+                {"file": self._relative_path(target)},
+            )
+
+    def _verify_deletion(self, target: Path) -> None:
+        """Confirm that a file was permanently removed."""
+        exists = target.exists()
+        actual_bytes = None
+        details = None
+        if exists:
+            try:
+                actual_bytes = target.read_bytes()
+            except Exception as exc:  # noqa: BLE001
+                details = f"Unable to inspect leftover file: {exc}"
+
+        self._record_verification_result(
+            phase="delete",
+            operation="DELETE",
+            target=target,
+            expected=None,
+            actual=actual_bytes,
+            success=not exists,
+            details=details if details else (None if not exists else "File still exists after delete."),
+        )
+        if exists:
+            raise FileVerificationError(
+                f"DELETE verification failed for '{self._relative_path(target)}'.",
+                {"file": self._relative_path(target)},
+            )
+
+    # ------------------------------------------------------------------ #
     # File operation helpers
     # ------------------------------------------------------------------ #
     def create_file(self, path: str, content: str) -> str:
         """Create a file within the workspace."""
-        LOGGER.info("🔧 TOOL CALLED: create_file(%s)", path)
+        LOGGER.info("ðŸ”§ TOOL CALLED: create_file(%s)", path)
         try:
             target = self._resolve_path(path)
             target.parent.mkdir(parents=True, exist_ok=True)
+            if content is None:
+                raise FileVerificationError(
+                    "CREATE operations must include file content.",
+                    {"file": path},
+                )
             target.write_text(content, encoding="utf-8")
+            self._verify_written_file(operation="CREATE", target=target, expected_content=content)
             size = len(content.encode("utf-8"))
-            LOGGER.info("✅ Created file: %s (%d bytes)", target, size)
+            LOGGER.info("âœ… Created file: %s (%d bytes)", target, size)
             return f"Successfully created '{path}' ({size} bytes)"
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to create file %s: %s", path, exc)
-            return f"Error creating '{path}': {exc}"
+            raise
 
     def modify_file(self, path: str, old_content: str, new_content: str) -> str:
         """Replace content within a workspace file."""
-        LOGGER.info("🔧 TOOL CALLED: modify_file(%s)", path)
+        LOGGER.info("✏️ TOOL CALLED: modify_file(%s)", path)
         try:
             target = self._resolve_path(path)
 
             if not target.exists():
-                return f"Error: file '{path}' does not exist."
+                raise FileVerificationError(
+                    f"File '{path}' does not exist.",
+                    {"file": path},
+                )
+
+            if new_content is None:
+                raise FileVerificationError(
+                    "MODIFY operations must include replacement content.",
+                    {"file": path},
+                )
+
+            if not old_content:
+                raise FileVerificationError(
+                    "MODIFY operations must include old_content for auditing.",
+                    {"file": path},
+                )
 
             current = target.read_text(encoding="utf-8")
             if old_content not in current:
-                return f"Error: old_content not found in '{path}'."
+                raise FileVerificationError(
+                    "old_content not found in target file.",
+                    {"file": path},
+                )
             updated = current.replace(old_content, new_content)
             target.write_text(updated, encoding="utf-8")
+            self._verify_written_file(operation="MODIFY", target=target, expected_content=updated)
             LOGGER.info("✅ Modified file: %s", target)
             return f"Successfully modified '{path}'"
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to modify file %s: %s", path, exc)
-            return f"Error modifying '{path}': {exc}"
+            raise
 
     def replace_file_lines(
         self,
@@ -261,7 +399,7 @@ class ToolManager:
     ) -> str:
         """Replace a block of lines using explicit line numbers."""
         LOGGER.info(
-            "🔧 TOOL CALLED: replace_file_lines(%s, start=%s, end=%s)",
+            "🪚 TOOL CALLED: replace_file_lines(%s, start=%s, end=%s)",
             path,
             start_line,
             end_line,
@@ -271,33 +409,40 @@ class ToolManager:
             end = int(end_line)
         except (TypeError, ValueError) as exc:
             LOGGER.warning("replace_file_lines invalid line numbers: %s", exc)
-            return "Error: start_line and end_line must be integers."
+            raise ValueError("start_line and end_line must be integers.") from exc
 
         if start < 1 or end < start:
-            return "Error: start_line must be >= 1 and end_line must be >= start_line."
+            raise ValueError("start_line must be >= 1 and end_line must be >= start_line.")
 
         try:
             target = self._resolve_path(path)
             if not target.exists():
-                return f"Error: file '{path}' does not exist."
+                raise FileVerificationError(
+                    f"File '{path}' does not exist.",
+                    {"file": path},
+                )
 
             contents = target.read_text(encoding="utf-8")
             lines = contents.splitlines(keepends=True)
             total_lines = len(lines)
             if end > total_lines:
-                return (
-                    f"Error: file '{path}' has only {total_lines} "
-                    f"line(s); cannot replace through line {end}."
+                raise ValueError(
+                    f"File '{path}' has only {total_lines} line(s); cannot replace through line {end}."
                 )
 
             start_index = start - 1
-            replaced_block = "".join(lines[start_index : end])
+            replaced_block = "".join(lines[start_index:end])
             before = "".join(lines[:start_index])
             after = "".join(lines[end:])
 
             replacement = new_content or ""
             updated_contents = before + replacement + after
             target.write_text(updated_contents, encoding="utf-8")
+            self._verify_written_file(
+                operation="MODIFY",
+                target=target,
+                expected_content=updated_contents,
+            )
 
             replaced_lines = end - start + 1
             message = (
@@ -305,35 +450,32 @@ class ToolManager:
             )
             LOGGER.info(message)
             if not replacement.endswith("\n") and replacement:
-                LOGGER.debug(
-                    "replace_file_lines inserted content without trailing newline for %s",
-                    path,
-                )
-            LOGGER.debug(
-                "replace_file_lines replaced block:\n%s\nwith:\n%s",
-                replaced_block,
-                replacement,
-            )
+                LOGGER.debug("replace_file_lines inserted content without trailing newline for %s", path)
+            LOGGER.debug("replace_file_lines replaced block:\n%s\nwith:\n%s", replaced_block, replacement)
             return message
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception(
                 "Failed to replace lines %s-%s in %s: %s", start_line, end_line, path, exc
             )
-            return f"Error replacing lines {start_line}-{end_line} in '{path}': {exc}"
+            raise
 
     def delete_file(self, path: str) -> str:
         """Delete a workspace file."""
-        LOGGER.info("🔧 TOOL CALLED: delete_file(%s)", path)
+        LOGGER.info("🗑️ TOOL CALLED: delete_file(%s)", path)
         try:
             target = self._resolve_path(path)
             if not target.exists():
-                return f"Error: file '{path}' does not exist."
+                raise FileVerificationError(
+                    f"File '{path}' does not exist.",
+                    {"file": path},
+                )
             target.unlink()
+            self._verify_deletion(target)
             LOGGER.info("✅ Deleted file: %s", target)
             return f"Successfully deleted '{path}'"
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to delete file %s: %s", path, exc)
-            return f"Error deleting '{path}': {exc}"
+            raise
 
     def create_godot_material(
         self,
@@ -345,7 +487,7 @@ class ToolManager:
         emission: str | None = None,
     ) -> str:
         """Create a Godot 4.x StandardMaterial3D .tres file."""
-        LOGGER.info("🔧 TOOL CALLED: create_godot_material(%s)", path)
+        LOGGER.info("ðŸ”§ TOOL CALLED: create_godot_material(%s)", path)
         try:
             target = self._resolve_path(path)
             if not target.name.endswith(".tres"):
@@ -398,7 +540,7 @@ class ToolManager:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(final_content, encoding="utf-8")
             size = len(final_content.encode("utf-8"))
-            LOGGER.info("✅ Created Godot material: %s (%d bytes)", target, size)
+            LOGGER.info("âœ… Created Godot material: %s (%d bytes)", target, size)
             return f"Successfully created Godot material '{path}' ({size} bytes)"
 
         except Exception as exc:
@@ -410,7 +552,7 @@ class ToolManager:
     # ------------------------------------------------------------------ #
     def read_project_file(self, path: str) -> str:
         """Return file contents if the target resides inside the workspace."""
-        LOGGER.info("🔧 TOOL CALLED: read_project_file(%s)", path)
+        LOGGER.info("ðŸ”§ TOOL CALLED: read_project_file(%s)", path)
         try:
             target = self._resolve_path(path)
             if not target.exists():
@@ -456,7 +598,7 @@ class ToolManager:
             respect_gitignore = self._default_respect_gitignore
 
         LOGGER.info(
-            "🔧 TOOL CALLED: list_project_files(directory=%s, extension=%s, respect_gitignore=%s)",
+            "ðŸ”§ TOOL CALLED: list_project_files(directory=%s, extension=%s, respect_gitignore=%s)",
             directory,
             extension,
             respect_gitignore,
@@ -539,7 +681,7 @@ class ToolManager:
         Returns:
             Dictionary with format: {"matches": [{"file": str, "line_number": int, "content": str}], "total": int}
         """
-        LOGGER.info("🔧 TOOL CALLED: search_in_files(%s)", pattern)
+        LOGGER.info("ðŸ”§ TOOL CALLED: search_in_files(%s)", pattern)
         try:
             base = self._resolve_directory(directory)
             if not base.exists():
@@ -587,7 +729,7 @@ class ToolManager:
         Returns:
             Dictionary with file paths as keys and content/error info as values.
         """
-        LOGGER.info("🔧 TOOL CALLED: read_multiple_files(%s)", file_paths_json)
+        LOGGER.info("ðŸ”§ TOOL CALLED: read_multiple_files(%s)", file_paths_json)
         try:
             file_paths = json.loads(file_paths_json)
             if not isinstance(file_paths, list):
@@ -647,7 +789,7 @@ class ToolManager:
                 LOGGER.warning("Invalid max_depth value '%s'; defaulting to 2", max_depth)
                 max_depth = 2
         LOGGER.info(
-            "🔧 TOOL CALLED: get_project_structure(directory=%s, max_depth=%s)",
+            "ðŸ”§ TOOL CALLED: get_project_structure(directory=%s, max_depth=%s)",
             directory,
             max_depth,
         )

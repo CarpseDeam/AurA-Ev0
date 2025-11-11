@@ -171,6 +171,32 @@ def initialize_database() -> None:
             ON tool_calls(created_at)
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS file_write_verifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER,
+                phase TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                expected_digest TEXT,
+                actual_digest TEXT,
+                success INTEGER NOT NULL DEFAULT 0,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_file_write_verifications_conversation
+            ON file_write_verifications(conversation_id)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_file_write_verifications_created_at
+            ON file_write_verifications(created_at)
+        """)
+
         conn.commit()
         logger.info("Database schema initialized successfully")
 
@@ -213,11 +239,25 @@ def check_database_health() -> bool:
             cursor.execute("""
                 SELECT name FROM sqlite_master
                 WHERE type='table'
-                AND name IN ('projects', 'conversations', 'messages', 'project_files', 'tool_calls')
+                AND name IN (
+                    'projects',
+                    'conversations',
+                    'messages',
+                    'project_files',
+                    'tool_calls',
+                    'file_write_verifications'
+                )
             """)
 
             tables = [row[0] for row in cursor.fetchall()]
-            expected_tables = {'projects', 'conversations', 'messages', 'project_files', 'tool_calls'}
+            expected_tables = {
+                'projects',
+                'conversations',
+                'messages',
+                'project_files',
+                'tool_calls',
+                'file_write_verifications',
+            }
 
             if set(tables) == expected_tables:
                 logger.info("Database health check passed")

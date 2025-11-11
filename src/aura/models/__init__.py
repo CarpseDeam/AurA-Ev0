@@ -12,6 +12,7 @@ from .conversation import Conversation
 from .message import Message, MessageRole
 from .execution_plan import ExecutionPlan, FileOperation, OperationType
 from .tool_call import ToolCallLog
+from .file_verification import FileVerificationLog
 
 __all__ = [
     'Project',
@@ -22,4 +23,5 @@ __all__ = [
     'FileOperation',
     'OperationType',
     'ToolCallLog',
+    'FileVerificationLog',
 ]

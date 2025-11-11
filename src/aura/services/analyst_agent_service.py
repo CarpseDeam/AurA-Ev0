@@ -89,7 +89,7 @@ _FIELD_SUGGESTIONS = {
     "file_path": "Use a repo-relative path such as 'src/app.py'.",
     "old_str": "Provide the exact text to replace for MODIFY operations.",
     "new_str": "Provide the new text for MODIFY operations.",
-    "content": "CREATE operations must include the full file content.",
+    "content": "CREATE/MODIFY operations must include the complete post-change file content.",
     "rationale": "Explain why the change is needed.",
     "operations": "Include at least one file operation.",
     "estimated_files": "Send an integer count of affected files.",

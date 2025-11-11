@@ -45,10 +45,15 @@ class AuraToolError(AuraError):
     """Raised when a developer tool invocation fails."""
 
 
+class FileVerificationError(AuraToolError):
+    """Raised when filesystem verification fails or content is missing."""
+
+
 __all__ = [
     "AuraError",
     "AuraConfigurationError",
     "AuraExecutionError",
     "AuraValidationError",
     "AuraToolError",
+    "FileVerificationError",
 ]

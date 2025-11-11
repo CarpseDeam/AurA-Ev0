@@ -44,7 +44,7 @@ ExecutionPlan JSON structure:
     {
       "operation_type": "CREATE" | "MODIFY" | "DELETE",
       "file_path": "relative/path/to/file.py",
-      "content": "full file content for CREATE operations",
+      "content": "complete file content after this operation (CREATE & MODIFY)",
       "old_str": "exact string to find for MODIFY operations",
       "new_str": "exact replacement string for MODIFY operations",
       "rationale": "why this change is required and how it satisfies the plan",
@@ -63,7 +63,7 @@ FIELD NAME REQUIREMENTS (EXACT MATCH REQUIRED):
 
 Operation-specific requirements:
 - CREATE: Must include "content" field with full file contents
-- MODIFY: Must include both "old_str" and "new_str" fields
+- MODIFY: Must include both "old_str" and "new_str" fields and the complete post-change file content in "content"
 - DELETE: Should NOT include content/old_str/new_str
 
 Tool call is mandatory.

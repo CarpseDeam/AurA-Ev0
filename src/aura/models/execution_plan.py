@@ -23,7 +23,10 @@ class FileOperation(BaseModel):
 
     operation_type: OperationType = Field(alias="operation_type")
     file_path: str = Field(alias="file_path")
-    content: str | None = None
+    content: str | None = Field(
+        default=None,
+        description="Full file contents after this operation (required for CREATE/MODIFY).",
+    )
     old_str: str | None = Field(default=None, alias="old_str")
     new_str: str | None = Field(default=None, alias="new_str")
     rationale: str = Field(
@@ -75,6 +78,8 @@ class FileOperation(BaseModel):
             if not self.content:
                 raise ValueError("CREATE operations must include file content.")
         elif self.operation_type is OperationType.MODIFY:
+            if not self.content:
+                raise ValueError("MODIFY operations must include full file content in 'content'.")
             if not self.old_str or not self.new_str:
                 raise ValueError("MODIFY operations require old_str and new_str fields.")
         elif self.operation_type is OperationType.DELETE:

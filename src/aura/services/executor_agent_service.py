@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import anthropic
@@ -25,13 +28,25 @@ from aura.events import (
     ToolCallFailed,
     ToolCallStarted,
 )
-from aura.models import ExecutionPlan, ToolCallLog
+from aura.exceptions import AuraExecutionError, FileVerificationError
+from aura.models import (
+    ExecutionPlan,
+    FileOperation as PlanOperation,
+    FileVerificationLog,
+    OperationType,
+    ToolCallLog,
+)
 from aura.prompts import EXECUTOR_PROMPT
 from aura.tools import godot_tools
 from aura.tools.tool_manager import ToolManager
 
 LOGGER = logging.getLogger(__name__)
 _EXECUTOR_SOURCE = "executor"
+_TOOL_TO_OPERATION: dict[str, OperationType] = {
+    "create_file": OperationType.CREATE,
+    "modify_file": OperationType.MODIFY,
+    "delete_file": OperationType.DELETE,
+}
 
 
 @dataclass
@@ -44,6 +59,11 @@ class ExecutorAgentService:
     _event_bus: Any = field(init=False, repr=False)
     _client: anthropic.Anthropic = field(init=False, repr=False)
     _active_conversation_id: int | None = field(default=None, init=False, repr=False)
+    _plan_operation_queues: dict[tuple[OperationType, str], deque[PlanOperation]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self._event_bus = get_event_bus()
@@ -59,6 +79,7 @@ class ExecutorAgentService:
         started = time.perf_counter()
         self._active_conversation_id = conversation_id
         plan_json = execution_plan.to_json(indent=2)
+        self._prepare_operation_queues(execution_plan)
         LOGGER.info(
             "Executor execution started | model=%s | operations=%d",
             self.model_name,
@@ -144,6 +165,10 @@ class ExecutorAgentService:
                         duration,
                         len(final_text),
                     )
+                    try:
+                        self._run_final_verification(execution_plan)
+                    except FileVerificationError as exc:
+                        return self._handle_final_verification_failure(exc)
                     if final_text:
                         self._emit_streaming_chunk(final_text, on_chunk=on_chunk)
                     self._emit_streaming_chunk(
@@ -230,7 +255,8 @@ class ExecutorAgentService:
 
     def _invoke_workspace_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
         """Execute a workspace tool with auditing, logging, and DB persistence."""
-        params = self._sanitize_tool_args(tool_input)
+        prepared_input = self._prepare_tool_input(tool_name, dict(tool_input or {}))
+        params = self._sanitize_tool_args(prepared_input)
         self._event_bus.emit(
             ToolCallStarted(tool_name=tool_name, parameters=params, source=_EXECUTOR_SOURCE)
         )
@@ -238,10 +264,31 @@ class ExecutorAgentService:
         result_text = ""
         success = False
         try:
-            result_text = self._execute_tool(tool_name, tool_input)
+            result_text = self._execute_tool(tool_name, prepared_input)
             success = True
-            self._maybe_emit_file_operation(tool_name, tool_input)
+            self._maybe_emit_file_operation(tool_name, prepared_input)
             return result_text
+        except FileVerificationError as exc:
+            error_text = str(exc)
+            result_text = error_text
+            self._emit_verification_failure_event(tool_name, prepared_input, error_text)
+            self._event_bus.emit(
+                ToolCallFailed(
+                    tool_name=tool_name,
+                    error=error_text,
+                    duration=time.perf_counter() - started,
+                    source=_EXECUTOR_SOURCE,
+                    parameters=params,
+                )
+            )
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="executor.tool_failure",
+                    details={"tool": tool_name, "message": error_text},
+                    source=_EXECUTOR_SOURCE,
+                )
+            )
+            raise
         except Exception as exc:
             error_text = str(exc)
             result_text = error_text
@@ -268,7 +315,7 @@ class ExecutorAgentService:
                 conversation_id=self._active_conversation_id,
                 agent_role=_EXECUTOR_SOURCE,
                 tool_name=tool_name,
-                tool_input=json.dumps(tool_input, ensure_ascii=False, default=str),
+                tool_input=json.dumps(prepared_input, ensure_ascii=False, default=str),
                 tool_output=result_text,
                 success=success,
                 error_message=None if success else result_text,
@@ -283,6 +330,177 @@ class ExecutorAgentService:
                         source=_EXECUTOR_SOURCE,
                     )
                 )
+
+    def _prepare_tool_input(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+        """Augment tool input using the authoritative ExecutionPlan payload."""
+        operation_type = _TOOL_TO_OPERATION.get(tool_name)
+        if not operation_type or not self._plan_operation_queues:
+            return tool_input
+        path_value = tool_input.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            raise AuraExecutionError(
+                "Workspace tools require a path parameter.",
+                {"tool": tool_name},
+            )
+        plan_operation = self._pop_plan_operation(operation_type, path_value)
+        if operation_type is OperationType.CREATE:
+            if not plan_operation.content:
+                raise FileVerificationError(
+                    "ExecutionPlan missing file content for CREATE operation.",
+                    {"file": plan_operation.file_path},
+                )
+            tool_input["content"] = plan_operation.content
+        elif operation_type is OperationType.MODIFY:
+            if not plan_operation.content:
+                raise FileVerificationError(
+                    "ExecutionPlan missing file content for MODIFY operation.",
+                    {"file": plan_operation.file_path},
+                )
+            tool_input["new_content"] = plan_operation.content
+            tool_input["old_content"] = self._read_current_file_contents(path_value)
+        return tool_input
+
+    def _prepare_operation_queues(self, execution_plan: ExecutionPlan) -> None:
+        """Build FIFO queues for each planned file operation."""
+        self._plan_operation_queues.clear()
+        for operation in execution_plan.operations:
+            key = (operation.operation_type, self._normalize_plan_path(operation.file_path))
+            self._plan_operation_queues.setdefault(key, deque()).append(operation)
+
+    def _pop_plan_operation(self, op_type: OperationType, file_path: str) -> PlanOperation:
+        """Return and remove the next planned operation for the given path."""
+        normalized_path = self._normalize_plan_path(file_path)
+        queue = self._plan_operation_queues.get((op_type, normalized_path))
+        if not queue:
+            raise AuraExecutionError(
+                f"No remaining {op_type.value} operation scheduled for '{file_path}'.",
+                {"operation_type": op_type.value, "file": normalized_path},
+            )
+        return queue.popleft()
+
+    @staticmethod
+    def _normalize_plan_path(file_path: str) -> str:
+        """Normalize file paths for consistent queue lookups."""
+        normalized = (file_path or "").replace("\\", "/")
+        return normalized.lstrip("./")
+
+    def _read_current_file_contents(self, path: str) -> str:
+        """Read the current workspace file contents prior to modification."""
+        try:
+            return self.tool_manager.read_project_file(path)
+        except Exception as exc:  # noqa: BLE001
+            raise FileVerificationError(
+                f"Unable to read '{path}' before applying MODIFY operation.",
+                {"file": path, "error": str(exc)},
+            ) from exc
+
+    def _run_final_verification(self, execution_plan: ExecutionPlan) -> None:
+        """Confirm that on-disk files match the submitted execution plan."""
+        workspace_root = Path(self.tool_manager.workspace_dir)
+        failures: list[str] = []
+        for operation in execution_plan.operations:
+            normalized_path = self._normalize_plan_path(operation.file_path)
+            target = workspace_root / normalized_path
+            if operation.operation_type is OperationType.DELETE:
+                exists = target.exists()
+                actual_bytes = target.read_bytes() if exists else None
+                FileVerificationLog.record(
+                    phase="final",
+                    operation=operation.operation_type.value,
+                    file_path=normalized_path,
+                    expected_digest=None,
+                    actual_digest=self._digest_content(actual_bytes),
+                    success=not exists,
+                    details=None if not exists else "File still exists after DELETE.",
+                    conversation_id=self._active_conversation_id,
+                )
+                if exists:
+                    failures.append(f"{operation.file_path} should be deleted")
+                continue
+
+            expected_content = operation.content or ""
+            actual_content: str | None = None
+            details: str | None = None
+            try:
+                actual_content = target.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                details = "File missing after write."
+            except UnicodeDecodeError as exc:
+                details = f"Unable to decode file contents: {exc}"
+            except OSError as exc:  # noqa: BLE001
+                details = f"Unable to read file: {exc}"
+
+            success = actual_content == expected_content if actual_content is not None else False
+            FileVerificationLog.record(
+                phase="final",
+                operation=operation.operation_type.value,
+                file_path=normalized_path,
+                expected_digest=self._digest_content(expected_content),
+                actual_digest=self._digest_content(actual_content),
+                success=success,
+                details=details,
+                conversation_id=self._active_conversation_id,
+            )
+            if not success:
+                failures.append(details or f"{operation.file_path} contents differ from plan")
+
+        if failures:
+            self._event_bus.emit(
+                AgentEvent(
+                    name="executor.final_verification_failed",
+                    payload={"failures": failures},
+                    source=_EXECUTOR_SOURCE,
+                )
+            )
+            raise FileVerificationError(
+                "Final verification detected discrepancies.",
+                {"failures": "; ".join(failures)},
+            )
+
+    @staticmethod
+    def _digest_content(payload: str | bytes | None) -> str | None:
+        """Return a SHA-256 digest for text or bytes payloads."""
+        if payload is None:
+            return None
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _emit_verification_failure_event(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        message: str,
+    ) -> None:
+        """Emit a dedicated event when file verification fails."""
+        self._event_bus.emit(
+            AgentEvent(
+                name="executor.file_verification_failed",
+                payload={
+                    "tool": tool_name,
+                    "file": tool_input.get("path"),
+                    "message": message,
+                },
+                source=_EXECUTOR_SOURCE,
+            )
+        )
+
+    def _handle_final_verification_failure(self, exc: FileVerificationError) -> str:
+        """Convert a final verification failure into user-facing errors."""
+        error_message = f"Error: Final verification failed: {exc}"
+        self._emit_status("Executor agent: failed", "executor.error")
+        self._event_bus.emit(
+            SystemErrorEvent(
+                error="executor.final_verification_failed",
+                details={"message": str(exc)},
+                source=_EXECUTOR_SOURCE,
+            )
+        )
+        self._event_bus.emit(
+            PhaseTransition(from_phase="executor", to_phase="executor.error", source=_EXECUTOR_SOURCE)
+        )
+        self._emit_completion(error_message, success=False)
+        return error_message
 
     def _execute_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
         """Invoke the appropriate ToolManager method."""

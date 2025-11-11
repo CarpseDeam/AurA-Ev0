@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from aura.exceptions import FileVerificationError
 from aura.tools.tool_manager import ToolManager
 
 
@@ -23,6 +26,17 @@ def test_modify_file_replaces_content(tool_manager: ToolManager, workspace_dir: 
     message = tool_manager.modify_file("app.py", "value = 1", "value = 99")
     assert "Successfully modified" in message
     assert target.read_text(encoding="utf-8") == "value = 99\n"
+
+
+def test_modify_file_raises_when_old_content_missing(
+    tool_manager: ToolManager,
+    workspace_dir: Path,
+) -> None:
+    target = workspace_dir / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+
+    with pytest.raises(FileVerificationError):
+        tool_manager.modify_file("app.py", "missing", "value = 2")
 
 
 def test_delete_file_removes_target(tool_manager: ToolManager, workspace_dir: Path) -> None:
