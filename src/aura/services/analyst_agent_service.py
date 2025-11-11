@@ -368,8 +368,14 @@ class AnalystAgentService:
                     continue
 
                 # If we get here, stop_reason is NOT "tool_use" (likely "end_turn")
+                # BUT the response might still contain tool_use blocks that need results collected
                 # Check if Analyst output narrative text instead of calling submit_execution_plan
                 if self._latest_plan is None:
+                    # First, collect any tool results from this response before injecting enforcement
+                    tool_results = self._collect_tool_results(response.content)
+                    if tool_results:
+                        investigation_messages.append({"role": "user", "content": tool_results})
+
                     # Force the Analyst to call the tool instead of ending with text
                     LOGGER.warning(
                         "Analyst output narrative text instead of calling submit_execution_plan. "
