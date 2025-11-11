@@ -67,15 +67,19 @@ Optional fields:
 - [ ] `quality_checklist` items are actionable statements the executor can verify.
 - [ ] `estimated_files` aligns with the number of distinct files referenced in `operations`.
 
-**CRITICAL: MODIFY operation requirements**
+**MODIFY Operation Best Practices**
 **Godot Scene Modifications (.tscn files)**
-- Use `read_godot_scene` or `read_godot_scene_tree` to inspect scene structure during investigation.
-- To modify a Godot scene, create a MODIFY operation with:
-  1. Read the full .tscn file content using `read_project_file`
-  2. Mentally apply the required node additions/property changes to the text structure
-  3. Include the COMPLETE modified .tscn content in the operation's `content` field
-- The tools `add_godot_node` and `modify_godot_node_property` do NOT exist - all modifications must use standard MODIFY operations.
-- NEVER leave the operations list empty - every ExecutionPlan must have at least one file operation (CREATE/MODIFY/DELETE).
+When working with Godot scenes, follow this proven workflow for successful modifications:
+
+1. **Inspect the scene structure** during investigation using `read_godot_scene` or `read_godot_scene_tree` to understand what you're working with.
+2. **Read the complete file** using `read_project_file` to get the full .tscn content and context.
+3. **Plan your changes** by mentally applying the required node additions or property changes to the text structure.
+4. **Verify your mental model** to ensure the modified content will be valid and complete.
+5. **Create the MODIFY operation** including the COMPLETE modified .tscn content in the `content` field.
+
+Key points for success:
+- All Godot scene modifications use standard MODIFY operations (specialized tools like `add_godot_node` and `modify_godot_node_property` are not available).
+- Every ExecutionPlan requires at least one file operation (CREATE/MODIFY/DELETE) to be actionable.
 
 **ABSOLUTELY FORBIDDEN - NO NARRATIVE TEXT OUTPUT**
 You are STRICTLY PROHIBITED from outputting ANY narrative text after investigation tools complete.
