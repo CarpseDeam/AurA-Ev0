@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import anthropic
@@ -45,6 +46,7 @@ MEDIUM_FILE_LINE_LIMIT = 300
 FILE_HEAD_TAIL_SLICE = 20
 LIST_PREVIEW_THRESHOLD = 30
 LIST_PREVIEW_COUNT = 25
+SCENE_FILE_INLINE_CHAR_LIMIT = 20_000
 ANALYSIS_TOOL_NAMES = {
     "get_cyclomatic_complexity",
     "detect_duplicate_code",
@@ -60,6 +62,7 @@ FILE_READING_TOOLS = {"read_project_file", "read_multiple_files"}
 SIGNATURE_TOOLS = {"get_function_signatures"}
 DEPENDENCY_TOOLS = {"get_dependency_graph", "get_imports", "verify_asset_paths"}
 SUMMARY_SECTION_LIMIT = 8
+GODOT_SCENE_EXTENSIONS = {".tscn", ".godot", ".tres"}
 
 ToolHandler = Callable[..., Any]
 
@@ -722,7 +725,7 @@ class AnalystAgentService:
             self._record_tool_failure(tool_name, params, serialized_result, started)
         finally:
             serialized_payload = serialized_result or self._serialize_tool_result(result_obj)
-            compressed_payload = self._compress_tool_result(tool_name, serialized_payload)
+            compressed_payload = self._compress_tool_result(tool_name, serialized_payload, tool_input)
             duration = time.perf_counter() - started
             ToolCallLog.record(
                 conversation_id=self._active_conversation_id,
@@ -971,10 +974,19 @@ class AnalystAgentService:
             )
         return tool_results
 
-    def _compress_tool_result(self, tool_name: str, result: str) -> str:
+    def _compress_tool_result(
+        self,
+        tool_name: str,
+        result: str,
+        tool_input: Mapping[str, Any] | None = None,
+    ) -> str:
         """Apply heuristic compression rules to large tool outputs."""
         if not result:
             return result
+
+        if self._should_preserve_scene_file(tool_name, tool_input):
+            return self._preserve_scene_blob(result)
+
         original_length = len(result)
         if original_length <= TOOL_RESULT_COMPRESSION_THRESHOLD:
             return result
@@ -1007,6 +1019,39 @@ class AnalystAgentService:
             savings * 100,
         )
         return compressed_text
+
+    def _should_preserve_scene_file(
+        self,
+        tool_name: str,
+        tool_input: Mapping[str, Any] | None,
+    ) -> bool:
+        """Check if a Godot scene/resource file should bypass compression."""
+        if tool_name != "read_project_file" or not tool_input:
+            return False
+        path = self._extract_tool_path(tool_input)
+        if not path:
+            return False
+        try:
+            suffix = Path(path).suffix.lower()
+        except (ValueError, TypeError):
+            suffix = str(path).lower()
+        return suffix in GODOT_SCENE_EXTENSIONS
+
+    def _extract_tool_path(self, tool_input: Mapping[str, Any]) -> str | None:
+        """Pull a path-like value out of tool kwargs."""
+        if not isinstance(tool_input, Mapping):
+            return None
+        path = tool_input.get("path") or tool_input.get("file_path")
+        return path if isinstance(path, str) else None
+
+    def _preserve_scene_blob(self, text: str) -> str:
+        """Return scene content intact up to the inline limit."""
+        length = len(text)
+        if length <= SCENE_FILE_INLINE_CHAR_LIMIT:
+            return text
+        omitted = length - SCENE_FILE_INLINE_CHAR_LIMIT
+        trimmed = text[:SCENE_FILE_INLINE_CHAR_LIMIT]
+        return f"{trimmed}\n\n[Godot scene truncated: {omitted} additional chars omitted]"
 
     def _compress_mapping_payload(self, tool_name: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         """Recursively compress mapping structures."""
