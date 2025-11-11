@@ -443,6 +443,15 @@ class AnalystAgentService:
                     tool_results = self._collect_tool_results(response.content)
                     if tool_results:
                         planning_messages.append({"role": "user", "content": tool_results})
+
+                    # Check if plan was successfully validated - if so, exit loop immediately
+                    if self._latest_plan is not None:
+                        LOGGER.info(
+                            "Analyst plan validated successfully on first attempt | operations=%d",
+                            len(self._latest_plan.operations),
+                        )
+                        break
+
                     continue
 
                 final_text = self._collect_text(response.content)

@@ -521,8 +521,56 @@ def _collect_resource_references(parsed: ParsedScene) -> tuple[set[str], set[str
 
 
 def _load_scene(scene_path: str) -> ParsedScene:
-    resolved = _resolve_scene_file(scene_path)
-    return _parse_tscn_file(resolved)
+    """Load a scene file, searching common locations if not found directly."""
+    # Try to resolve the path directly first
+    try:
+        resolved = _resolve_scene_file(scene_path)
+        if resolved.exists():
+            return _parse_tscn_file(resolved)
+    except ValueError:
+        # Path was outside workspace, will try workspace-relative search below
+        pass
+
+    # If direct resolution didn't work, search common locations
+    workspace = _get_agent_workspace()
+    base_dir = workspace or Path.cwd()
+
+    # Extract just the filename if a path was provided
+    scene_name = Path(scene_path).name
+    if not scene_name.endswith('.tscn'):
+        scene_name += '.tscn'
+
+    # List of common scene locations to search
+    search_paths = [
+        base_dir / scene_path,  # Direct relative to workspace
+        base_dir / scene_name,  # Just filename at root
+        base_dir / "scenes" / scene_name,  # In scenes/ folder
+        base_dir / "new-game-project" / "scenes" / scene_name,  # In new-game-project/scenes/
+    ]
+
+    # Also search any */scenes/ directories
+    try:
+        scenes_dirs = list(base_dir.glob("*/scenes/"))
+        for scenes_dir in scenes_dirs:
+            search_paths.append(scenes_dir / scene_name)
+    except Exception:  # noqa: BLE001
+        pass  # Ignore glob errors
+
+    # Try each search path
+    for candidate in search_paths:
+        try:
+            resolved_candidate = candidate.resolve()
+            if resolved_candidate.exists() and resolved_candidate.suffix == '.tscn':
+                logger.info("Found scene at: %s", resolved_candidate)
+                return _parse_tscn_file(resolved_candidate)
+        except Exception:  # noqa: BLE001
+            continue
+
+    # File not found anywhere - provide helpful error message
+    searched_locations = "\n  - ".join(str(p) for p in search_paths[:5])  # Show first 5 locations
+    raise ValueError(
+        f"Scene file '{scene_path}' not found. Searched locations:\n  - {searched_locations}"
+    )
 
 
 def read_godot_scene(scene_path: str) -> dict[str, Any]:
