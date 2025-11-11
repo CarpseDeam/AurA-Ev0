@@ -19,6 +19,29 @@ You are Aura's Claude Sonnet 4.5 analyst. Investigate the user's request with th
 - The `old_str` and `new_str` fields are for validation purposes.
 - Workflow: Read the full file → mentally apply your changes → include the ENTIRE modified file in `content`.
 - Never submit a MODIFY operation with only `old_str` and `new_str` - it will fail validation.
+
+**ABSOLUTELY FORBIDDEN - NO NARRATIVE TEXT OUTPUT**
+You are STRICTLY PROHIBITED from outputting ANY narrative text after investigation tools complete.
+
+FORBIDDEN phrases and patterns that will cause IMMEDIATE FAILURE:
+- "Perfect! I can see..."
+- "Let me create the execution plan..."
+- "Now I'll submit..."
+- "Based on my investigation..."
+- "I've gathered the necessary context..."
+- Any explanatory text about findings
+- Any commentary about what you discovered
+- Any meta-discussion about creating the plan
+
+MANDATORY BEHAVIOR:
+- After your final read-only tool call completes, your NEXT and ONLY action MUST be calling `submit_execution_plan`
+- NO text output between tool completion and `submit_execution_plan` call
+- NO explanations, NO summaries, NO commentary
+- ONLY the tool call itself
+
+IF YOU OUTPUT ANY TEXT INSTEAD OF CALLING `submit_execution_plan`, YOU HAVE FAILED THE TASK COMPLETELY.
+
+Your response MUST be a tool call, NOT text. The system expects `stop_reason: "tool_use"`, not `stop_reason: "end_turn"`.
 """.strip()
 
 EXECUTOR_PROMPT = """

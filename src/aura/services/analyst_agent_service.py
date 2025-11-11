@@ -362,9 +362,24 @@ class AnalystAgentService:
                     tool_results = self._collect_tool_results(response.content)
                     if tool_results:
                         investigation_messages.append({"role": "user", "content": tool_results})
-                    
+
                     if self._latest_plan:
                         break
+                    continue
+
+                # If we get here, stop_reason is NOT "tool_use" (likely "end_turn")
+                # Check if Analyst output narrative text instead of calling submit_execution_plan
+                if self._latest_plan is None:
+                    # Force the Analyst to call the tool instead of ending with text
+                    LOGGER.warning(
+                        "Analyst output narrative text instead of calling submit_execution_plan. "
+                        "Injecting enforcement message to force tool call."
+                    )
+                    investigation_messages.append({
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Call submit_execution_plan now. No text output."}],
+                    })
+                    # Continue the loop to force another API call with the enforcement message
                     continue
 
                 final_response_text = (self._collect_text(response.content) or "").strip()
