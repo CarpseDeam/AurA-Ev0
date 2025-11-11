@@ -38,38 +38,9 @@ _ANALYST_SOURCE = "analyst"
 
 # History filtering constants
 MAX_HISTORY_MESSAGES = 6  # Last 3 user/assistant pairs
-MAX_HISTORY_CHARS = 12000  # Character limit for history
 INVESTIGATION_MAX_TOKENS = 8192
-PLANNING_MAX_TOKENS = 5000
-
-# Tool categorization for emergency plan construction
-STRUCTURE_TOOLS = {"get_project_structure", "list_project_files"}
-FILE_READING_TOOLS = {"read_project_file", "read_multiple_files"}
-SIGNATURE_TOOLS = {"get_function_signatures"}
-DEPENDENCY_TOOLS = {"get_dependency_graph", "get_imports", "verify_asset_paths"}
-SUMMARY_SECTION_LIMIT = 8
 
 ToolHandler = Callable[..., Any]
-
-
-def count_message_chars(msg: dict[str, Any]) -> int:
-    """Count characters in a message's content.
-
-    Args:
-        msg: Message dictionary with 'content' key
-
-    Returns:
-        Total character count of text content
-    """
-    total = 0
-    content = msg.get("content", [])
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                total += len(block.get("text", ""))
-    elif isinstance(content, str):
-        total += len(content)
-    return total
 
 
 def unwrap_tool_input(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -91,44 +62,11 @@ def unwrap_tool_input(kwargs: dict[str, Any]) -> dict[str, Any]:
 def filter_conversation_history(
     history: Sequence[dict[str, Any]],
     max_messages: int = MAX_HISTORY_MESSAGES,
-    max_chars: int = MAX_HISTORY_CHARS,
 ) -> list[dict[str, Any]]:
-    """Filter conversation history with sliding window and character limits.
-
-    Args:
-        history: List of message dictionaries with 'role' and 'content' keys
-        max_messages: Maximum number of messages to keep (must be even to preserve pairs)
-        max_chars: Maximum total character count for all message content
-
-    Returns:
-        Filtered list of messages that fits within constraints
-
-    Strategy:
-        1. Filter out tool_result messages - Analyst only needs user/assistant exchanges
-        2. Keep only last N messages (sliding window)
-        3. If exceeds character limit, remove oldest messages while keeping pairs intact
-    """
-    # Step 1: Filter out tool_result messages
+    """Keep only the last N user/assistant messages, filtering out tool_result messages."""
     filtered = [msg for msg in history if msg.get("role") != "tool_result"]
-
-    # Step 2: Apply sliding window - keep last max_messages
     if len(filtered) > max_messages:
         filtered = filtered[-max_messages:]
-
-    # Step 3: Apply character limit, removing oldest pairs
-    while filtered:
-        total_chars = sum(count_message_chars(msg) for msg in filtered)
-        if total_chars <= max_chars:
-            break
-
-        # Remove oldest pair (user + assistant) to keep context coherent
-        # Remove at least 2 messages if possible to preserve pairs
-        if len(filtered) >= 2:
-            filtered = filtered[2:]
-        elif filtered:
-            # Last resort: remove single message if only one remains
-            filtered = filtered[1:]
-
     return filtered
 
 
@@ -185,13 +123,6 @@ class AnalystAgentService:
             # use MODIFY operations with full .tscn file content instead.
         }
 
-    def _has_execution_plan_submission(self, response_content: Sequence[Any]) -> bool:
-        """Check if the response contains a submit_execution_plan tool call."""
-        for block in response_content:
-            if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "submit_execution_plan":
-                return True
-        return False
-
     def analyze_and_plan(
         self,
         user_request: str,
@@ -218,18 +149,14 @@ class AnalystAgentService:
 
         # Apply sliding window history filter
         filtered_history: list[dict[str, Any]] = []
-        history_chars = 0
         if conversation_history:
             filtered_history = filter_conversation_history(
                 conversation_history,
                 max_messages=MAX_HISTORY_MESSAGES,
-                max_chars=MAX_HISTORY_CHARS,
             )
-            history_chars = sum(count_message_chars(msg) for msg in filtered_history)
             LOGGER.info(
-                "Analyst using conversation history | messages=%d | total_chars=%d | original_messages=%d",
+                "Analyst using conversation history | messages=%d | original_messages=%d",
                 len(filtered_history),
-                history_chars,
                 len(conversation_history),
             )
 
@@ -241,11 +168,10 @@ class AnalystAgentService:
         })
 
         LOGGER.info(
-            "Analyst analysis started | investigation_model=%s | planning_model=%s | prompt_chars=%d | history_chars=%d",
+            "Analyst analysis started | investigation_model=%s | planning_model=%s | prompt_chars=%d",
             self.investigation_model,
             self.planning_model,
             len(user_request or ""),
-            history_chars,
         )
         self._event_bus.emit(
             PhaseTransition(from_phase="idle", to_phase="analyst", source=_ANALYST_SOURCE)
@@ -344,13 +270,36 @@ class AnalystAgentService:
 
                     # Check enforcement retry limit
                     if enforcement_retries >= max_enforcement_retries:
-                        LOGGER.warning(
-                            "Analyst failed to submit plan after %d enforcement attempts. "
-                            "Creating emergency fallback plan from investigation context.",
+                        duration = time.perf_counter() - started
+                        LOGGER.error(
+                            "Analyst failed to submit execution plan after %d enforcement attempts | duration=%.2fs",
                             enforcement_retries,
+                            duration,
                         )
-                        self._latest_plan = self._construct_emergency_plan(investigation_messages)
-                        break
+                        error_message = (
+                            "Error: Unable to generate execution plan. The analyst could not formulate a valid plan "
+                            "after multiple attempts. Please try:\n"
+                            "1. Rephrasing your request with more specific details\n"
+                            "2. Breaking down your request into smaller, focused tasks\n"
+                            "3. Providing more context about what you want to accomplish"
+                        )
+                        self._emit_status("Analyst agent: failed to create plan", "analyst.error")
+                        self._event_bus.emit(
+                            SystemErrorEvent(
+                                error="analyst.plan_generation_failed",
+                                details={"enforcement_attempts": enforcement_retries},
+                                source=_ANALYST_SOURCE,
+                            )
+                        )
+                        self._event_bus.emit(
+                            PhaseTransition(
+                                from_phase="analyst",
+                                to_phase="analyst.error",
+                                source=_ANALYST_SOURCE,
+                            )
+                        )
+                        self._emit_completion(error_message, success=False)
+                        return error_message
 
                     # Force the Analyst to call the tool instead of ending with text
                     enforcement_retries += 1
@@ -684,6 +633,20 @@ class AnalystAgentService:
         Handles both direct JSON objects and payload-wrapped inputs from Claude.
         """
         unwrapped = unwrap_tool_input(payload)
+        # Check for empty operations array before Pydantic validation
+        operations = unwrapped.get("operations")
+        if operations is not None and isinstance(operations, list) and len(operations) == 0:
+            error_msg = (
+                "ExecutionPlan must include at least one file operation (CREATE/MODIFY/DELETE). "
+                "You provided task_summary and project_context but forgot to include the operations array with actual file changes. "
+                "Review what files need to be modified and create appropriate operations."
+            )
+            LOGGER.error("Empty operations array in execution plan submission")
+            return {
+                "success": False,
+                "error": error_msg,
+                "hint": "Add operations array with at least one CREATE, MODIFY, or DELETE operation"
+            }
 
         LOGGER.debug("Received execution plan input: %s", json.dumps(unwrapped, default=str)[:200])
 
@@ -819,112 +782,6 @@ class AnalystAgentService:
                 success=success,
             )
         )
-
-    def _construct_emergency_plan(
-        self,
-        investigation_messages: list[dict[str, Any]],
-    ) -> ExecutionPlan:
-        """Build a minimal valid ExecutionPlan from investigation context as emergency fallback.
-
-        This method is called when the analyst fails to submit a proper execution plan after
-        enforcement attempts. It extracts file paths from tool calls and creates conservative
-        MODIFY operations marked for manual review.
-
-        Args:
-            investigation_messages: The full conversation history with tool calls
-
-        Returns:
-            ExecutionPlan with conservative operations extracted from tool call history
-        """
-        from aura.models.execution_plan import FileOperation, OperationType
-
-        # Extract file paths from tool call history
-        file_paths: set[str] = set()
-        user_request = self._current_user_request or "User request"
-
-        for msg in investigation_messages:
-            if msg.get("role") != "assistant":
-                continue
-            content = msg.get("content", [])
-            if isinstance(content, list):
-                for block in content:
-                    if getattr(block, "type", None) == "tool_use":
-                        tool_name = getattr(block, "name", "")
-                        tool_input = dict(getattr(block, "input", {}) or {})
-
-                        # Extract file paths from file reading/searching tools
-                        if tool_name in FILE_READING_TOOLS:
-                            path = tool_input.get("path") or tool_input.get("file_path")
-                            if path and isinstance(path, str):
-                                file_paths.add(path)
-                            paths = tool_input.get("paths")
-                            if isinstance(paths, list):
-                                for p in paths:
-                                    if isinstance(p, str):
-                                        file_paths.add(p)
-
-        # Create conservative MODIFY operations for discovered files
-        operations: list[FileOperation] = []
-        for file_path in sorted(file_paths)[:10]:  # Limit to first 10 files to prevent bloat
-            operations.append(
-                FileOperation(
-                    operation_type=OperationType.MODIFY,
-                    file_path=file_path,
-                    content="# EMERGENCY FALLBACK: Content placeholder\n# This operation requires manual review",
-                    old_str="placeholder_old",
-                    new_str="placeholder_new",
-                    rationale=(
-                        "Emergency fallback operation created because analyst failed to submit proper plan. "
-                        "This file was accessed during investigation and may need modification. "
-                        "REQUIRES MANUAL REVIEW AND PROPER CONTENT."
-                    ),
-                    dependencies=[],
-                )
-            )
-
-        # If no files were discovered, create a single placeholder operation
-        if not operations:
-            operations.append(
-                FileOperation(
-                    operation_type=OperationType.MODIFY,
-                    file_path="REVIEW_REQUIRED.txt",
-                    content="# Emergency fallback plan created\n# Analyst failed to submit proper execution plan\n# Manual review required",
-                    old_str="placeholder",
-                    new_str="placeholder",
-                    rationale=(
-                        "Emergency fallback operation. No file operations could be extracted from investigation. "
-                        "Manual review and proper plan creation required."
-                    ),
-                    dependencies=[],
-                )
-            )
-
-        # Build the emergency ExecutionPlan
-        plan = ExecutionPlan(
-            task_summary=f"Emergency fallback plan for: {user_request[:100]}",
-            project_context=(
-                "This is an emergency fallback plan created because the analyst agent failed to submit "
-                "a proper execution plan after enforcement attempts. All operations require manual review "
-                "and proper content before execution."
-            ),
-            operations=operations,
-            quality_checklist=[
-                "⚠️  EMERGENCY FALLBACK - Manual review required",
-                "⚠️  Verify all file operations are correct",
-                "⚠️  Replace placeholder content with actual changes",
-                "⚠️  Confirm operations match user request",
-            ],
-            estimated_files=len(operations),
-            is_emergency=True,
-        )
-
-        LOGGER.info(
-            "Emergency fallback plan created | operations=%d | files_discovered=%d",
-            len(operations),
-            len(file_paths),
-        )
-
-        return plan
 
 
 __all__ = ["AnalystAgentService"]

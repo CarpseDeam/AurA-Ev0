@@ -16,6 +16,8 @@ except ImportError:  # pragma: no cover
 
 LOGGER = logging.getLogger(__name__)
 
+__all__ = ["GitTools"]
+
 
 class GitTools:
     """Encapsulate git operations for Aura's tooling stack."""

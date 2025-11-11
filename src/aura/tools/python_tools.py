@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
+__all__ = ["PythonTools"]
+
 
 class PythonTools:
     """Encapsulate Python analysis/manipulation helpers for ToolManager."""

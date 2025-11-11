@@ -4,19 +4,17 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import Signal, Qt, QEasingCurve, QVariantAnimation, QAbstractAnimation
 from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut, QIcon
 from PySide6.QtWidgets import (
-    QFileDialog,
     QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -55,6 +53,9 @@ from aura.ui.project_dialog import ProjectDialog
 from aura.models import Project, Conversation
 from aura.utils.settings import load_settings, save_settings
 
+if TYPE_CHECKING:
+    from aura.main import ApplicationController
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -66,11 +67,13 @@ class MainWindow(QMainWindow):
 
     def __init__(
         self,
+        controller: "ApplicationController",
         app_state: AppState,
         orchestrator: Optional[Orchestrator] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
+        self._controller = controller
         self.app_state = app_state
         self.orchestrator = orchestrator
         self.output_panel = OutputPanel(self)
@@ -83,7 +86,6 @@ class MainWindow(QMainWindow):
         self.analyst_badge = QLabel(self)
         self.executor_badge = QLabel(self)
         self._event_bus = get_event_bus()
-        self._prompting_for_directory = False
 
         # Initialize project sidebars
         self.project_sidebar = ProjectSidebar(self)
@@ -109,7 +111,6 @@ class MainWindow(QMainWindow):
         self.status_bar_manager.update_status("Ready", config.COLORS.text, persist=True)
 
         if self.orchestrator:
-            self._connect_orchestrator_signals()
             self.output_panel.display_startup_header()
             self.output_panel.display_output("Aura orchestration ready", config.COLORS.success)
 
@@ -294,7 +295,9 @@ class MainWindow(QMainWindow):
 
     def _build_toolbar(self) -> None:
         self.toolbar.setMovable(False)
-        dir_action = QAction("Set Working Directory", self); dir_action.triggered.connect(self._select_working_directory); self.toolbar.addAction(dir_action)
+        dir_action = QAction("Set Working Directory", self)
+        dir_action.triggered.connect(self._controller.select_working_directory)
+        self.toolbar.addAction(dir_action)
         agent_action = QAction("Agent Settings...", self); agent_action.triggered.connect(self._open_agent_settings); self.toolbar.addAction(agent_action)
 
         # Verbosity controls
@@ -384,10 +387,6 @@ class MainWindow(QMainWindow):
         self.input_field.returnPressed.connect(self._handle_submit); self.clear_button.clicked.connect(self.clear_output)
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
 
-        # Connect model change signals to update badges
-        self.app_state.analyst_model_changed.connect(self._update_analyst_badge)
-        self.app_state.executor_model_changed.connect(self._update_executor_badge)
-
         # Keyboard shortcut for toggling sidebar
         shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
         shortcut.activated.connect(self.project_sidebar._toggle_collapse)
@@ -418,7 +417,8 @@ class MainWindow(QMainWindow):
         self.executor_badge.setStyleSheet(badge_style)
 
     def _connect_handler_signals(self) -> None:
-        self.orchestration_handler.request_input_enabled.connect(self._set_input_enabled); self.orchestration_handler.request_input_focus.connect(self.input_field.setFocus)
+        self.orchestration_handler.request_input_enabled.connect(self.set_input_enabled)
+        self.orchestration_handler.request_input_focus.connect(self.input_field.setFocus)
 
     def _subscribe_to_events(self) -> None:
         """Subscribe UI to backend feedback events."""
@@ -487,40 +487,6 @@ class MainWindow(QMainWindow):
         self.project_sidebar.expanded_width = sidebar_width
         LOGGER.debug(f"Sidebar width saved: {sidebar_width}")
 
-    def _connect_orchestrator_signals(self) -> None:
-        from PySide6.QtCore import Qt
-
-        assert self.orchestrator is not None
-        # Use UniqueConnection to prevent duplicate connections if called multiple times
-        self.orchestrator.planning_started.connect(
-            self.orchestration_handler.handle_planning_started,
-            Qt.ConnectionType.UniqueConnection
-        )
-        self.orchestrator.session_started.connect(
-            self.orchestration_handler.handle_session_started,
-            Qt.ConnectionType.UniqueConnection
-        )
-        self.orchestrator.session_output.connect(
-            self.orchestration_handler.handle_session_output,
-            Qt.ConnectionType.UniqueConnection
-        )
-        self.orchestrator.session_complete.connect(
-            self.orchestration_handler.handle_session_complete,
-            Qt.ConnectionType.UniqueConnection
-        )
-        self.orchestrator.all_sessions_complete.connect(
-            self.orchestration_handler.handle_all_complete,
-            Qt.ConnectionType.UniqueConnection
-        )
-        self.orchestrator.error_occurred.connect(
-            self.orchestration_handler.handle_error,
-            Qt.ConnectionType.UniqueConnection
-        )
-        self.orchestrator.progress_update.connect(
-            self._on_progress_update,
-            Qt.ConnectionType.UniqueConnection
-        )
-
     def _handle_submit(self) -> None:
         prompt = self.input_field.text().strip()
         if not prompt:
@@ -537,11 +503,11 @@ class MainWindow(QMainWindow):
         has_orchestrator = self.orchestrator is not None
         status_message = "⋯ Analyst/Executor pipeline running..." if has_orchestrator else "⋯ Orchestrator unavailable"
         self.status_bar_manager.update_status(status_message, config.COLORS.thinking, persist=True)
-        self._set_input_enabled(False)
+        self.set_input_enabled(False)
 
         try:
             if not has_orchestrator:
-                self._display_user_error(
+                self.display_user_error(
                     "Cloud orchestration is unavailable. Set ANTHROPIC_API_KEY and restart Aura."
                 )
                 self._recover_input_after_error()
@@ -555,24 +521,27 @@ class MainWindow(QMainWindow):
             self._recover_input_after_error()
         except (AuraValidationError, AuraExecutionError) as exc:
             LOGGER.warning("Validation/execution error while submitting prompt: %s", exc)
-            self._display_user_error(str(exc))
+            self.display_user_error(str(exc))
             self._recover_input_after_error()
         except AuraError as exc:
             LOGGER.warning("Aura error during submission: %s", exc)
-            self._display_user_error(str(exc))
+            self.display_user_error(str(exc))
             self._recover_input_after_error()
         except Exception:  # noqa: BLE001
             LOGGER.exception("Unexpected error handling submit")
-            self._display_user_error("Something went wrong while starting your request. Please try again.")
+            self.display_user_error("Something went wrong while starting your request. Please try again.")
             self._recover_input_after_error()
 
-    def _set_input_enabled(self, enabled: bool) -> None:
+    def set_input_enabled(self, enabled: bool) -> None:
         self.input_field.setEnabled(enabled)
+
+    def set_workspace_blocked_project(self, project_id: Optional[int]) -> None:
+        self._workspace_blocked_project_id = project_id
 
     def clear_output(self) -> None:
         self.output_panel.clear()
 
-    def _display_user_error(self, message: str) -> None:
+    def display_user_error(self, message: str) -> None:
         """Show a user-facing error and update status bar."""
         if not message:
             message = "Something went wrong. Check the logs for more details."
@@ -581,120 +550,19 @@ class MainWindow(QMainWindow):
 
     def _recover_input_after_error(self) -> None:
         """Re-enable input controls after a failure."""
-        self._set_input_enabled(True)
+        self.set_input_enabled(True)
         self.input_field.setFocus()
 
     def _handle_configuration_issue(self, error: AuraConfigurationError) -> None:
         """Display configuration issues and guide the user to resolve them."""
-        self._display_user_error(str(error))
+        self.display_user_error(str(error))
         issue = (error.context or {}).get("issue") if isinstance(error.context, dict) else None
         if issue in {"working_directory_missing", "working_directory_invalid"}:
             self._prompt_for_working_directory()
 
     def _prompt_for_working_directory(self) -> None:
         """Prompt the user to choose a new working directory."""
-        if self._prompting_for_directory:
-            return
-        self._prompting_for_directory = True
-        try:
-            self.output_panel.display_output(
-                "Please select a valid working directory to continue.",
-                config.COLORS.accent,
-            )
-            self._select_working_directory()
-        finally:
-            self._prompting_for_directory = False
-
-    def _select_working_directory(self) -> None:
-        """Allow the user to override the working directory manually."""
-        seed = self.app_state.working_directory or str(Path.home())
-        path = QFileDialog.getExistingDirectory(self, "Select Working Directory", seed)
-        if not path:
-            return
-        project_name = None
-        project = None
-        current_project_id = self.app_state.current_project_id
-        if current_project_id:
-            project = Project.get_by_id(current_project_id)
-            if project:
-                project_name = project.name
-        if self._apply_project_working_directory(path, project_name=project_name):
-            if current_project_id and project:
-                project.update(working_directory=str(Path(path).resolve()))
-                self.project_sidebar.refresh_projects()
-                self.project_panel.set_project(project)
-            self._workspace_blocked_project_id = None
-            self._set_input_enabled(True)
-
-    def _apply_project_working_directory(self, raw_path: str, *, project_name: Optional[str] = None) -> bool:
-        """Resolve and propagate a project-provided working directory."""
-        if not raw_path:
-            return False
-        try:
-            resolved_path = Path(raw_path).expanduser().resolve()
-            resolved = str(resolved_path)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("Invalid project working directory '%s': %s", raw_path, exc)
-            self._display_user_error(f"Project working directory is invalid: {raw_path}")
-            return False
-
-        current = self.app_state.working_directory
-        if current:
-            try:
-                if Path(current).resolve() == resolved_path:
-                    LOGGER.debug("Workspace already set to %s; skipping update", resolved)
-                    return True
-            except Exception:  # noqa: BLE001
-                LOGGER.debug("Unable to compare workspace paths; continuing", exc_info=True)
-
-        LOGGER.info(
-            "Setting ToolManager workspace to: %s | project=%s",
-            resolved,
-            project_name or "unknown",
-        )
-        try:
-            self.app_state.set_working_directory(resolved)
-        except (ValueError, FileNotFoundError) as exc:
-            LOGGER.warning("Failed to set working directory %s: %s", resolved, exc)
-            self._display_user_error("Please select a valid working directory that exists on disk.")
-            return False
-        workspace = self.app_state.working_directory
-        if not workspace:
-            LOGGER.error("Workspace application returned empty path for %s", resolved)
-            self._display_user_error("Workspace not applied. Please retry selecting the directory.")
-            return False
-
-        if self.orchestrator:
-            try:
-                self.orchestrator.update_working_directory(workspace)
-            except AuraConfigurationError as exc:
-                LOGGER.warning("Failed to sync orchestrator workspace %s: %s", resolved, exc)
-                self._display_user_error(str(exc))
-                return False
-
-        try:
-            if Path(workspace).resolve() != resolved_path:
-                LOGGER.error(
-                    "Workspace mismatch detected | expected=%s | current=%s",
-                    resolved,
-                    workspace,
-                )
-                self._display_user_error(
-                    "Working directory mismatch detected. Please re-select the project directory."
-                )
-                return False
-        except Exception:  # noqa: BLE001
-            LOGGER.debug("Unable to verify workspace equality; continuing", exc_info=True)
-
-        if not self._verify_tool_manager_workspace(resolved):
-            return False
-
-        if project_name:
-            self.status_bar_manager.update_status(f"Project: {project_name}", config.COLORS.accent, persist=True)
-        else:
-            self.status_bar_manager.update_status("Workspace updated", config.COLORS.accent, persist=True)
-        LOGGER.info("Working directory set to %s", resolved)
-        return True
+        self._controller.prompt_for_working_directory()
 
     def _open_agent_settings(self) -> None:
         dialog = AgentSettingsDialog(self.app_state, self)
@@ -741,17 +609,17 @@ class MainWindow(QMainWindow):
                 # Update app state
                 self.app_state.set_current_project(project_id)
 
-                workspace_ready = self._ensure_project_workspace(project)
+                workspace_ready = self._controller.ensure_project_workspace(project)
                 if workspace_ready:
-                    self._workspace_blocked_project_id = None
+                    self.set_workspace_blocked_project(None)
                     current_workspace = self.app_state.working_directory
-                    self._set_input_enabled(True)
+                    self.set_input_enabled(True)
                     self.output_panel.display_output(
                         f"Loaded project: {project.name} | Working directory: {current_workspace}",
                         config.COLORS.success,
                     )
                 else:
-                    self._block_workspace_for_project(project)
+                    self._controller.block_workspace_for_project(project)
                     self.output_panel.display_output(f"Loaded project: {project.name}", config.COLORS.success)
 
                 # Show project panel
@@ -765,116 +633,6 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             LOGGER.error(f"Failed to select project: {e}")
-
-    def _ensure_project_workspace(self, project: Project) -> bool:
-        """Ensure the selected project has an active working directory."""
-        raw_path = (project.working_directory or "").strip()
-        if raw_path:
-            return self._apply_project_working_directory(raw_path, project_name=project.name)
-        return self._prompt_for_project_working_directory(project)
-
-    def _prompt_for_project_working_directory(self, project: Project) -> bool:
-        """Request the user to provide a working directory when missing."""
-        message = (
-            f"Project '{project.name}' has no working directory. "
-            "Select one now to enable file tools."
-        )
-        choice = QMessageBox.question(
-            self,
-            "Set Project Working Directory",
-            message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if choice == QMessageBox.StandardButton.Yes:
-            seed = project.working_directory or self.app_state.working_directory or str(Path.home())
-            selected = QFileDialog.getExistingDirectory(self, "Select Project Directory", seed)
-            if selected:
-                resolved = str(Path(selected).expanduser().resolve())
-                LOGGER.info(
-                    "User selected working directory %s for project %s",
-                    resolved,
-                    project.id,
-                )
-                project.update(working_directory=resolved)
-                self.project_sidebar.refresh_projects()
-                self.project_panel.set_project(project)
-                return self._apply_project_working_directory(resolved, project_name=project.name)
-        LOGGER.warning(
-            "Project %s lacks a working directory; agent operations disabled until one is set.",
-            project.id,
-        )
-        self._display_user_error(
-            f"Project '{project.name}' has no working directory. Use 'Set Working Directory' to continue."
-        )
-        return False
-
-    def _block_workspace_for_project(self, project: Project) -> None:
-        """Disable agent operations until the workspace is configured."""
-        self._workspace_blocked_project_id = project.id
-        self._set_input_enabled(False)
-        self.status_bar_manager.update_status(
-            f"Workspace required for {project.name}",
-            config.COLORS.error,
-            persist=True,
-        )
-
-    def _verify_tool_manager_workspace(self, expected: str) -> bool:
-        """Compare the orchestrator/tool manager workspace to the requested path."""
-        if not expected:
-            return False
-        expected_path = None
-        try:
-            expected_path = Path(expected).resolve()
-        except Exception:  # noqa: BLE001
-            LOGGER.debug("Unable to resolve expected workspace %s", expected, exc_info=True)
-        if not self.orchestrator:
-            LOGGER.info("ToolManager now using: %s (no orchestrator available for verification)", expected)
-            return True
-
-        tm_path = ""
-        tm = getattr(self.orchestrator, "_tool_manager", None)
-        if tm is not None:
-            tm_path = str(getattr(tm, "workspace_dir", "") or "")
-        orch_path = ""
-        if hasattr(self.orchestrator, "_working_dir"):
-            try:
-                orch_path = str(self.orchestrator._working_dir)
-            except Exception:  # noqa: BLE001
-                LOGGER.debug("Unable to read orchestrator working dir", exc_info=True)
-
-        LOGGER.info(
-            "ToolManager now using: %s | orchestrator _working_dir=%s",
-            tm_path or "<unknown>",
-            orch_path or "<unknown>",
-        )
-
-        mismatch = False
-        if expected_path:
-            if tm_path:
-                try:
-                    if Path(tm_path).resolve() != expected_path:
-                        mismatch = True
-                except Exception:  # noqa: BLE001
-                    LOGGER.debug("Unable to resolve ToolManager path %s", tm_path, exc_info=True)
-            if orch_path:
-                try:
-                    if Path(orch_path).resolve() != expected_path:
-                        mismatch = True
-                except Exception:  # noqa: BLE001
-                    LOGGER.debug("Unable to resolve orchestrator path %s", orch_path, exc_info=True)
-
-        if mismatch:
-            LOGGER.error(
-                "ToolManager workspace mismatch detected | expected=%s | tool_manager=%s | orchestrator=%s",
-                expected,
-                tm_path or "<unknown>",
-                orch_path or "<unknown>",
-            )
-            self._display_user_error(
-                "ToolManager is still using the previous workspace. Please re-select the project directory."
-            )
-            return False
-        return True
 
     def _on_conversation_selected(self, conversation_id: int) -> None:
         """Handle conversation selection from sidebar."""
@@ -993,3 +751,5 @@ class MainWindow(QMainWindow):
     def refresh_sidebars(self) -> None:
         """Refresh both sidebars (call after database changes)."""
         self.project_sidebar.refresh_all()
+
+

@@ -67,6 +67,24 @@ Optional fields:
 - [ ] `quality_checklist` items are actionable statements the executor can verify.
 - [ ] `estimated_files` aligns with the number of distinct files referenced in `operations`.
 
+**Common Validation Errors & How to Fix Them**
+
+If submit_execution_plan returns a validation error, the error message will show the specific field path and problem. Here are the most common issues and their fixes:
+
+- "operations[N].old_str: field required" → You forgot to include old_str in a MODIFY operation. Add the old_str field showing the exact text to replace.
+
+- "operations[N].content: field required" → You forgot to include content in a CREATE or MODIFY operation. Add the content field with the complete file contents.
+
+- "operations[N].new_str: field required" → You forgot to include new_str in a MODIFY operation. Add the new_str field showing the replacement text.
+
+- "operations: field required" → You forgot to include the operations array. Every ExecutionPlan must have at least one operation.
+
+- "task_summary: field required" → You forgot to include task_summary. Add a one-sentence description of what the plan will accomplish.
+
+- "quality_checklist: field required" → You forgot to include quality_checklist. Add an array of strings with acceptance criteria.
+
+When you receive a validation error, read the error message carefully to identify which field is missing or malformed, fix that specific field, and resubmit the complete ExecutionPlan.
+
 **MODIFY Operation Best Practices**
 **Godot Scene Modifications (.tscn files)**
 When working with Godot scenes, follow this proven workflow for successful modifications:
@@ -137,18 +155,7 @@ You are Aura's Claude Sonnet 4.5 executor. You receive a verified `ExecutionPlan
 - Treat errors as blockers-resolve them before proceeding.
 """.strip()
 
-UNIFIED_AGENT_PROMPT = """
-You are Aura's single-agent fallback. Work like a senior engineer sitting at the user's workstation.
-
-- **Investigate first.** Use the provided tools to list files, read code, and understand context before editing.
-- **Cite evidence.** Reference concrete file paths and line numbers when explaining behavior or decisions.
-- **Edit directly.** Use create/modify/replace/delete file tools to apply fully working code. Never describe changes without making them.
-- **Verify results.** Run linters or tests via the available tools when appropriate and summarize outcomes.
-- **Be concise.** Respond with clear reasoning, the actions you took, and guidance for next steps.
-""".strip()
-
 __all__ = [
     "ANALYST_PROMPT",
     "EXECUTOR_PROMPT",
-    "UNIFIED_AGENT_PROMPT",
 ]

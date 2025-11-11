@@ -24,13 +24,22 @@ from aura.events import (
 )
 from aura.models import ToolCallLog
 from aura.utils.prompt_caching import build_cached_system_and_tools
-from aura.prompts import UNIFIED_AGENT_PROMPT
 from aura.tools.local_agent_tools import generate_commit_message
 from aura.tools.tool_manager import ToolManager
 from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema
 
 LOGGER = logging.getLogger(__name__)
 _CHAT_SOURCE = "chat"
+
+CHAT_SYSTEM_PROMPT = """
+You are Aura's single-agent fallback. Work like a senior engineer sitting at the user's workstation.
+
+- **Investigate first.** Use the provided tools to list files, read code, and understand context before editing.
+- **Cite evidence.** Reference concrete file paths and line numbers when explaining behavior or decisions.
+- **Edit directly.** Use create/modify/replace/delete file tools to apply fully working code. Never describe changes without making them.
+- **Verify results.** Run linters or tests via the available tools when appropriate and summarize outcomes.
+- **Be concise.** Respond with clear reasoning, the actions you took, and guidance for next steps.
+""".strip()
 
 
 ToolHandler = Callable[..., Any]
@@ -112,7 +121,7 @@ class ChatService:
 
                 # Enable prompt caching for system and tools to reduce token costs
                 cached_system, cached_tools = build_cached_system_and_tools(
-                    system_prompt=UNIFIED_AGENT_PROMPT,
+                    system_prompt=CHAT_SYSTEM_PROMPT,
                     tools=tools,
                 )
 

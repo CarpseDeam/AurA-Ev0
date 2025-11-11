@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import ast
 import fnmatch
 import hashlib
 import json
 import logging
 import os
-import re
-import statistics
-import subprocess
 import sys
 import uuid
-from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path

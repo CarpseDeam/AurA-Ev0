@@ -16,8 +16,8 @@ from aura.prompts import (
     ANALYST_PROMPT,
     ANALYST_PLANNING_PROMPT,
     EXECUTOR_PROMPT,
-    UNIFIED_AGENT_PROMPT,
 )
+from aura.services.chat_service import CHAT_SYSTEM_PROMPT
 from aura.utils.prompt_caching import (
     estimate_token_count,
     is_cacheable,
@@ -33,7 +33,7 @@ def check_prompt_cacheability():
         "ANALYST_PROMPT": ANALYST_PROMPT,
         "ANALYST_PLANNING_PROMPT": ANALYST_PLANNING_PROMPT,
         "EXECUTOR_PROMPT": EXECUTOR_PROMPT,
-        "UNIFIED_AGENT_PROMPT": UNIFIED_AGENT_PROMPT,
+        "CHAT_SYSTEM_PROMPT": CHAT_SYSTEM_PROMPT,
     }
 
     print("=" * 80)
