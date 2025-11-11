@@ -61,9 +61,11 @@ STDLIB_MODULES = getattr(
 )
 
 ASSET_TYPE_EXTENSIONS: dict[str, set[str]] = {
-    "meshes": {".fbx", ".obj"},
-    "textures": {".png", ".jpg", ".jpeg"},
-    "sounds": {".wav", ".mp3"},
+    "meshes": {".fbx", ".obj", ".gltf", ".glb", ".dae", ".blend"},
+    "textures": {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".webp", ".exr", ".hdr"},
+    "sounds": {".wav", ".mp3", ".ogg", ".flac"},
+    "particles": {".tres", ".res", ".particle", ".particles", ".pcf"},
+    "scenes": {".tscn", ".scn"},
 }
 
 ASSET_TYPE_ALIASES: dict[str, str] = {
@@ -78,6 +80,10 @@ ASSET_TYPE_ALIASES: dict[str, str] = {
     "sound": "sounds",
     "sounds": "sounds",
     "audio": "sounds",
+    "particle": "particles",
+    "particles": "particles",
+    "scene": "scenes",
+    "scenes": "scenes",
 }
 
 ASSET_EXTENSION_LOOKUP: dict[str, str] = {
@@ -1218,6 +1224,176 @@ class ToolManager:
             LOGGER.exception("Failed to search assets with pattern %s: %s", pattern, exc)
             response["error"] = str(exc)
             return response
+
+    def search_project_assets(
+        self,
+        query: str,
+        asset_types: Sequence[str] | str | None = None,
+        *,
+        respect_gitignore: bool | None = None,
+    ) -> dict[str, Any]:
+        """Return up to 50 relevant assets that match a filename/parent query."""
+        if respect_gitignore is None:
+            respect_gitignore = True
+
+        raw_query = query or ""
+        normalized_query = raw_query.strip().lower()
+        response: dict[str, Any] = {
+            "query": raw_query,
+            "asset_types": [],
+            "respect_gitignore": respect_gitignore,
+            "results": [],
+            "count": 0,
+            "max_results": 50,
+        }
+
+        LOGGER.info(
+            "[TOOL] search_project_assets(query=%s, asset_types=%s, respect_gitignore=%s)",
+            raw_query,
+            asset_types,
+            respect_gitignore,
+        )
+
+        if not normalized_query:
+            response["error"] = "Query is required."
+            return response
+
+        normalized_types: set[str] | None = None
+        invalid_types: list[str] = []
+        provided_types: list[str] = []
+        if asset_types:
+            if isinstance(asset_types, str):
+                provided_types = [asset_types]
+            else:
+                provided_types = [str(item) for item in asset_types]
+            normalized_types = set()
+            for candidate in provided_types:
+                resolved = self._normalize_asset_type_name(candidate)
+                if not resolved:
+                    invalid_types.append(candidate)
+                    continue
+                normalized_types.add(resolved)
+
+            if invalid_types:
+                response["asset_types"] = provided_types
+                response["invalid_asset_types"] = sorted({item for item in invalid_types if item})
+                response["error"] = (
+                    "Unsupported asset types supplied. Valid categories include meshes/models, textures, "
+                    "particles, sounds/audio, and scenes."
+                )
+                return response
+            response["resolved_asset_types"] = sorted(normalized_types)
+        response["asset_types"] = provided_types
+
+        self._ensure_gitignore_state()
+
+        def classify_match(target: Path) -> int | None:
+            """Return the relevance priority for a target path or None when it does not match."""
+            filename_lower = target.name.lower()
+            stem_lower = target.stem.lower()
+            parent_name = target.parent.name.lower() if target.parent else ""
+
+            if normalized_query == filename_lower or normalized_query == stem_lower:
+                return 0
+            if parent_name and normalized_query == parent_name:
+                return 1
+            if normalized_query in filename_lower or (parent_name and normalized_query in parent_name):
+                return 2
+            return None
+
+        matches: list[tuple[int, float, dict[str, Any]]] = []
+        for file_path in self._iter_workspace_files(self.workspace_dir, respect_gitignore=respect_gitignore):
+            asset_type = self._classify_asset_extension(file_path.suffix)
+            if asset_type is None:
+                continue
+            if normalized_types and asset_type not in normalized_types:
+                continue
+
+            match_priority = classify_match(file_path)
+            if match_priority is None:
+                continue
+
+            try:
+                stats = file_path.stat()
+            except OSError as exc:  # noqa: PERF203
+                LOGGER.debug("Unable to stat asset %s: %s", file_path, exc)
+                continue
+
+            entry = {
+                "path": self._relative_path(file_path),
+                "asset_type": asset_type,
+                "size_bytes": stats.st_size,
+            }
+            matches.append((match_priority, stats.st_mtime, entry))
+
+        matches.sort(key=lambda item: (item[0], -item[1], item[2]["path"]))
+        limited_entries = [item[2] for item in matches[:50]]
+        response["results"] = limited_entries
+        response["count"] = len(limited_entries)
+        if len(matches) > len(limited_entries):
+            response["truncated"] = True
+
+        return response
+
+    def list_scenes(
+        self,
+        filter_text: str | None = None,
+        max_results: int = 20,
+        *,
+        respect_gitignore: bool | None = None,
+    ) -> dict[str, Any]:
+        """Return recently updated .tscn scenes optionally filtered by name."""
+        if respect_gitignore is None:
+            respect_gitignore = True
+
+        filter_normalized = (filter_text or "").strip().lower()
+        max_results = max(1, max_results)
+        response: dict[str, Any] = {
+            "filter": filter_text,
+            "max_results": max_results,
+            "respect_gitignore": respect_gitignore,
+            "results": [],
+            "count": 0,
+        }
+
+        LOGGER.info(
+            "[TOOL] list_scenes(filter=%s, max_results=%s, respect_gitignore=%s)",
+            filter_text,
+            max_results,
+            respect_gitignore,
+        )
+
+        self._ensure_gitignore_state()
+        matches: list[tuple[float, dict[str, Any]]] = []
+        for file_path in self._iter_workspace_files(self.workspace_dir, respect_gitignore=respect_gitignore):
+            if file_path.suffix.lower() != ".tscn":
+                continue
+            file_name_lower = file_path.name.lower()
+            if filter_normalized and filter_normalized not in file_name_lower:
+                continue
+
+            try:
+                stats = file_path.stat()
+            except OSError as exc:  # noqa: PERF203
+                LOGGER.debug("Unable to stat scene %s: %s", file_path, exc)
+                continue
+
+            entry = {
+                "path": self._relative_path(file_path),
+                "size_bytes": stats.st_size,
+                "last_modified": self._format_timestamp(stats.st_mtime),
+            }
+            matches.append((stats.st_mtime, entry))
+
+        matches.sort(key=lambda item: item[0], reverse=True)
+        limited = [item[1] for item in matches[:max_results]]
+        response["results"] = limited
+        response["count"] = len(limited)
+        response["total_matches"] = len(matches)
+        if len(matches) > len(limited):
+            response["truncated"] = True
+
+        return response
 
     def get_asset_metadata(self, asset_path: str) -> dict[str, Any]:
         """Return file metadata for a single asset path."""

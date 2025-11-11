@@ -201,6 +201,8 @@ class AnalystAgentService:
             "verify_asset_paths": self.tool_manager.verify_asset_paths,
             "list_project_assets": self.tool_manager.list_project_assets,
             "search_assets_by_pattern": self.tool_manager.search_assets_by_pattern,
+            "search_project_assets": self.tool_manager.search_project_assets,
+            "list_scenes": self.tool_manager.list_scenes,
             "get_asset_metadata": self.tool_manager.get_asset_metadata,
             "respect_gitignore": self.tool_manager.respect_gitignore,
             "submit_execution_plan": self._handle_submit_execution_plan,
