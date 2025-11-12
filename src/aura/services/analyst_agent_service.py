@@ -537,7 +537,7 @@ class AnalystAgentService:
                         tools=self._build_tool_definitions(allowed_tools=read_only_tools),
                     )
 
-                response = investigation_client.messages.create(
+                response = investigation_client.messages_create(
                     model=investigation_model,
                     system=system_prompt,
                     temperature=0,
