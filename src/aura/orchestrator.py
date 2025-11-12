@@ -293,6 +293,7 @@ class Orchestrator(QObject):
                 tool_manager=self._tool_manager,
                 investigation_model=self.app_state.analyst_investigation_model,
                 planning_model=self.app_state.analyst_planning_model,
+                use_local_investigation=self.app_state.use_local_investigation,
             )
             self._executor_agent = ExecutorAgentService(
                 api_key=effective_executor_key,

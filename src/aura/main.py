@@ -126,6 +126,7 @@ class ApplicationController:
         self.app_state.set_analyst_investigation_model(investigation_model)
         self.app_state.set_executor_model(settings.get("executor_model", DEFAULT_EXECUTOR_MODEL))
         self.app_state.set_specialist_model(settings.get("specialist_model", DEFAULT_SPECIALIST_MODEL))
+        self.app_state.set_use_local_investigation(settings.get("use_local_investigation", False))
         
         orchestrator_warning: str | None = None
 

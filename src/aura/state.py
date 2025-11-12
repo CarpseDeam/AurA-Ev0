@@ -41,6 +41,7 @@ class AppState(QObject):
     executor_model_changed = Signal(str)
     specialist_model_changed = Signal(str)
     local_model_endpoint_changed = Signal(str)
+    use_local_investigation_changed = Signal(bool)
     current_project_changed = Signal(object)  # project_id (int or None)
     current_conversation_changed = Signal(object)  # conversation_id (int or None)
 
@@ -55,6 +56,7 @@ class AppState(QObject):
         self._executor_model: str = DEFAULT_EXECUTOR_MODEL
         self._specialist_model: str = DEFAULT_SPECIALIST_MODEL
         self._local_model_endpoint: str = ""
+        self._use_local_investigation: bool = False
         self._current_project_id: Optional[int] = None
         self._current_conversation_id: Optional[int] = None
         global _APP_STATE
@@ -174,6 +176,17 @@ class AppState(QObject):
         if self._local_model_endpoint != endpoint:
             self._local_model_endpoint = endpoint
             self.local_model_endpoint_changed.emit(endpoint)
+
+    @property
+    def use_local_investigation(self) -> bool:
+        """Get whether to use local model for investigation phase."""
+        return self._use_local_investigation
+
+    def set_use_local_investigation(self, enabled: bool) -> None:
+        """Set whether to use local model for investigation and emit change signal."""
+        if self._use_local_investigation != enabled:
+            self._use_local_investigation = enabled
+            self.use_local_investigation_changed.emit(enabled)
 
     @property
     def current_project_id(self) -> Optional[int]:

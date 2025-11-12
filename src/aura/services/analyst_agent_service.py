@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import anthropic
 import instructor
+from openai import OpenAI
 from pydantic import ValidationError
 
 from aura import config
@@ -97,8 +98,10 @@ class AnalystAgentService:
     tool_manager: ToolManager
     investigation_model: str
     planning_model: str
+    use_local_investigation: bool = False
     _client: anthropic.Anthropic = field(init=False, repr=False)
     _instructor_client: instructor.Instructor = field(init=False, repr=False)
+    _local_client: Any = field(init=False, repr=False, default=None)
     _event_bus: Any = field(init=False, repr=False)
     _tool_handlers: Mapping[str, ToolHandler] = field(init=False, repr=False)
     _latest_plan: ExecutionPlan | None = field(default=None, init=False, repr=False)
@@ -108,6 +111,15 @@ class AnalystAgentService:
     def __post_init__(self) -> None:
         self._client = anthropic.Anthropic(api_key=self.api_key)
         self._instructor_client = instructor.from_anthropic(anthropic.Anthropic(api_key=self.api_key))
+
+        # Initialize local client for investigation if enabled
+        if self.use_local_investigation:
+            self._local_client = OpenAI(
+                base_url="http://localhost:11434/v1",
+                api_key="ollama"
+            )
+            LOGGER.info("Local investigation enabled | model=deepseek-coder-v2:16b")
+
         self._event_bus = get_event_bus()
         self._tool_handlers = {
             "list_project_files": self.tool_manager.list_project_files,
@@ -354,12 +366,23 @@ class AnalystAgentService:
             Tuple of (investigation_summary, updated_messages) on success
             Error string on failure
         """
-        LOGGER.info("Phase 1: Investigation Agent started")
+        # Select client and model based on local investigation setting
+        investigation_client = self._local_client if self.use_local_investigation else self._client
+        investigation_model = "deepseek-coder-v2:16b" if self.use_local_investigation else self.investigation_model
+
+        LOGGER.info(
+            "Phase 1: Investigation Agent started | local=%s | model=%s",
+            self.use_local_investigation,
+            investigation_model,
+        )
         self._emit_status("Investigation: gathering context...", "analyst.investigation")
         self._event_bus.emit(
             AgentEvent(
                 name="analyst.investigation_started",
-                payload={"model": self.investigation_model},
+                payload={
+                    "model": investigation_model,
+                    "local": self.use_local_investigation,
+                },
                 source=_ANALYST_SOURCE,
             )
         )
@@ -375,18 +398,24 @@ class AnalystAgentService:
 
         try:
             while tool_calls < max_tool_calls:
-                # Enable prompt caching
-                cached_system, cached_tools = build_cached_system_and_tools(
-                    system_prompt=ANALYST_PROMPT,
-                    tools=self._build_tool_definitions(allowed_tools=read_only_tools),
-                )
+                # Enable prompt caching (only for Anthropic client)
+                if self.use_local_investigation:
+                    # For local client, use plain system prompt and tools
+                    system_prompt = ANALYST_PROMPT
+                    tools = self._build_tool_definitions(allowed_tools=read_only_tools)
+                else:
+                    # For Anthropic, enable prompt caching
+                    system_prompt, tools = build_cached_system_and_tools(
+                        system_prompt=ANALYST_PROMPT,
+                        tools=self._build_tool_definitions(allowed_tools=read_only_tools),
+                    )
 
-                response = self._client.messages.create(
-                    model=self.investigation_model,
-                    system=cached_system,
+                response = investigation_client.messages.create(
+                    model=investigation_model,
+                    system=system_prompt,
                     temperature=0,
                     max_tokens=INVESTIGATION_MAX_TOKENS,
-                    tools=cached_tools,
+                    tools=tools,
                     messages=investigation_messages,
                 )
 
@@ -445,7 +474,7 @@ class AnalystAgentService:
             return error_msg
 
         except anthropic.APIError as exc:
-            LOGGER.exception("Investigation API error")
+            LOGGER.exception("Investigation API error (Anthropic)")
             self._event_bus.emit(
                 SystemErrorEvent(
                     error="analyst.investigation_api_error",
@@ -455,11 +484,13 @@ class AnalystAgentService:
             )
             return f"Investigation failed: {exc}"
         except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Investigation unexpected error")
+            # Catch all other errors including OpenAI/local API errors
+            error_type = "local" if self.use_local_investigation else "unexpected"
+            LOGGER.exception("Investigation %s error", error_type)
             self._event_bus.emit(
                 SystemErrorEvent(
-                    error="analyst.investigation_unexpected_error",
-                    details={"message": str(exc)},
+                    error=f"analyst.investigation_{error_type}_error",
+                    details={"message": str(exc), "local": self.use_local_investigation},
                     source=_ANALYST_SOURCE,
                 )
             )

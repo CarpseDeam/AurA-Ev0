@@ -6,6 +6,7 @@ import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -45,6 +46,9 @@ class AgentSettingsDialog(QDialog):
         self.specialist_model_combo.setEditable(False)
         self.specialist_model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.specialist_refresh_button = QPushButton("Refresh", self)
+
+        self.use_local_investigation_checkbox = QCheckBox("Use local model for investigation (deepseek-coder-v2:16b)", self)
+        self.use_local_investigation_checkbox.setChecked(self.app_state.use_local_investigation)
 
         self.save_settings_button = QPushButton("Save", self)
         self.save_settings_button.setObjectName("save_settings_button")
@@ -103,6 +107,9 @@ class AgentSettingsDialog(QDialog):
         specialist_row.addWidget(self.specialist_refresh_button)
         form.addRow("Specialist Model (local/Ollama):", specialist_row)
 
+        # Add local investigation checkbox
+        form.addRow("", self.use_local_investigation_checkbox)
+
         layout.addLayout(form)
 
         button_row = QHBoxLayout()
@@ -140,6 +147,7 @@ class AgentSettingsDialog(QDialog):
         self.analyst_model_combo.currentTextChanged.connect(self._on_analyst_model_selected)
         self.executor_model_combo.currentTextChanged.connect(self._on_executor_model_selected)
         self.specialist_model_combo.currentTextChanged.connect(self._on_specialist_model_selected)
+        self.use_local_investigation_checkbox.stateChanged.connect(self._on_use_local_investigation_changed)
         self.save_settings_button.clicked.connect(self._save_settings)
         self.close_button.clicked.connect(self.accept)
 
@@ -287,6 +295,11 @@ class AgentSettingsDialog(QDialog):
         if model_id:
             self.app_state.set_specialist_model(model_id)
 
+    def _on_use_local_investigation_changed(self, state: int) -> None:
+        """Handle local investigation checkbox state changes."""
+        enabled = state == Qt.CheckState.Checked.value
+        self.app_state.set_use_local_investigation(enabled)
+
     def _save_settings(self) -> None:
         settings = {
             "analyst_model": self.app_state.analyst_planning_model,
@@ -294,6 +307,7 @@ class AgentSettingsDialog(QDialog):
             "analyst_investigation_model": self.app_state.analyst_investigation_model,
             "executor_model": self.app_state.executor_model,
             "specialist_model": self.app_state.specialist_model,
+            "use_local_investigation": self.app_state.use_local_investigation,
         }
         save_settings(settings)
         QMessageBox.information(self, "Settings Saved", "Model selections have been saved successfully.")
