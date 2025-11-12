@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import anthropic
+import instructor
 from pydantic import ValidationError
 
 from aura import config
@@ -97,6 +98,7 @@ class AnalystAgentService:
     investigation_model: str
     planning_model: str
     _client: anthropic.Anthropic = field(init=False, repr=False)
+    _instructor_client: instructor.Instructor = field(init=False, repr=False)
     _event_bus: Any = field(init=False, repr=False)
     _tool_handlers: Mapping[str, ToolHandler] = field(init=False, repr=False)
     _latest_plan: ExecutionPlan | None = field(default=None, init=False, repr=False)
@@ -105,6 +107,7 @@ class AnalystAgentService:
 
     def __post_init__(self) -> None:
         self._client = anthropic.Anthropic(api_key=self.api_key)
+        self._instructor_client = instructor.from_anthropic(anthropic.Anthropic(api_key=self.api_key))
         self._event_bus = get_event_bus()
         self._tool_handlers = {
             "list_project_files": self.tool_manager.list_project_files,
@@ -467,7 +470,7 @@ class AnalystAgentService:
         user_request: str,
         investigation_summary: str,
     ) -> ExecutionPlan | str:
-        """Run Phase 2: Planning Agent with forced tool_choice.
+        """Run Phase 2: Planning Agent with instructor for guaranteed structured outputs.
 
         Args:
             user_request: Original user request
@@ -501,57 +504,34 @@ class AnalystAgentService:
                 "role": "user",
                 "content": [{
                     "type": "text",
-                    "text": "Now create the execution plan using submit_execution_plan.",
+                    "text": "Now create the execution plan. Include all required fields: task_summary, project_context, quality_checklist, estimated_files, and operations array with at least one CREATE/MODIFY/DELETE operation.",
                 }],
             },
         ]
 
         try:
-            # Enable prompt caching for planning phase
-            cached_system, cached_tools = build_cached_system_and_tools(
-                system_prompt=PLANNING_SYSTEM_PROMPT,
-                tools=self._build_tool_definitions(allowed_tools=["submit_execution_plan"]),
-            )
-
-            response = self._client.messages.create(
+            # Use instructor for guaranteed structured output
+            plan = self._instructor_client.messages.create(
                 model=self.planning_model,
-                system=cached_system,
-                temperature=0,
                 max_tokens=PLANNING_MAX_TOKENS,
-                tools=cached_tools,
+                temperature=0,
                 messages=planning_messages,
-                tool_choice={"type": "tool", "name": "submit_execution_plan"},
+                response_model=ExecutionPlan,
             )
 
-            # Collect tool results (should only be submit_execution_plan)
-            tool_results = self._collect_tool_results(response.content)
-
-            if self._latest_plan:
-                LOGGER.info(
-                    "Phase 2 complete | operations=%d",
-                    len(self._latest_plan.operations),
-                )
-                self._emit_status("Planning: execution plan ready", "analyst.planning_complete")
-                self._event_bus.emit(
-                    AgentEvent(
-                        name="analyst.planning_complete",
-                        payload={"operations": len(self._latest_plan.operations)},
-                        source=_ANALYST_SOURCE,
-                    )
-                )
-                return self._latest_plan
-
-            # Planning agent didn't submit a plan
-            error_msg = "Planning agent failed to submit execution plan"
-            LOGGER.error(error_msg)
+            LOGGER.info(
+                "Phase 2 complete | operations=%d",
+                len(plan.operations),
+            )
+            self._emit_status("Planning: execution plan ready", "analyst.planning_complete")
             self._event_bus.emit(
-                SystemErrorEvent(
-                    error="analyst.planning_no_plan",
-                    details={"stop_reason": response.stop_reason},
+                AgentEvent(
+                    name="analyst.planning_complete",
+                    payload={"operations": len(plan.operations)},
                     source=_ANALYST_SOURCE,
                 )
             )
-            return error_msg
+            return plan
 
         except anthropic.APIError as exc:
             LOGGER.exception("Planning API error")
@@ -563,6 +543,16 @@ class AnalystAgentService:
                 )
             )
             return f"Planning failed: {exc}"
+        except ValidationError as exc:
+            LOGGER.exception("Planning validation error")
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="analyst.planning_validation_error",
+                    details={"message": str(exc)},
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            return f"Planning failed: {self._render_plan_validation_error(exc)}"
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Planning unexpected error")
             self._event_bus.emit(
