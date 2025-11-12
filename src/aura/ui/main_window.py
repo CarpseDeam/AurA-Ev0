@@ -82,9 +82,8 @@ class MainWindow(QMainWindow):
         self.verbosity_selector: QComboBox | None = None
         self._workspace_blocked_project_id: Optional[int] = None
 
-        # Model status badges
-        self.analyst_badge = QLabel(self)
-        self.executor_badge = QLabel(self)
+        # Model status badge
+        self.model_badge = QLabel(self)
         self._event_bus = get_event_bus()
 
         # Initialize project sidebars
@@ -315,12 +314,10 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.toolbar.addWidget(spacer)
 
-        # Add model status badges
-        self._update_analyst_badge(self.app_state.analyst_model)
-        self._update_executor_badge(self.app_state.executor_model)
-        self._style_model_badges()
-        self.toolbar.addWidget(self.analyst_badge)
-        self.toolbar.addWidget(self.executor_badge)
+        # Add model status badge
+        self._update_model_badge(self.app_state.agent_model)
+        self._style_model_badge()
+        self.toolbar.addWidget(self.model_badge)
 
     def _configure_verbosity_selector(self) -> None:
         """Initialize the verbosity drop-down."""
@@ -391,16 +388,12 @@ class MainWindow(QMainWindow):
         shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
         shortcut.activated.connect(self.project_sidebar._toggle_collapse)
 
-    def _update_analyst_badge(self, model_name: str) -> None:
-        """Update the analyst model badge display."""
-        self.analyst_badge.setText(f"Analyst: {model_name}")
+    def _update_model_badge(self, model_name: str) -> None:
+        """Update the active model badge display."""
+        self.model_badge.setText(f"Model: {model_name}")
 
-    def _update_executor_badge(self, model_name: str) -> None:
-        """Update the executor model badge display."""
-        self.executor_badge.setText(f"Executor: {model_name}")
-
-    def _style_model_badges(self) -> None:
-        """Apply styling to the model status badges."""
+    def _style_model_badge(self) -> None:
+        """Apply styling to the model status badge."""
         badge_style = f"""
             QLabel {{
                 background-color: {config.COLORS.background};
@@ -413,8 +406,7 @@ class MainWindow(QMainWindow):
                 margin-left: 6px;
             }}
         """
-        self.analyst_badge.setStyleSheet(badge_style)
-        self.executor_badge.setStyleSheet(badge_style)
+        self.model_badge.setStyleSheet(badge_style)
 
     def _connect_handler_signals(self) -> None:
         self.orchestration_handler.request_input_enabled.connect(self.set_input_enabled)

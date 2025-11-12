@@ -68,12 +68,16 @@ class SingleAgentService:
         max_tokens: int = 8000,
         system_prompt: str = SYSTEM_PROMPT,
         max_tool_iterations: int = 24,
+        temperature: float = 0.0,
+        enable_cost_tracking: bool = True,
     ) -> None:
         self._client = client
         self._model_name = model_name
         self._system_prompt = system_prompt.strip()
         self._max_tokens = max_tokens
         self._max_tool_iterations = max_tool_iterations
+        self._temperature = temperature
+        self._enable_cost_tracking = enable_cost_tracking
         self._event_bus = get_event_bus()
         self._active_conversation_id: int | None = None
 
@@ -129,7 +133,7 @@ class SingleAgentService:
                 with self._client.messages.stream(
                     model=self._model_name,
                     system=cached_system,
-                    temperature=0,
+                    temperature=self._temperature,
                     max_tokens=self._max_tokens,
                     messages=messages,
                     tools=cached_tools if cached_tools else None,
@@ -140,7 +144,7 @@ class SingleAgentService:
                         streamed_any = True
                         self._emit_stream(delta)
                         yield delta
-                    response = stream.get_final_response()
+                    response = stream.get_final_message()
             except anthropic.APIError as exc:
                 message = "Claude API request failed. Check your connection and API key."
                 LOGGER.exception("Anthropic API error: %s", exc)
@@ -175,7 +179,8 @@ class SingleAgentService:
                 self._emit_status("Single agent: task complete", "single_agent.complete")
                 self._emit_stream("", is_final=True)
                 self._emit_completion(final_text, success=True)
-                self._log_cost(goal, total_input_tokens, total_output_tokens)
+                if self._enable_cost_tracking:
+                    self._log_cost(goal, total_input_tokens, total_output_tokens)
                 return final_text
 
             message = f"Claude stopped unexpectedly (reason={response.stop_reason})."

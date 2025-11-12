@@ -21,10 +21,13 @@ from aura.ui.main_window import MainWindow
 from aura.ui.cli_heartbeat_display import CliHeartbeatDisplay
 from aura.utils import load_settings
 from aura.utils.settings import (
-    DEFAULT_ANALYST_INVESTIGATION_MODEL,
-    DEFAULT_ANALYST_PLANNING_MODEL,
-    DEFAULT_EXECUTOR_MODEL,
+    DEFAULT_AGENT_MODEL,
+    DEFAULT_ANTHROPIC_API_KEY,
+    DEFAULT_COST_TRACKING,
+    DEFAULT_MAX_TOKENS_BUDGET,
     DEFAULT_SPECIALIST_MODEL,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOOL_CALL_LIMIT,
 )
 from aura.database import initialize_database
 from aura.models import Conversation, Project
@@ -114,27 +117,36 @@ class ApplicationController:
 
         # Load settings and apply them to the AppState
         settings = load_settings()
-        planning_model = settings.get(
-            "analyst_planning_model",
-            settings.get("analyst_model", DEFAULT_ANALYST_PLANNING_MODEL),
+        self.app_state.set_agent_model(settings.get("agent_model", DEFAULT_AGENT_MODEL))
+        self.app_state.set_anthropic_api_key(
+            settings.get("anthropic_api_key", DEFAULT_ANTHROPIC_API_KEY)
         )
-        investigation_model = settings.get(
-            "analyst_investigation_model",
-            DEFAULT_ANALYST_INVESTIGATION_MODEL,
+        self.app_state.set_max_tokens_budget(
+            settings.get("max_tokens_budget", DEFAULT_MAX_TOKENS_BUDGET)
         )
-        self.app_state.set_analyst_planning_model(planning_model)
-        self.app_state.set_analyst_investigation_model(investigation_model)
-        self.app_state.set_executor_model(settings.get("executor_model", DEFAULT_EXECUTOR_MODEL))
-        self.app_state.set_specialist_model(settings.get("specialist_model", DEFAULT_SPECIALIST_MODEL))
+        self.app_state.set_tool_call_limit(
+            settings.get("tool_call_limit", DEFAULT_TOOL_CALL_LIMIT)
+        )
+        self.app_state.set_temperature(settings.get("temperature", DEFAULT_TEMPERATURE))
+        self.app_state.set_cost_tracking_enabled(
+            settings.get("enable_cost_tracking", DEFAULT_COST_TRACKING)
+        )
+        self.app_state.set_specialist_model(
+            settings.get("specialist_model", DEFAULT_SPECIALIST_MODEL)
+        )
         self.app_state.set_use_local_investigation(settings.get("use_local_investigation", False))
         
         orchestrator_warning: str | None = None
 
         try:
-            analyst_key = self._require_analyst_api_key()
+            api_key = self._resolve_api_key()
             single_agent = SingleAgentService(
-                client=anthropic.Anthropic(api_key=analyst_key),
-                model_name=self.app_state.analyst_model,
+                client=anthropic.Anthropic(api_key=api_key),
+                model_name=self.app_state.agent_model,
+                max_tokens=self.app_state.max_tokens_budget,
+                max_tool_iterations=self.app_state.tool_call_limit,
+                temperature=self.app_state.temperature,
+                enable_cost_tracking=self.app_state.cost_tracking_enabled,
             )
             self.orchestrator = Orchestrator(
                 app_state=self.app_state,
@@ -176,12 +188,8 @@ class ApplicationController:
                 type=Qt.ConnectionType.UniqueConnection,
             )
 
-        self.app_state.analyst_model_changed.connect(
-            self.main_window._update_analyst_badge,
-            type=Qt.ConnectionType.UniqueConnection,
-        )
-        self.app_state.executor_model_changed.connect(
-            self.main_window._update_executor_badge,
+        self.app_state.agent_model_changed.connect(
+            self.main_window._update_model_badge,
             type=Qt.ConnectionType.UniqueConnection,
         )
 
@@ -254,26 +262,30 @@ class ApplicationController:
             logging.getLogger("aura").error("Failed to update working directory: %s", exc)
             self.main_window._on_progress_update("Invalid working directory")
 
-    def _require_analyst_api_key(self) -> str:
-        """Return a validated analyst API key.
-
-        Raises:
-            AuraConfigurationError: If the Anthropic API key is not set
-
-        Returns:
-            The analyst API key
-        """
-        api_key = (
-            os.getenv("ANTHROPIC_ANALYST_API_KEY", "").strip()
-            or os.getenv("ANTHROPIC_API_KEY", "").strip()
-        )
-        if not api_key:
+    def _resolve_api_key(self) -> str:
+        """Return a validated Anthropic API key for the single agent."""
+        if not self.app_state:
             raise AuraConfigurationError(
-                "Analyst API key required for Aura analysis. "
-                "Set ANTHROPIC_API_KEY (or ANTHROPIC_ANALYST_API_KEY) and restart Aura.",
-                context={"env_var": "ANTHROPIC_API_KEY"},
+                "Application state is not initialized; cannot resolve API key."
             )
-        return api_key
+
+        api_key = (self.app_state.anthropic_api_key or "").strip()
+        if api_key:
+            return api_key
+
+        env_key = (
+            os.getenv("ANTHROPIC_API_KEY", "").strip()
+            or os.getenv("CLAUDE_API_KEY", "").strip()
+        )
+        if env_key:
+            self.app_state.set_anthropic_api_key(env_key)
+            return env_key
+
+        raise AuraConfigurationError(
+            "Anthropic API key required for Aura. Enter it in Agent Settings or set "
+            "ANTHROPIC_API_KEY before launching.",
+            context={"env_var": "ANTHROPIC_API_KEY"},
+        )
 
     def _load_last_conversation(self) -> None:
         """Load the most recent conversation on startup."""

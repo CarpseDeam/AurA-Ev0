@@ -11,10 +11,13 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 from aura.utils.settings import (
-    DEFAULT_ANALYST_INVESTIGATION_MODEL,
-    DEFAULT_ANALYST_PLANNING_MODEL,
-    DEFAULT_EXECUTOR_MODEL,
+    DEFAULT_AGENT_MODEL,
+    DEFAULT_ANTHROPIC_API_KEY,
+    DEFAULT_COST_TRACKING,
+    DEFAULT_MAX_TOKENS_BUDGET,
     DEFAULT_SPECIALIST_MODEL,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOOL_CALL_LIMIT,
 )
 
 _APP_STATE: "AppState | None" = None
@@ -35,10 +38,12 @@ class AppState(QObject):
     # Signals for state changes
     working_directory_changed = Signal(str)
     status_changed = Signal(str, str)  # message, color
-    analyst_model_changed = Signal(str)
-    analyst_investigation_model_changed = Signal(str)
-    analyst_planning_model_changed = Signal(str)
-    executor_model_changed = Signal(str)
+    agent_model_changed = Signal(str)
+    anthropic_api_key_changed = Signal(str)
+    max_tokens_budget_changed = Signal(int)
+    tool_call_limit_changed = Signal(int)
+    temperature_changed = Signal(float)
+    cost_tracking_changed = Signal(bool)
     specialist_model_changed = Signal(str)
     local_model_endpoint_changed = Signal(str)
     use_local_investigation_changed = Signal(bool)
@@ -51,9 +56,12 @@ class AppState(QObject):
         self._working_directory: str = ""
         self._status_message: str = "Ready"
         self._status_color: str = "#ffffff"
-        self._analyst_planning_model: str = DEFAULT_ANALYST_PLANNING_MODEL
-        self._analyst_investigation_model: str = DEFAULT_ANALYST_INVESTIGATION_MODEL
-        self._executor_model: str = DEFAULT_EXECUTOR_MODEL
+        self._agent_model: str = DEFAULT_AGENT_MODEL
+        self._anthropic_api_key: str = DEFAULT_ANTHROPIC_API_KEY
+        self._max_tokens_budget: int = DEFAULT_MAX_TOKENS_BUDGET
+        self._tool_call_limit: int = DEFAULT_TOOL_CALL_LIMIT
+        self._temperature: float = DEFAULT_TEMPERATURE
+        self._cost_tracking_enabled: bool = DEFAULT_COST_TRACKING
         self._specialist_model: str = DEFAULT_SPECIALIST_MODEL
         self._local_model_endpoint: str = ""
         self._use_local_investigation: bool = False
@@ -111,49 +119,88 @@ class AppState(QObject):
             self.status_changed.emit(message, color)
 
     @property
-    def analyst_model(self) -> str:
-        """Get the selected analyst model."""
-        return self._analyst_planning_model
+    def agent_model(self) -> str:
+        """Get the configured single-agent model identifier."""
+        return self._agent_model
 
-    def set_analyst_model(self, model_id: str) -> None:
-        """Set the analyst model and emit change signal."""
-        self.set_analyst_planning_model(model_id)
-
-    @property
-    def analyst_planning_model(self) -> str:
-        """Get the Phase 2 planning model."""
-        return self._analyst_planning_model
-
-    def set_analyst_planning_model(self, model_id: str) -> None:
-        """Set the planning model and emit change signals."""
+    def set_agent_model(self, model_id: str) -> None:
+        """Persist the selected agent model and emit change signal."""
         sanitized = (model_id or "").strip()
-        if sanitized and self._analyst_planning_model != sanitized:
-            self._analyst_planning_model = sanitized
-            self.analyst_planning_model_changed.emit(sanitized)
-            self.analyst_model_changed.emit(sanitized)
+        if sanitized and self._agent_model != sanitized:
+            self._agent_model = sanitized
+            self.agent_model_changed.emit(sanitized)
 
     @property
-    def analyst_investigation_model(self) -> str:
-        """Get the Phase 1 investigation model."""
-        return self._analyst_investigation_model
+    def anthropic_api_key(self) -> str:
+        """Return the stored Anthropic API key."""
+        return self._anthropic_api_key
 
-    def set_analyst_investigation_model(self, model_id: str) -> None:
-        """Set the investigation model and emit change signal."""
-        sanitized = (model_id or "").strip()
-        if sanitized and self._analyst_investigation_model != sanitized:
-            self._analyst_investigation_model = sanitized
-            self.analyst_investigation_model_changed.emit(sanitized)
+    def set_anthropic_api_key(self, api_key: str) -> None:
+        """Update the Anthropic API key."""
+        sanitized = (api_key or "").strip()
+        if self._anthropic_api_key != sanitized:
+            self._anthropic_api_key = sanitized
+            self.anthropic_api_key_changed.emit(sanitized)
 
     @property
-    def executor_model(self) -> str:
-        """Get the selected executor model."""
-        return self._executor_model
+    def max_tokens_budget(self) -> int:
+        """Return the maximum tokens available per request."""
+        return self._max_tokens_budget
 
-    def set_executor_model(self, model_id: str) -> None:
-        """Set the executor model and emit change signal."""
-        if self._executor_model != model_id:
-            self._executor_model = model_id
-            self.executor_model_changed.emit(model_id)
+    def set_max_tokens_budget(self, tokens: int) -> None:
+        """Set the maximum Claude token budget."""
+        try:
+            value = int(tokens)
+        except (TypeError, ValueError):
+            value = DEFAULT_MAX_TOKENS_BUDGET
+        value = max(1_000, min(value, 400_000))
+        if self._max_tokens_budget != value:
+            self._max_tokens_budget = value
+            self.max_tokens_budget_changed.emit(value)
+
+    @property
+    def tool_call_limit(self) -> int:
+        """Return the maximum allowed tool iterations."""
+        return self._tool_call_limit
+
+    def set_tool_call_limit(self, limit: int) -> None:
+        """Set the total allowed tool calls for a run."""
+        try:
+            value = int(limit)
+        except (TypeError, ValueError):
+            value = DEFAULT_TOOL_CALL_LIMIT
+        value = max(1, min(value, 100))
+        if self._tool_call_limit != value:
+            self._tool_call_limit = value
+            self.tool_call_limit_changed.emit(value)
+
+    @property
+    def temperature(self) -> float:
+        """Return the sampling temperature."""
+        return self._temperature
+
+    def set_temperature(self, temperature: float) -> None:
+        """Set the Claude sampling temperature."""
+        try:
+            value = float(temperature)
+        except (TypeError, ValueError):
+            value = DEFAULT_TEMPERATURE
+        value = max(0.0, min(value, 1.0))
+        if self._temperature != value:
+            self._temperature = value
+            self.temperature_changed.emit(value)
+
+    @property
+    def cost_tracking_enabled(self) -> bool:
+        """Get whether to log estimated Anthropic costs."""
+        return self._cost_tracking_enabled
+
+    def set_cost_tracking_enabled(self, enabled: bool) -> None:
+        """Enable or disable cost tracking logs."""
+        normalized = bool(enabled)
+        if self._cost_tracking_enabled != normalized:
+            self._cost_tracking_enabled = normalized
+            self.cost_tracking_changed.emit(normalized)
 
     @property
     def specialist_model(self) -> str:
