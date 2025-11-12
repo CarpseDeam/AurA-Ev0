@@ -1,9 +1,4 @@
-"""Simplified conversation orchestrator for Aura.
-
-This module replaces the previous multi-session orchestration pipeline with a
-lightweight conversational flow that streams responses from the ChatService
-directly to the UI.
-"""
+"""Simplified conversation orchestrator for Aura's single-agent workflow."""
 
 from __future__ import annotations
 
@@ -13,30 +8,28 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import List, Tuple
 
 from PySide6.QtCore import QObject, QThread, Signal
 
 from aura import config
 from aura.exceptions import AuraConfigurationError, AuraExecutionError
-from aura.services.chat_service import ChatService
-from aura.services.analyst_agent_service import AnalystAgentService
-from aura.services.executor_agent_service import ExecutorAgentService
+from aura.models import Conversation, Message, MessageRole, Project
 from aura.services.local_summarizer_service import LocalSummarizerService
+from aura.services.simple_agent_service import AgentTool, SingleAgentService
 from aura.state import AppState
+from aura.tools.anthropic_tool_builder import build_anthropic_tool_schema
+from aura.tools.local_agent_tools import generate_commit_message
 from aura.tools.tool_manager import ToolManager
-from aura.models import Conversation, ExecutionPlan, Message, MessageRole, Project
 
 LOGGER = logging.getLogger(__name__)
 
-RUN_START_MESSAGE = "⚡ Kickstarting Aura run..."
-WORKSPACE_CHECK_MESSAGE = "📁 Validating workspace..."
-ANALYST_START_MESSAGE = "🧠 Analyst agent: drafting plan..."
-EXECUTOR_START_MESSAGE = "⚙️ Executor agent: dispatching micro-actions..."
-CONTEXT_BUILD_MESSAGE = "🧱 Compiling workspace context..."
-MICRO_AGENT_START_MESSAGE = "🤖 Micro-agent: engaging tools..."
-SUCCESS_MESSAGE = "✅ Conversation complete"
-FAILURE_MESSAGE = "❌ Conversation failed"
+RUN_START_MESSAGE = "? Kickstarting Aura run..."
+WORKSPACE_CHECK_MESSAGE = "?? Validating workspace..."
+AGENT_START_MESSAGE = "?? Claude agent: investigating and executing..."
+SUCCESS_MESSAGE = "? Conversation complete"
+FAILURE_MESSAGE = "? Conversation failed"
+
 
 @dataclass(frozen=True)
 class SessionResult:
@@ -66,8 +59,8 @@ class _ConversationOutcome:
     success: bool
 
 
-class _ConversationWorker(QObject):
-    """Background worker that performs a single ChatService call."""
+class _SingleAgentWorker(QObject):
+    """Background worker that streams a SingleAgentService run."""
 
     chunk_emitted = Signal(str)
     finished = Signal(_ConversationOutcome)
@@ -75,149 +68,44 @@ class _ConversationWorker(QObject):
 
     def __init__(
         self,
-        chat_service: ChatService,
-        prompt: str,
-        *,
-        progress_callback: Callable[[str], None] | None = None,
-    ) -> None:
-        super().__init__()
-        self._chat_service = chat_service
-        self._prompt = prompt
-        self._progress_callback = progress_callback
-
-    def _notify_progress(self, message: str) -> None:
-        if not message or self._progress_callback is None:
-            return
-        try:
-            self._progress_callback(message)
-        except Exception:  # noqa: BLE001
-            LOGGER.debug("Progress callback failed for conversation worker", exc_info=True)
-
-    def run(self) -> None:
-        """Execute the chat request and stream chunks to listeners."""
-        started = time.perf_counter()
-        streamed = {"value": False}
-        self._notify_progress(MICRO_AGENT_START_MESSAGE)
-
-        def _on_chunk(chunk: str) -> None:
-            streamed["value"] = True
-            self.chunk_emitted.emit(chunk)
-
-        try:
-            response = self._chat_service.send_message(self._prompt, on_chunk=_on_chunk)
-            if not streamed["value"] and response:
-                self.chunk_emitted.emit(f"{config.STREAM_PREFIX}{response}")
-                self.chunk_emitted.emit(f"{config.STREAM_PREFIX}\n")
-
-            duration = time.perf_counter() - started
-            success = not response.strip().lower().startswith("error:")
-            outcome = _ConversationOutcome(
-                response=response,
-                duration_seconds=duration,
-                success=success,
-            )
-            self.finished.emit(outcome)
-        except Exception as exc:
-            LOGGER.exception("Conversation worker failed")
-            self.failed.emit(str(exc))
-
-
-class _TwoAgentWorker(QObject):
-    """Background worker for two-agent execution flow."""
-
-    chunk_emitted = Signal(str)
-    finished = Signal(_ConversationOutcome)
-    failed = Signal(str)
-
-    def __init__(
-        self,
-        analyst_agent: AnalystAgentService,
-        executor_agent: ExecutorAgentService,
+        agent: SingleAgentService,
         goal: str,
-        conversation_id: int | None,
-        *,
-        conversation_history: List[dict] | None = None,
-        progress_callback: Callable[[str], None] | None = None,
+        tools: List[AgentTool],
     ) -> None:
         super().__init__()
-        self._analyst_agent = analyst_agent
-        self._executor_agent = executor_agent
+        self._agent = agent
         self._goal = goal
-        self._conversation_id = conversation_id
-        self._conversation_history = conversation_history or []
-        self._progress_callback = progress_callback
-
-    def _notify_progress(self, message: str) -> None:
-        if not message or self._progress_callback is None:
-            return
-        try:
-            self._progress_callback(message)
-        except Exception:  # noqa: BLE001
-            LOGGER.debug("Progress callback failed for two-agent worker", exc_info=True)
+        self._tools = tools
 
     def run(self) -> None:
-        """Execute two-agent flow: analysis then execution."""
+        """Execute the single-agent flow and stream chunks to listeners."""
         started = time.perf_counter()
-        streamed = {"value": False}
-
-        def _on_chunk(chunk: str) -> None:
-            streamed["value"] = True
-            self.chunk_emitted.emit(chunk)
-
+        generator = self._agent.execute_task(self._goal, self._tools)
+        collected: List[str] = []
         try:
-            self._notify_progress(ANALYST_START_MESSAGE)
-            plan_or_error = self._analyst_agent.analyze_and_plan(
-                self._goal,
-                on_chunk=_on_chunk,
-                conversation_id=self._conversation_id,
-                conversation_history=self._conversation_history,
-            )
-
-            if isinstance(plan_or_error, str):
-                error_msg = plan_or_error or "Analysis failed"
-                self.failed.emit(error_msg)
-                return
-
-            execution_plan: ExecutionPlan = plan_or_error
-
-            # Check if this is an emergency fallback plan
-            if execution_plan.is_emergency:
-                error_msg = (
-                    "⚠️  Emergency Fallback Plan Detected\n\n"
-                    "The analyst was unable to create a valid execution plan for your request. "
-                    "This usually happens when the request is unclear or ambiguous.\n\n"
-                    "Please try again with:\n"
-                    "• More specific details about what you want to accomplish\n"
-                    "• Clear file paths or component names\n"
-                    "• Step-by-step description of the desired changes\n\n"
-                    "The emergency plan was NOT executed to prevent placeholder content from being written."
-                )
-                self.failed.emit(error_msg)
-                return
-
-            self._notify_progress(EXECUTOR_START_MESSAGE)
-            result = self._executor_agent.execute_plan(
-                execution_plan,
-                on_chunk=_on_chunk,
-                conversation_id=self._conversation_id,
-            )
-
-            duration = time.perf_counter() - started
-            success = not result.strip().lower().startswith("error:")
-            outcome = _ConversationOutcome(
-                response=result,
-                duration_seconds=duration,
-                success=success,
-            )
-            self.finished.emit(outcome)
-
-        except Exception as exc:
-            LOGGER.exception("Two-agent worker failed")
+            while True:
+                try:
+                    chunk = next(generator)
+                except StopIteration as stop:
+                    response = stop.value if stop.value is not None else "".join(collected)
+                    outcome = _ConversationOutcome(
+                        response=response.strip(),
+                        duration_seconds=time.perf_counter() - started,
+                        success=True,
+                    )
+                    self.finished.emit(outcome)
+                    return
+                if not chunk:
+                    continue
+                collected.append(chunk)
+                self.chunk_emitted.emit(f"{config.STREAM_PREFIX}{chunk}")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Single-agent worker failed")
             self.failed.emit(str(exc))
 
 
 class Orchestrator(QObject):
-    """Coordinate a conversational turn between the user and ChatService."""
+    """Coordinate a conversational turn between the user and SingleAgentService."""
 
     planning_started = Signal()
     plan_ready = Signal(object)
@@ -232,17 +120,13 @@ class Orchestrator(QObject):
         self,
         app_state: AppState,
         *,
-        api_key: str | None = None,
-        analyst_api_key: str | None = None,
-        executor_api_key: str | None = None,
-        chat_service: ChatService | None = None,
+        single_agent: SingleAgentService,
         use_background_thread: bool = True,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
 
         self.app_state = app_state
-
         resolved = Path(app_state.working_directory).resolve()
         if not resolved.is_dir():
             raise AuraConfigurationError(
@@ -251,11 +135,13 @@ class Orchestrator(QObject):
             )
 
         self._working_dir = resolved
+        self._single_agent = single_agent
         self._use_background_thread = use_background_thread
         self._history: List[Tuple[str, str]] = []
         self._thread: QThread | None = None
-        self._worker: _ConversationWorker | _TwoAgentWorker | None = None
+        self._worker: _SingleAgentWorker | None = None
         self._tool_manager = ToolManager(str(self._working_dir))
+        self._agent_tools_cache: List[AgentTool] | None = None
         self._conversation_lock = threading.Lock()
 
         endpoint = (self.app_state.local_model_endpoint or "").strip()
@@ -265,45 +151,8 @@ class Orchestrator(QObject):
         else:
             LOGGER.debug("Local summarizer endpoint not configured; history summarization disabled.")
 
-        effective_analyst_key = analyst_api_key or api_key
-        effective_executor_key = executor_api_key
-
-        if chat_service is not None:
-            if hasattr(chat_service, "tool_manager"):
-                chat_service.tool_manager = self._tool_manager
-            self._chat_service = chat_service
-        else:
-            if not effective_analyst_key:
-                raise AuraConfigurationError(
-                    "Analyst API key (ANTHROPIC_API_KEY) is required to initialize the chat service.",
-                    context={"env_var": "ANTHROPIC_API_KEY"},
-                )
-            self._chat_service = ChatService(
-                api_key=effective_analyst_key,
-                tool_manager=self._tool_manager,
-                model_name=self.app_state.analyst_model,
-            )
-
-        self._analyst_agent: AnalystAgentService | None = None
-        self._executor_agent: ExecutorAgentService | None = None
-
-        if effective_analyst_key and effective_executor_key:
-            self._analyst_agent = AnalystAgentService(
-                api_key=effective_analyst_key,
-                tool_manager=self._tool_manager,
-                investigation_model=self.app_state.analyst_investigation_model,
-                planning_model=self.app_state.analyst_planning_model,
-                use_local_investigation=self.app_state.use_local_investigation,
-            )
-            self._executor_agent = ExecutorAgentService(
-                api_key=effective_executor_key,
-                tool_manager=self._tool_manager,
-                model_name=self.app_state.executor_model,
-            )
-
     def execute_goal(self, goal: str) -> None:
         """Execute a single conversational turn for the provided goal."""
-        # IMMEDIATE progress update
         self.progress_update.emit(RUN_START_MESSAGE)
 
         try:
@@ -332,24 +181,17 @@ class Orchestrator(QObject):
         self.planning_started.emit()
         self.session_started.emit(0, session)
 
-        conversation_id: int | None = None
-        if self._analyst_agent and self._executor_agent:
-            conversation_id = self._ensure_active_conversation()
-            # Load conversation history from database so Analyst has context
-            self.load_conversation_history(conversation_id)
+        conversation_id = self._ensure_active_conversation()
+        self.load_conversation_history(conversation_id)
 
-        if self._analyst_agent and self._executor_agent:
-            if self._use_background_thread:
-                self._start_two_agent_execution(session, sanitized, conversation_id)
-            else:
-                self._run_two_agent_execution(session, sanitized, conversation_id)
+        formatted_goal = self._build_prompt(sanitized)
+        tools = self._build_agent_tools()
+        self._single_agent.active_conversation_id = conversation_id
+
+        if self._use_background_thread:
+            self._start_single_agent_execution(session, formatted_goal, tools)
         else:
-            self.progress_update.emit(CONTEXT_BUILD_MESSAGE)
-            prompt = self._build_prompt(sanitized)
-            if self._use_background_thread:
-                self._start_background_conversation(session, prompt)
-            else:
-                self._run_conversation(session, prompt)
+            self._run_single_agent_execution(session, formatted_goal, tools)
 
     def update_working_directory(self, path: str) -> None:
         """Update the working directory used when building prompts."""
@@ -365,12 +207,7 @@ class Orchestrator(QObject):
             self._tool_manager.update_workspace(str(self._working_dir))
         else:
             self._tool_manager = ToolManager(str(self._working_dir))
-        if hasattr(self._chat_service, "tool_manager"):
-            self._chat_service.tool_manager = self._tool_manager
-        if self._analyst_agent:
-            self._analyst_agent.tool_manager = self._tool_manager
-        if self._executor_agent:
-            self._executor_agent.tool_manager = self._tool_manager
+        self._agent_tools_cache = None
         LOGGER.info("ToolManager bound to workspace %s", self._tool_manager.workspace_dir)
 
     def reset_history(self) -> None:
@@ -392,207 +229,103 @@ class Orchestrator(QObject):
                 LOGGER.info("Created conversation %s for new execution", conversation_id)
         return conversation_id
 
-    def _prepare_analyst_history(self) -> List[dict]:
-        """Prepare conversation history in Claude API message format for Analyst.
-
-        Converts internal history format (role, text) tuples to Claude API format
-        with dictionaries containing 'role' and 'content' keys.
-
-        Returns:
-            List of message dictionaries suitable for Claude API
-        """
-        analyst_history = []
-        for role, text in self._history:
-            # Convert role to Claude API format (user/assistant)
-            api_role = role.lower() if role else "user"
-            analyst_history.append({
-                "role": api_role,
-                "content": [{"type": "text", "text": text}],
-            })
-        return analyst_history
-
     @property
     def history(self) -> Tuple[Tuple[str, str], ...]:
         """Return the accumulated conversation history."""
         return tuple(self._history)
 
-    @property
-    def chat_service(self) -> ChatService:
-        """Expose the managed ChatService instance."""
-        return self._chat_service
+    def _build_agent_tools(self) -> List[AgentTool]:
+        """Construct tool schemas for the single agent."""
+        if self._agent_tools_cache is not None:
+            return self._agent_tools_cache
 
-    def _start_two_agent_execution(
+        handlers = {
+            "list_project_files": self._tool_manager.list_project_files,
+            "search_in_files": self._tool_manager.search_in_files,
+            "read_project_file": self._tool_manager.read_project_file,
+            "read_multiple_files": self._tool_manager.read_multiple_files,
+            "get_function_definitions": self._tool_manager.get_function_definitions,
+            "run_tests": self._tool_manager.run_tests,
+            "lint_code": self._tool_manager.lint_code,
+            "format_code": self._tool_manager.format_code,
+            "install_package": self._tool_manager.install_package,
+            "get_git_status": self._tool_manager.get_git_status,
+            "git_commit": self._tool_manager.git_commit,
+            "git_push": self._tool_manager.git_push,
+            "git_diff": self._tool_manager.git_diff,
+            "generate_commit_message": generate_commit_message,
+            "find_definition": self._tool_manager.find_definition,
+            "find_usages": self._tool_manager.find_usages,
+            "get_imports": self._tool_manager.get_imports,
+            "create_file": self._tool_manager.create_file,
+            "modify_file": self._tool_manager.modify_file,
+            "replace_file_lines": self._tool_manager.replace_file_lines,
+            "delete_file": self._tool_manager.delete_file,
+        }
+
+        tools: List[AgentTool] = []
+        for name, handler in handlers.items():
+            schema = build_anthropic_tool_schema(handler, name=name)
+            tools.append(AgentTool(name=name, handler=handler, schema=schema))
+
+        self._agent_tools_cache = tools
+        return tools
+
+    def _start_single_agent_execution(
         self,
         session: ConversationSession,
         goal: str,
-        conversation_id: int | None,
+        tools: List[AgentTool],
     ) -> None:
-        """Execute two-agent flow on a background QThread."""
-        # Prepare conversation history for Analyst
-        analyst_history = self._prepare_analyst_history()
-
+        """Execute the single-agent flow on a background QThread."""
+        self.progress_update.emit(AGENT_START_MESSAGE)
         self._thread = QThread(self)
-        self._worker = _TwoAgentWorker(
-            self._analyst_agent,
-            self._executor_agent,
-            goal,
-            conversation_id,
-            conversation_history=analyst_history,
-            progress_callback=self.progress_update.emit,
-        )
+        self._worker = _SingleAgentWorker(self._single_agent, goal, tools)
         self._worker.moveToThread(self._thread)
         self._worker.chunk_emitted.connect(self.session_output.emit)
         self._worker.finished.connect(
             lambda outcome: self._finalize_conversation(session, outcome)
         )
         self._worker.failed.connect(self._handle_worker_error)
-
         self._thread.started.connect(self._worker.run)
         self._thread.finished.connect(self._cleanup_thread)
         self._thread.start()
 
-    def _run_two_agent_execution(
+    def _run_single_agent_execution(
         self,
         session: ConversationSession,
         goal: str,
-        conversation_id: int | None,
+        tools: List[AgentTool],
     ) -> None:
-        """Execute two-agent flow synchronously."""
+        """Execute the single-agent flow synchronously (useful for testing)."""
+        self.progress_update.emit(AGENT_START_MESSAGE)
         started = time.perf_counter()
-        streamed = {"value": False}
-
-        # Prepare conversation history for Analyst
-        analyst_history = self._prepare_analyst_history()
-
-        def _on_chunk(chunk: str) -> None:
-            streamed["value"] = True
-            self.session_output.emit(chunk)
-
+        collected: List[str] = []
+        generator = self._single_agent.execute_task(goal, tools)
         try:
-            self.progress_update.emit(ANALYST_START_MESSAGE)
-            plan_or_error = self._analyst_agent.analyze_and_plan(
-                goal,
-                on_chunk=_on_chunk,
-                conversation_id=conversation_id,
-                conversation_history=analyst_history,
-            )
-
-            if isinstance(plan_or_error, str):
-                error_msg = plan_or_error or "Analysis failed"
-                self.error_occurred.emit(error_msg)
-                outcome = _ConversationOutcome(
-                    response=error_msg,
-                    duration_seconds=time.perf_counter() - started,
-                    success=False,
-                )
-                self._finalize_conversation(session, outcome)
-                return
-
-            execution_plan: ExecutionPlan = plan_or_error
-
-            # Check if this is an emergency fallback plan
-            if execution_plan.is_emergency:
-                error_msg = (
-                    "⚠️  Emergency Fallback Plan Detected\n\n"
-                    "The analyst was unable to create a valid execution plan for your request. "
-                    "This usually happens when the request is unclear or ambiguous.\n\n"
-                    "Please try again with:\n"
-                    "• More specific details about what you want to accomplish\n"
-                    "• Clear file paths or component names\n"
-                    "• Step-by-step description of the desired changes\n\n"
-                    "The emergency plan was NOT executed to prevent placeholder content from being written."
-                )
-                self.error_occurred.emit(error_msg)
-                outcome = _ConversationOutcome(
-                    response=error_msg,
-                    duration_seconds=time.perf_counter() - started,
-                    success=False,
-                )
-                self._finalize_conversation(session, outcome)
-                return
-
-            self.progress_update.emit(EXECUTOR_START_MESSAGE)
-            result = self._executor_agent.execute_plan(
-                execution_plan,
-                on_chunk=_on_chunk,
-                conversation_id=conversation_id,
-            )
-
-            duration = time.perf_counter() - started
-            success = not result.strip().lower().startswith("error:")
-            outcome = _ConversationOutcome(
-                response=result,
-                duration_seconds=duration,
-                success=success,
-            )
-            self._finalize_conversation(session, outcome)
-
-        except Exception as exc:
+            while True:
+                try:
+                    chunk = next(generator)
+                except StopIteration as stop:
+                    response = stop.value if stop.value is not None else "".join(collected)
+                    outcome = _ConversationOutcome(
+                        response=response.strip(),
+                        duration_seconds=time.perf_counter() - started,
+                        success=True,
+                    )
+                    self._finalize_conversation(session, outcome)
+                    return
+                if not chunk:
+                    continue
+                collected.append(chunk)
+                self.session_output.emit(f"{config.STREAM_PREFIX}{chunk}")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Single-agent execution failed")
             error = AuraExecutionError(
-                "Two-agent execution failed. Verify API keys and connectivity.",
+                "Single-agent execution failed. Verify API keys and connectivity.",
                 context={"detail": str(exc)},
             )
-            LOGGER.exception("Two-agent execution failed")
-            self.error_occurred.emit(str(error))
-
-    def _start_background_conversation(
-        self,
-        session: ConversationSession,
-        prompt: str,
-    ) -> None:
-        """Execute the conversation on a background QThread."""
-        self._thread = QThread(self)
-        self._worker = _ConversationWorker(
-            self._chat_service,
-            prompt,
-            progress_callback=self.progress_update.emit,
-        )
-        self._worker.moveToThread(self._thread)
-        self._worker.chunk_emitted.connect(self.session_output.emit)
-        self._worker.finished.connect(
-            lambda outcome: self._finalize_conversation(session, outcome)
-        )
-        self._worker.failed.connect(self._handle_worker_error)
-
-        self._thread.started.connect(self._worker.run)
-        self._thread.finished.connect(self._cleanup_thread)
-        self._thread.start()
-
-    def _run_conversation(
-        self,
-        session: ConversationSession,
-        prompt: str,
-    ) -> None:
-        """Execute the conversation synchronously (useful for testing)."""
-        started = time.perf_counter()
-        streamed = {"value": False}
-
-        def _on_chunk(chunk: str) -> None:
-            streamed["value"] = True
-            self.session_output.emit(chunk)
-
-        try:
-            self.progress_update.emit(MICRO_AGENT_START_MESSAGE)
-            response = self._chat_service.send_message(prompt, on_chunk=_on_chunk)
-            if not streamed["value"] and response:
-                self.session_output.emit(f"{config.STREAM_PREFIX}{response}")
-                self.session_output.emit(f"{config.STREAM_PREFIX}\n")
-
-            duration = time.perf_counter() - started
-            success = not response.strip().lower().startswith("error:")
-            outcome = _ConversationOutcome(
-                response=response,
-                duration_seconds=duration,
-                success=success,
-            )
-            self._finalize_conversation(session, outcome)
-        except Exception as exc:
-            error = AuraExecutionError(
-                "Unable to contact the analyst agent. Verify ANTHROPIC_API_KEY and your connection, then try again.",
-                context={"detail": str(exc)},
-            )
-            LOGGER.exception("Conversation execution failed")
-            self.error_occurred.emit(str(error))
+            self._handle_worker_error(str(error))
 
     def _finalize_conversation(
         self,
@@ -602,9 +335,7 @@ class Orchestrator(QObject):
         """Update history, emit completion signals, and reset state."""
         self._history.append((MessageRole.USER, session.prompt))
         self._history.append((MessageRole.ASSISTANT, outcome.response.strip()))
-        # Persist to database
         self._persist_messages_to_db(session.prompt, outcome.response.strip())
-
 
         exit_code = 0 if outcome.success else 1
         result = SessionResult(
@@ -635,10 +366,7 @@ class Orchestrator(QObject):
     def _handle_worker_error(self, message: str) -> None:
         """Handle errors raised by the background worker."""
         LOGGER.error("Conversation worker failed: %s", message)
-        self.error_occurred.emit(
-            message
-            or "Unable to contact the analyst agent. Verify ANTHROPIC_API_KEY and your connection, then try again."
-        )
+        self.error_occurred.emit(message or "Single-agent execution failed.")
         self.all_sessions_complete.emit()
         self.progress_update.emit(FAILURE_MESSAGE)
         if self._thread and self._thread.isRunning():
@@ -669,10 +397,9 @@ class Orchestrator(QObject):
                     )
                 finally:
                     loop.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             LOGGER.error("Failed to summarize conversation history: %s", exc)
             return ""
-
 
     def _build_prompt(self, goal: str) -> str:
         """Build the conversational prompt, summarizing old history if needed."""
@@ -685,7 +412,6 @@ class Orchestrator(QObject):
         history = list(self._history)
         recent_history: List[Tuple[str, str]] = history
 
-        # Get project-specific instructions
         project_id = self.app_state.current_project_id
         if project_id:
             project = Project.get_by_id(project_id)
@@ -756,32 +482,25 @@ class Orchestrator(QObject):
             )
 
     def load_conversation_history(self, conversation_id: int) -> None:
-        """
-        Load conversation history from database into memory.
-
-        Args:
-            conversation_id: Conversation ID to load
-        """
+        """Load conversation history from database into memory."""
         try:
             conv = Conversation.get_by_id(conversation_id)
             if conv:
                 self._history = conv.get_history()
-                LOGGER.info(f"Loaded {len(self._history)} messages from conversation {conversation_id}")
+                LOGGER.info(
+                    "Loaded %s messages from conversation %s",
+                    len(self._history),
+                    conversation_id,
+                )
             else:
-                LOGGER.warning(f"Conversation {conversation_id} not found")
+                LOGGER.warning("Conversation %s not found", conversation_id)
                 self._history = []
-        except Exception as e:
-            LOGGER.error(f"Failed to load conversation history: {e}")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("Failed to load conversation history: %s", exc)
             self._history = []
 
     def _persist_messages_to_db(self, user_message: str, assistant_message: str) -> None:
-        """
-        Persist user and assistant messages to the database.
-
-        Args:
-            user_message: User's message content
-            assistant_message: Assistant's response content
-        """
+        """Persist user and assistant messages to the database."""
         try:
             conversation_id = self.app_state.current_conversation_id
 
@@ -793,20 +512,22 @@ class Orchestrator(QObject):
                         conv = Conversation.create(project_id=project_id)
                         conversation_id = conv.id
                         self.app_state.set_current_conversation(conversation_id)
-                        LOGGER.info(f"Created new conversation {conversation_id}")
+                        LOGGER.info("Created new conversation %s", conversation_id)
 
-            # Save messages
             Message.create(conversation_id, MessageRole.USER, user_message)
             Message.create(conversation_id, MessageRole.ASSISTANT, assistant_message)
 
-            # Auto-generate title from first message if needed
             conv = Conversation.get_by_id(conversation_id)
             if conv and not conv.title:
                 conv.generate_title_from_first_message()
 
-            LOGGER.info(f"Persisted messages to conversation {conversation_id}")
+            LOGGER.info("Persisted messages to conversation %s", conversation_id)
 
-        except Exception as e:
-            LOGGER.error(f"Failed to persist messages to database: {e}")
-            self.error_occurred.emit("Warning: Failed to save conversation history. Your responses will not persist.")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("Failed to persist messages to database: %s", exc)
+            self.error_occurred.emit(
+                "Warning: Failed to save conversation history. Your responses will not persist."
+            )
 
+
+__all__ = ["ConversationSession", "Orchestrator", "SessionResult"]

@@ -8,13 +8,14 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import anthropic
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from aura import config
 from aura.exceptions import AuraConfigurationError
 from aura.orchestrator import Orchestrator
-from aura.services import ChatService
+from aura.services.simple_agent_service import SingleAgentService
 from aura.state import AppState
 from aura.ui.main_window import MainWindow
 from aura.ui.cli_heartbeat_display import CliHeartbeatDisplay
@@ -84,7 +85,6 @@ class ApplicationController:
     def __init__(self) -> None:
         """Initialize the application controller."""
         self.app_state: AppState | None = None
-        self.chat_service: ChatService | None = None
         self.orchestrator: Orchestrator | None = None
         self.main_window: MainWindow | None = None
         self.cli_heartbeat_display: CliHeartbeatDisplay | None = None
@@ -132,14 +132,14 @@ class ApplicationController:
 
         try:
             analyst_key = self._require_analyst_api_key()
-            executor_key = self._get_executor_api_key(fallback=analyst_key)
-
+            single_agent = SingleAgentService(
+                client=anthropic.Anthropic(api_key=analyst_key),
+                model_name=self.app_state.analyst_model,
+            )
             self.orchestrator = Orchestrator(
                 app_state=self.app_state,
-                analyst_api_key=analyst_key,
-                executor_api_key=executor_key,
+                single_agent=single_agent,
             )
-            self.chat_service = self.orchestrator.chat_service
         except AuraConfigurationError as exc:
             orchestrator_warning = str(exc)
             LOGGER.error("Failed to initialize orchestrator: %s", exc)
@@ -274,25 +274,6 @@ class ApplicationController:
                 context={"env_var": "ANTHROPIC_API_KEY"},
             )
         return api_key
-
-    def _get_executor_api_key(self, fallback: str | None = None) -> str | None:
-        """Return executor API key if available.
-
-        Returns:
-            The executor API key or None if not set. When None, Aura falls
-            back to single-agent mode using only the analyst agent.
-        """
-        api_key = (
-            os.getenv("ANTHROPIC_EXECUTOR_API_KEY", "").strip()
-            or os.getenv("ANTHROPIC_API_KEY", "").strip()
-            or (fallback or "")
-        )
-        if not api_key:
-            LOGGER.warning(
-                "ANTHROPIC_EXECUTOR_API_KEY not set. Running in single-agent mode (analyst only). "
-                "Set ANTHROPIC_EXECUTOR_API_KEY to enable executor write access."
-            )
-        return api_key or None
 
     def _load_last_conversation(self) -> None:
         """Load the most recent conversation on startup."""
