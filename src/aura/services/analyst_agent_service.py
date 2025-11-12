@@ -201,6 +201,7 @@ class AnalystAgentService:
             final_response_text = ""
             enforcement_retries = 0
             max_enforcement_retries = 3
+            force_plan_submission = False
 
             # Main loop for investigation and planning
             while True:
@@ -232,14 +233,21 @@ class AnalystAgentService:
                     tools=self._build_tool_definitions(),
                 )
 
-                response = self._client.messages.create(
-                    model=self.investigation_model,
-                    system=cached_system,
-                    temperature=0,
-                    max_tokens=INVESTIGATION_MAX_TOKENS,
-                    tools=cached_tools,
-                    messages=investigation_messages,
-                )
+                request_payload: dict[str, Any] = {
+                    "model": self.investigation_model,
+                    "system": cached_system,
+                    "temperature": 0,
+                    "max_tokens": INVESTIGATION_MAX_TOKENS,
+                    "tools": cached_tools,
+                    "messages": investigation_messages,
+                }
+                if force_plan_submission:
+                    request_payload["tool_choice"] = {
+                        "type": "tool",
+                        "name": "submit_execution_plan",
+                    }
+
+                response = self._client.messages.create(**request_payload)
                 investigation_messages.append({"role": "assistant", "content": response.content})
 
                 if response.stop_reason == "tool_use":
@@ -303,6 +311,7 @@ class AnalystAgentService:
 
                     # Force the Analyst to call the tool instead of ending with text
                     enforcement_retries += 1
+                    force_plan_submission = True
                     LOGGER.warning(
                         "Analyst output narrative text instead of calling submit_execution_plan. "
                         "Injecting enforcement message (attempt %d/%d).",
