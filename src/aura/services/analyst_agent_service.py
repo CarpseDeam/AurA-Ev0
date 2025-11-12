@@ -39,6 +39,24 @@ _ANALYST_SOURCE = "analyst"
 # History filtering constants
 MAX_HISTORY_MESSAGES = 6  # Last 3 user/assistant pairs
 INVESTIGATION_MAX_TOKENS = 8192
+PLANNING_MAX_TOKENS = 8192
+
+# Planning agent system prompt
+PLANNING_SYSTEM_PROMPT = """You are a planning specialist. Your ONLY job is to convert investigation findings into a valid ExecutionPlan JSON.
+
+You must call submit_execution_plan with ALL required fields:
+- task_summary: Brief description of what will be done
+- project_context: Relevant context from the investigation
+- quality_checklist: List of quality criteria to verify
+- estimated_files: Number of files that will be modified
+- operations: Array of file operations (CREATE/MODIFY/DELETE)
+
+The operations array is MANDATORY and must contain at least one CREATE, MODIFY, or DELETE operation with all required fields:
+- For CREATE: path, content, rationale
+- For MODIFY: path, content, old_str, new_str, rationale
+- For DELETE: path, rationale
+
+You cannot investigate or output narrative text - you can ONLY call submit_execution_plan."""
 
 ToolHandler = Callable[..., Any]
 
@@ -133,6 +151,10 @@ class AnalystAgentService:
     ) -> ExecutionPlan | str:
         """Gather context with Claude tools and return an execution plan.
 
+        This method implements a two-phase architecture:
+        1. Investigation Phase: Uses read-only tools to gather context
+        2. Planning Phase: Converts investigation findings into ExecutionPlan
+
         Args:
             user_request: The current user request/goal
             on_chunk: Optional callback for streaming response chunks
@@ -168,7 +190,7 @@ class AnalystAgentService:
         })
 
         LOGGER.info(
-            "Analyst analysis started | investigation_model=%s | planning_model=%s | prompt_chars=%d",
+            "Analyst two-phase architecture started | investigation_model=%s | planning_model=%s | prompt_chars=%d",
             self.investigation_model,
             self.planning_model,
             len(user_request or ""),
@@ -176,198 +198,35 @@ class AnalystAgentService:
         self._event_bus.emit(
             PhaseTransition(from_phase="idle", to_phase="analyst", source=_ANALYST_SOURCE)
         )
-        self._emit_status("Analyst agent: gathering context...", "analyst.start")
+        self._emit_status("Analyst agent: starting two-phase analysis...", "analyst.start")
         self._event_bus.emit(
             AgentEvent(
                 name="analyst.started",
                 payload={
                     "investigation_model": self.investigation_model,
                     "planning_model": self.planning_model,
+                    "architecture": "two-phase",
                 },
                 source=_ANALYST_SOURCE,
             )
         )
         self._event_bus.emit(
             TaskProgressEvent(
-                message="Analyst collecting repository signals",
+                message="Analyst Phase 1: Investigation",
                 percent=0.1,
                 source=_ANALYST_SOURCE,
             )
         )
 
         try:
-            max_tool_calls = 30
-            tool_calls = 0
-            final_response_text = ""
-            enforcement_retries = 0
-            max_enforcement_retries = 3
-            force_plan_submission = False
+            # Phase 1: Investigation
+            investigation_result = self._run_investigation_phase(investigation_messages)
 
-            # Main loop for investigation and planning
-            while True:
-                if tool_calls >= max_tool_calls:
-                    error_message = (
-                        "Error: Analyst exceeded the maximum number of tool calls."
-                    )
-                    self._emit_status("Analyst agent: failed", "analyst.error")
-                    self._event_bus.emit(
-                        SystemErrorEvent(
-                            error="analyst.tool_limit",
-                            details={"max_tool_calls": max_tool_calls},
-                            source=_ANALYST_SOURCE,
-                        )
-                    )
-                    self._event_bus.emit(
-                        PhaseTransition(
-                            from_phase="analyst",
-                            to_phase="analyst.error",
-                            source=_ANALYST_SOURCE,
-                        )
-                    )
-                    self._emit_completion(error_message, success=False)
-                    return error_message
-
-                # Enable prompt caching for system and tools to reduce token costs
-                cached_system, cached_tools = build_cached_system_and_tools(
-                    system_prompt=ANALYST_PROMPT,
-                    tools=self._build_tool_definitions(),
-                )
-
-                request_payload: dict[str, Any] = {
-                    "model": self.investigation_model,
-                    "system": cached_system,
-                    "temperature": 0,
-                    "max_tokens": INVESTIGATION_MAX_TOKENS,
-                    "tools": cached_tools,
-                    "messages": investigation_messages,
-                }
-                if force_plan_submission:
-                    request_payload["tool_choice"] = {
-                        "type": "tool",
-                        "name": "submit_execution_plan",
-                    }
-
-                response = self._client.messages.create(**request_payload)
-                investigation_messages.append({"role": "assistant", "content": response.content})
-
-                if response.stop_reason == "tool_use":
-                    tool_calls += 1
-                    if tool_calls % 5 == 0:
-                        LOGGER.info("Analyst investigation in progress | tool_calls=%d/%d", tool_calls, max_tool_calls)
-                    tool_results = self._collect_tool_results(response.content)
-                    if tool_results:
-                        investigation_messages.append({"role": "user", "content": tool_results})
-
-                    # Check for plan immediately after collecting tool results
-                    if self._latest_plan:
-                        break
-                    continue
-
-                # If we get here, stop_reason is NOT "tool_use" (likely "end_turn")
-                # BUT the response might still contain tool_use blocks that need results collected
-                # Check if Analyst output narrative text instead of calling submit_execution_plan
-                if self._latest_plan is None:
-                    # First, collect any tool results from this response before injecting enforcement
-                    tool_results = self._collect_tool_results(response.content)
-                    if tool_results:
-                        investigation_messages.append({"role": "user", "content": tool_results})
-
-                    # Check if plan was submitted after collecting tool results
-                    if self._latest_plan:
-                        break
-
-                    # Check enforcement retry limit
-                    if enforcement_retries >= max_enforcement_retries:
-                        duration = time.perf_counter() - started
-                        LOGGER.error(
-                            "Analyst failed to submit execution plan after %d enforcement attempts | duration=%.2fs",
-                            enforcement_retries,
-                            duration,
-                        )
-                        error_message = (
-                            "Error: Unable to generate execution plan. The analyst could not formulate a valid plan "
-                            "after multiple attempts. Please try:\n"
-                            "1. Rephrasing your request with more specific details\n"
-                            "2. Breaking down your request into smaller, focused tasks\n"
-                            "3. Providing more context about what you want to accomplish"
-                        )
-                        self._emit_status("Analyst agent: failed to create plan", "analyst.error")
-                        self._event_bus.emit(
-                            SystemErrorEvent(
-                                error="analyst.plan_generation_failed",
-                                details={"enforcement_attempts": enforcement_retries},
-                                source=_ANALYST_SOURCE,
-                            )
-                        )
-                        self._event_bus.emit(
-                            PhaseTransition(
-                                from_phase="analyst",
-                                to_phase="analyst.error",
-                                source=_ANALYST_SOURCE,
-                            )
-                        )
-                        self._emit_completion(error_message, success=False)
-                        return error_message
-
-                    # Force the Analyst to call the tool instead of ending with text
-                    enforcement_retries += 1
-                    force_plan_submission = True
-                    LOGGER.warning(
-                        "Analyst output narrative text instead of calling submit_execution_plan. "
-                        "Injecting enforcement message (attempt %d/%d).",
-                        enforcement_retries,
-                        max_enforcement_retries,
-                    )
-                    investigation_messages.append({
-                        "role": "user",
-                        "content": [{"type": "text", "text": "Call submit_execution_plan now. No text output."}],
-                    })
-                    # Continue the loop to force another API call with the enforcement message
-                    continue
-
-                final_response_text = (self._collect_text(response.content) or "").strip()
-                break
-
-            if self._latest_plan:
-                duration = time.perf_counter() - started
-                LOGGER.info(
-                    "Analyst plan completed | duration=%.2fs | operations=%d",
-                    duration,
-                    len(self._latest_plan.operations),
-                )
-                self._emit_status("Analyst agent: execution plan ready", "analyst.complete")
-                self._event_bus.emit(
-                    PhaseTransition(
-                        from_phase="analyst",
-                        to_phase="idle",
-                        source=_ANALYST_SOURCE,
-                    )
-                )
-                self._event_bus.emit(
-                    TaskProgressEvent(
-                        message="Analyst execution plan ready",
-                        percent=0.45,
-                        source=_ANALYST_SOURCE,
-                    )
-                )
-                summary = (
-                    f"Analyst completed execution plan with {len(self._latest_plan.operations)} operations."
-                )
-                self._emit_completion(summary, success=True)
-                return self._latest_plan
-
-            if final_response_text:
-                duration = time.perf_counter() - started
-                LOGGER.error(
-                    "Analyst failed to submit ExecutionPlan | duration=%.2fs",
-                    duration,
-                )
-                summary = self._safe_value(final_response_text, limit=200)
-                error_message = (
-                    f"Error: Analyst provided narrative text instead of ExecutionPlan. "
-                    f"Response: {summary}"
-                )
-                self._emit_status("Analyst agent: failed to submit ExecutionPlan", "analyst.error")
+            if isinstance(investigation_result, str):
+                # Error occurred during investigation
+                error_message = f"Investigation phase failed: {investigation_result}"
+                LOGGER.error(error_message)
+                self._emit_status("Analyst agent: investigation failed", "analyst.error")
                 self._event_bus.emit(
                     PhaseTransition(
                         from_phase="analyst",
@@ -375,27 +234,67 @@ class AnalystAgentService:
                         source=_ANALYST_SOURCE,
                     )
                 )
+                self._emit_completion(error_message, success=False)
+                return error_message
+
+            investigation_summary, updated_messages = investigation_result
+
+            # Update progress
+            self._event_bus.emit(
+                TaskProgressEvent(
+                    message="Analyst Phase 2: Planning",
+                    percent=0.3,
+                    source=_ANALYST_SOURCE,
+                )
+            )
+
+            # Phase 2: Planning
+            planning_result = self._run_planning_phase(user_request, investigation_summary)
+
+            if isinstance(planning_result, str):
+                # Error occurred during planning
+                error_message = f"Planning phase failed: {planning_result}"
+                LOGGER.error(error_message)
+                self._emit_status("Analyst agent: planning failed", "analyst.error")
                 self._event_bus.emit(
-                    SystemErrorEvent(
-                        error="analyst.narrative_instead_of_plan",
-                        details={"narrative_preview": summary},
+                    PhaseTransition(
+                        from_phase="analyst",
+                        to_phase="analyst.error",
                         source=_ANALYST_SOURCE,
                     )
                 )
                 self._emit_completion(error_message, success=False)
                 return error_message
 
-            error_message = "Error: Analyst did not provide a submit_execution_plan tool call."
-            self._emit_status("Analyst agent: failed", "analyst.error")
+            # Success - we have an execution plan
+            plan = planning_result
+            duration = time.perf_counter() - started
+
+            LOGGER.info(
+                "Analyst two-phase architecture completed | duration=%.2fs | operations=%d",
+                duration,
+                len(plan.operations),
+            )
+            self._emit_status("Analyst agent: execution plan ready", "analyst.complete")
             self._event_bus.emit(
                 PhaseTransition(
                     from_phase="analyst",
-                    to_phase="analyst.error",
+                    to_phase="idle",
                     source=_ANALYST_SOURCE,
                 )
             )
-            self._emit_completion(error_message, success=False)
-            return error_message
+            self._event_bus.emit(
+                TaskProgressEvent(
+                    message="Analyst execution plan ready",
+                    percent=0.45,
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            summary = (
+                f"Analyst completed execution plan with {len(plan.operations)} operations."
+            )
+            self._emit_completion(summary, success=True)
+            return plan
 
         except anthropic.APIError as exc:
             duration = time.perf_counter() - started
@@ -441,6 +340,239 @@ class AnalystAgentService:
             )
             self._emit_completion(error_message, success=False)
             return error_message
+
+    def _run_investigation_phase(
+        self,
+        investigation_messages: list[dict[str, Any]],
+    ) -> tuple[str, list[dict[str, Any]]] | str:
+        """Run Phase 1: Investigation Agent with read-only tools.
+
+        Returns:
+            Tuple of (investigation_summary, updated_messages) on success
+            Error string on failure
+        """
+        LOGGER.info("Phase 1: Investigation Agent started")
+        self._emit_status("Investigation: gathering context...", "analyst.investigation")
+        self._event_bus.emit(
+            AgentEvent(
+                name="analyst.investigation_started",
+                payload={"model": self.investigation_model},
+                source=_ANALYST_SOURCE,
+            )
+        )
+
+        max_tool_calls = 30
+        tool_calls = 0
+
+        # Build read-only tool definitions (exclude submit_execution_plan)
+        read_only_tools = [
+            name for name in self._tool_handlers.keys()
+            if name != "submit_execution_plan"
+        ]
+
+        try:
+            while tool_calls < max_tool_calls:
+                # Enable prompt caching
+                cached_system, cached_tools = build_cached_system_and_tools(
+                    system_prompt=ANALYST_PROMPT,
+                    tools=self._build_tool_definitions(allowed_tools=read_only_tools),
+                )
+
+                response = self._client.messages.create(
+                    model=self.investigation_model,
+                    system=cached_system,
+                    temperature=0,
+                    max_tokens=INVESTIGATION_MAX_TOKENS,
+                    tools=cached_tools,
+                    messages=investigation_messages,
+                )
+
+                investigation_messages.append({"role": "assistant", "content": response.content})
+
+                if response.stop_reason == "tool_use":
+                    tool_calls += 1
+                    if tool_calls % 5 == 0:
+                        LOGGER.info(
+                            "Investigation in progress | tool_calls=%d/%d",
+                            tool_calls,
+                            max_tool_calls,
+                        )
+
+                    tool_results = self._collect_tool_results(response.content)
+                    if tool_results:
+                        investigation_messages.append({"role": "user", "content": tool_results})
+                    continue
+
+                # stop_reason is "end_turn" - investigation complete
+                investigation_summary = (self._collect_text(response.content) or "").strip()
+
+                if not investigation_summary:
+                    LOGGER.warning("Investigation ended with no text summary")
+                    investigation_summary = "Investigation completed with no specific findings."
+
+                LOGGER.info(
+                    "Phase 1 complete | tool_calls=%d | summary_length=%d",
+                    tool_calls,
+                    len(investigation_summary),
+                )
+                self._emit_status("Investigation: context gathered", "analyst.investigation_complete")
+                self._event_bus.emit(
+                    AgentEvent(
+                        name="analyst.investigation_complete",
+                        payload={
+                            "tool_calls": tool_calls,
+                            "summary_length": len(investigation_summary),
+                        },
+                        source=_ANALYST_SOURCE,
+                    )
+                )
+
+                return investigation_summary, investigation_messages
+
+            # Exceeded max tool calls
+            error_msg = f"Investigation exceeded maximum tool calls ({max_tool_calls})"
+            LOGGER.error(error_msg)
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="analyst.investigation_tool_limit",
+                    details={"max_tool_calls": max_tool_calls},
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            return error_msg
+
+        except anthropic.APIError as exc:
+            LOGGER.exception("Investigation API error")
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="analyst.investigation_api_error",
+                    details={"message": str(exc)},
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            return f"Investigation failed: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Investigation unexpected error")
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="analyst.investigation_unexpected_error",
+                    details={"message": str(exc)},
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            return f"Investigation failed: {exc}"
+
+    def _run_planning_phase(
+        self,
+        user_request: str,
+        investigation_summary: str,
+    ) -> ExecutionPlan | str:
+        """Run Phase 2: Planning Agent with forced tool_choice.
+
+        Args:
+            user_request: Original user request
+            investigation_summary: Text summary from investigation phase
+
+        Returns:
+            ExecutionPlan object on success
+            Error string on failure
+        """
+        LOGGER.info("Phase 2: Planning Agent started")
+        self._emit_status("Planning: generating execution plan...", "analyst.planning")
+        self._event_bus.emit(
+            AgentEvent(
+                name="analyst.planning_started",
+                payload={"model": self.planning_model},
+                source=_ANALYST_SOURCE,
+            )
+        )
+
+        # Build planning messages with user request and investigation findings
+        planning_messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": user_request}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": investigation_summary}],
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Now create the execution plan using submit_execution_plan.",
+                }],
+            },
+        ]
+
+        try:
+            # Enable prompt caching for planning phase
+            cached_system, cached_tools = build_cached_system_and_tools(
+                system_prompt=PLANNING_SYSTEM_PROMPT,
+                tools=self._build_tool_definitions(allowed_tools=["submit_execution_plan"]),
+            )
+
+            response = self._client.messages.create(
+                model=self.planning_model,
+                system=cached_system,
+                temperature=0,
+                max_tokens=PLANNING_MAX_TOKENS,
+                tools=cached_tools,
+                messages=planning_messages,
+                tool_choice={"type": "tool", "name": "submit_execution_plan"},
+            )
+
+            # Collect tool results (should only be submit_execution_plan)
+            tool_results = self._collect_tool_results(response.content)
+
+            if self._latest_plan:
+                LOGGER.info(
+                    "Phase 2 complete | operations=%d",
+                    len(self._latest_plan.operations),
+                )
+                self._emit_status("Planning: execution plan ready", "analyst.planning_complete")
+                self._event_bus.emit(
+                    AgentEvent(
+                        name="analyst.planning_complete",
+                        payload={"operations": len(self._latest_plan.operations)},
+                        source=_ANALYST_SOURCE,
+                    )
+                )
+                return self._latest_plan
+
+            # Planning agent didn't submit a plan
+            error_msg = "Planning agent failed to submit execution plan"
+            LOGGER.error(error_msg)
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="analyst.planning_no_plan",
+                    details={"stop_reason": response.stop_reason},
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            return error_msg
+
+        except anthropic.APIError as exc:
+            LOGGER.exception("Planning API error")
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="analyst.planning_api_error",
+                    details={"message": str(exc)},
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            return f"Planning failed: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Planning unexpected error")
+            self._event_bus.emit(
+                SystemErrorEvent(
+                    error="analyst.planning_unexpected_error",
+                    details={"message": str(exc)},
+                    source=_ANALYST_SOURCE,
+                )
+            )
+            return f"Planning failed: {exc}"
 
     def _build_tool_definitions(self, allowed_tools: Sequence[str] | None = None) -> list[dict[str, Any]]:
         """Return Claude-compatible tool schemas."""
