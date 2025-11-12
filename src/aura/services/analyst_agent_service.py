@@ -43,6 +43,37 @@ MAX_HISTORY_MESSAGES = 6  # Last 3 user/assistant pairs
 INVESTIGATION_MAX_TOKENS = 8192
 PLANNING_MAX_TOKENS = 8192
 
+# Explicit allowlist of read-only investigation tools
+READ_ONLY_INVESTIGATION_TOOLS: tuple[str, ...] = (
+    "list_project_files",
+    "read_project_file",
+    "get_imports",
+    "get_project_structure",
+    "search_in_files",
+    "get_git_status",
+    "get_cyclomatic_complexity",
+    "detect_duplicate_code",
+    "check_naming_conventions",
+    "analyze_type_hints",
+    "inspect_docstrings",
+    "get_function_signatures",
+    "find_unused_imports",
+    "get_class_hierarchy",
+    "get_dependency_graph",
+    "get_code_metrics",
+    "verify_asset_paths",
+    "list_project_assets",
+    "search_assets_by_pattern",
+    "search_project_assets",
+    "list_scenes",
+    "get_asset_metadata",
+    "respect_gitignore",
+    "read_godot_scene",
+    "read_godot_scene_tree",
+    "validate_godot_scene",
+    "get_project_godot_config",
+)
+
 # Planning agent system prompt
 PLANNING_SYSTEM_PROMPT = """You are a planning specialist. Your ONLY job is to convert investigation findings into a valid ExecutionPlan JSON.
 
@@ -519,8 +550,8 @@ class AnalystAgentService:
 
         # Build read-only tool definitions (exclude submit_execution_plan)
         read_only_tools = [
-            name for name in self._tool_handlers.keys()
-            if name != "submit_execution_plan"
+            name for name in READ_ONLY_INVESTIGATION_TOOLS
+            if name in self._tool_handlers
         ]
 
         try:
@@ -557,7 +588,10 @@ class AnalystAgentService:
                             max_tool_calls,
                         )
 
-                    tool_results = self._collect_tool_results(response.content)
+                    tool_results = self._collect_tool_results(
+                        response.content,
+                        allow_plan_submission=False,
+                    )
                     if tool_results:
                         investigation_messages.append({"role": "user", "content": tool_results})
                     continue
@@ -990,7 +1024,12 @@ class AnalystAgentService:
                 parts.append(block.text or "")
         return "".join(parts)
 
-    def _collect_tool_results(self, response_content: Sequence[Any]) -> list[dict[str, Any]]:
+    def _collect_tool_results(
+        self,
+        response_content: Sequence[Any],
+        *,
+        allow_plan_submission: bool = False,
+    ) -> list[dict[str, Any]]:
         """Build tool_result payloads for Anthropic follow-up messages."""
         tool_results: list[dict[str, Any]] = []
         for block in response_content:
@@ -999,6 +1038,26 @@ class AnalystAgentService:
             tool_name = block.name or "tool"
             tool_input = dict(block.input or {})
             tool_id = block.id
+            if tool_name == "submit_execution_plan" and not allow_plan_submission:
+                LOGGER.warning(
+                    "submit_execution_plan invoked during investigation phase; rejecting tool call",
+                )
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    "submit_execution_plan is only available after the investigation "
+                                    "phase completes. Provide a text summary instead."
+                                ),
+                            }
+                        ),
+                    }
+                )
+                continue
             result_payload = self._dispatch_tool_call(tool_name, tool_input)
             tool_results.append(
                 {
