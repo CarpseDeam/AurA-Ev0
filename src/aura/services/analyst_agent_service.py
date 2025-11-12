@@ -91,6 +91,126 @@ def filter_conversation_history(
 
 
 @dataclass
+class ClientWrapper:
+    """Wrapper that provides a unified interface for Anthropic and OpenAI clients."""
+
+    client: Any
+    client_type: str  # "anthropic" or "openai"
+
+    def __init__(self, client: Any, client_type: str):
+        """Initialize the wrapper with a client and its type.
+
+        Args:
+            client: Either an Anthropic or OpenAI client instance
+            client_type: Either "anthropic" or "openai"
+        """
+        self.client = client
+        self.client_type = client_type
+
+    def messages_create(self, **kwargs: Any) -> Any:
+        """Create messages with unified interface.
+
+        For Anthropic clients, calls client.messages.create() directly.
+        For OpenAI clients, transforms parameters and response to match Anthropic format.
+        """
+        if self.client_type == "anthropic":
+            return self.client.messages.create(**kwargs)
+        elif self.client_type == "openai":
+            # Transform to OpenAI format
+            openai_kwargs = self._transform_to_openai(kwargs)
+            response = self.client.chat.completions.create(**openai_kwargs)
+            # Transform response back to Anthropic format
+            return self._transform_from_openai(response)
+        else:
+            raise ValueError(f"Unknown client type: {self.client_type}")
+
+    def _transform_to_openai(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Transform Anthropic API params to OpenAI format."""
+        openai_kwargs: dict[str, Any] = {
+            "model": kwargs.get("model"),
+            "messages": kwargs.get("messages", []),
+            "temperature": kwargs.get("temperature", 0),
+            "max_tokens": kwargs.get("max_tokens"),
+        }
+
+        # Transform system prompt
+        if "system" in kwargs:
+            system_content = kwargs["system"]
+            if isinstance(system_content, list):
+                # Handle cached system prompts (extract text from blocks)
+                system_text = " ".join([
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in system_content
+                ])
+            else:
+                system_text = system_content
+
+            # Prepend system message to messages array
+            openai_kwargs["messages"] = [
+                {"role": "system", "content": system_text}
+            ] + openai_kwargs["messages"]
+
+        # Transform tools if present
+        if "tools" in kwargs:
+            openai_kwargs["tools"] = self._transform_tools_to_openai(kwargs["tools"])
+
+        return openai_kwargs
+
+    def _transform_tools_to_openai(self, anthropic_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Transform Anthropic tool format to OpenAI format."""
+        openai_tools = []
+        for tool in anthropic_tools:
+            openai_tool = {
+                "type": "function",
+                "function": {
+                    "name": tool.get("name"),
+                    "description": tool.get("description"),
+                    "parameters": tool.get("input_schema", {}),
+                }
+            }
+            openai_tools.append(openai_tool)
+        return openai_tools
+
+    def _transform_from_openai(self, response: Any) -> Any:
+        """Transform OpenAI response to Anthropic format."""
+        from types import SimpleNamespace
+
+        choice = response.choices[0]
+        message = choice.message
+
+        # Build content array
+        content: list[Any] = []
+
+        # Add text content if present
+        if message.content:
+            content.append(SimpleNamespace(type="text", text=message.content))
+
+        # Add tool calls if present
+        if hasattr(message, "tool_calls") and message.tool_calls:
+            for tool_call in message.tool_calls:
+                content.append(SimpleNamespace(
+                    type="tool_use",
+                    id=tool_call.id,
+                    name=tool_call.function.name,
+                    input=json.loads(tool_call.function.arguments),
+                ))
+
+        # Map finish_reason to Anthropic's stop_reason
+        stop_reason_map = {
+            "stop": "end_turn",
+            "tool_calls": "tool_use",
+            "length": "max_tokens",
+        }
+        stop_reason = stop_reason_map.get(choice.finish_reason, choice.finish_reason)
+
+        # Return an object that matches Anthropic's response structure
+        return SimpleNamespace(
+            content=content,
+            stop_reason=stop_reason,
+        )
+
+
+@dataclass
 class AnalystAgentService:
     """Runs the analyst loop with Claude and Aura's read-only tools."""
 
@@ -99,9 +219,9 @@ class AnalystAgentService:
     investigation_model: str
     planning_model: str
     use_local_investigation: bool = False
-    _client: anthropic.Anthropic = field(init=False, repr=False)
+    _client: ClientWrapper = field(init=False, repr=False)
     _instructor_client: instructor.Instructor = field(init=False, repr=False)
-    _local_client: Any = field(init=False, repr=False, default=None)
+    _local_client: ClientWrapper | None = field(init=False, repr=False, default=None)
     _event_bus: Any = field(init=False, repr=False)
     _tool_handlers: Mapping[str, ToolHandler] = field(init=False, repr=False)
     _latest_plan: ExecutionPlan | None = field(default=None, init=False, repr=False)
@@ -109,16 +229,23 @@ class AnalystAgentService:
     _current_user_request: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._client = anthropic.Anthropic(api_key=self.api_key)
+        # Create raw clients
+        anthropic_client = anthropic.Anthropic(api_key=self.api_key)
         self._instructor_client = instructor.from_anthropic(anthropic.Anthropic(api_key=self.api_key))
 
-        # Initialize local client for investigation if enabled
+        # Wrap Anthropic client
+        self._client = ClientWrapper(anthropic_client, "anthropic")
+
+        # Initialize and wrap local client for investigation if enabled
         if self.use_local_investigation:
-            self._local_client = OpenAI(
+            openai_client = OpenAI(
                 base_url="http://localhost:11434/v1",
                 api_key="ollama"
             )
+            self._local_client = ClientWrapper(openai_client, "openai")
             LOGGER.info("Local investigation enabled | model=deepseek-coder-v2:16b")
+        else:
+            self._local_client = None
 
         self._event_bus = get_event_bus()
         self._tool_handlers = {
