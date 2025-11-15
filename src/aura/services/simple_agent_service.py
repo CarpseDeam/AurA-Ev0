@@ -43,6 +43,12 @@ Quality bar:
 - Reference exact files/lines you touched.
 - Verify work with the available tools whenever possible.
 - Provide a concise final summary of what changed and any follow-up steps.
+
+**CRITICAL - NO DOCUMENTATION FILES**
+- NEVER create .md, .txt, or other documentation/summary files
+- Summaries should ONLY be provided as text output in the UI
+- Only create/modify files explicitly requested by the user
+- Documentation files clutter the workspace and are not needed
 """.strip()
 
 ToolHandler = Callable[..., Any]
